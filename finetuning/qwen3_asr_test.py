@@ -4,7 +4,6 @@
 import os
 import re
 import json
-import math
 import argparse
 from typing import Any, Dict, List, Optional
 
@@ -93,67 +92,27 @@ def unwrap_generate_output(gen_out):
     return gen_out
 
 
-def extract_payload_text(raw_text: str) -> str:
-    """
-    Example:
-        language English<asr_text>{"content": 8, "vocabulary":4,"pronunciation":2}
-    -> returns:
-        {"content": 8, "vocabulary":4,"pronunciation":2}
-    """
-    raw_text = (raw_text or "").strip()
-    m = re.match(r"^language\s+.+?<asr_text>(.*)$", raw_text, flags=re.DOTALL)
-    if m:
-        return m.group(1).strip()
-    return raw_text
+def _extract_first_json_array(text: str) -> str:
+    text = (text or "").strip()
+    if not text:
+        return "[]"
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.startswith("json"):
+            text = text[4:].strip()
+    m = re.search(r"\[.*\]", text, flags=re.DOTALL)
+    return m.group(0) if m else text
 
 
-def try_parse_score_dict(text: str) -> Dict[str, Any]:
-    """
-    Robustly parse score json from model output / label text.
-    """
-    payload = extract_payload_text(text)
-
+def try_parse_semantics_list(text: str) -> List[Dict[str, Any]]:
+    payload = _extract_first_json_array(text)
     try:
         obj = json.loads(payload)
-        if isinstance(obj, dict):
+        if isinstance(obj, list):
             return obj
     except Exception:
         pass
-
-    m = re.search(r"\{.*\}", payload, flags=re.DOTALL)
-    if m:
-        candidate = m.group(0)
-        try:
-            obj = json.loads(candidate)
-            if isinstance(obj, dict):
-                return obj
-        except Exception:
-            pass
-
-    return {}
-
-
-def normalize_scalar(x):
-    if x is None:
-        return "nan"
-
-    if isinstance(x, bool):
-        return str(int(x))
-
-    if isinstance(x, int):
-        return str(x)
-
-    if isinstance(x, float):
-        if math.isnan(x) or math.isinf(x):
-            return "nan"
-        if x.is_integer():
-            return str(int(x))
-        return str(x)
-
-    s = str(x).strip()
-    if s == "":
-        return "nan"
-    return s
+    return []
 
 
 def infer_one(
@@ -201,7 +160,6 @@ def infer_one(
     if not torch.is_tensor(output_ids):
         raise TypeError(f"generate() returned unsupported type: {type(output_ids)}")
 
-    # Some models return full sequence, some return only newly generated tokens
     if output_ids.dim() == 1:
         output_ids = output_ids.unsqueeze(0)
 
@@ -236,7 +194,6 @@ def resolve_dtype(dtype_str: str, device: str) -> torch.dtype:
     if dtype_str == "float32":
         return torch.float32
 
-    # auto
     if device.startswith("cuda") and torch.cuda.is_available():
         try:
             major = torch.cuda.get_device_capability(device=device)[0]
@@ -248,50 +205,31 @@ def resolve_dtype(dtype_str: str, device: str) -> torch.dtype:
     return torch.float32
 
 
-def parse_score_names(score_name_arg: str) -> List[str]:
-    """
-    Support:
-      --score_name "content pronunciation vocabulary"
-      --score_name "content,pronunciation,vocabulary"
-    """
-    if not score_name_arg:
-        raise ValueError("--score_name is required")
-
-    parts = re.split(r"[\s,]+", score_name_arg.strip())
-    parts = [p for p in parts if p]
-    if not parts:
-        raise ValueError("No valid score names found in --score_name")
-    return parts
-
-
 def get_jsonl_name(input_jsonl: str) -> str:
     base = os.path.basename(input_jsonl)
     name, _ = os.path.splitext(base)
     return name
 
 
-def write_prediction_files(
-    rows_out: List[Dict[str, Any]],
-    score_names: List[str],
-    output_root: str,
-    jsonl_name: str,
-):
+def write_slu_prediction_jsonl(rows_out: List[Dict[str, Any]], output_root: str, jsonl_name: str):
     save_dir = os.path.join(output_root, jsonl_name)
     os.makedirs(save_dir, exist_ok=True)
+    out_path = os.path.join(save_dir, "predictions.jsonl")
 
-    for score in score_names:
-        out_path = os.path.join(save_dir, f"predictions_{score}.txt")
-        with open(out_path, "w", encoding="utf-8") as f:
-            for row in rows_out:
-                text_id = row["text_id"]
-                pred = normalize_scalar(row["pred_scores"].get(score))
-                label = normalize_scalar(row["label_scores"].get(score))
-                f.write(f"{text_id} {pred} {label}\n")
-        print(f"[info] saved: {out_path}")
+    with open(out_path, "w", encoding="utf-8") as f:
+        for row in rows_out:
+            item = {
+                "id": row["text_id"],
+                "query": row.get("query", ""),
+                "semantics": row.get("pred_semantics", []),
+            }
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+    print(f"[info] saved: {out_path}")
 
 
 def parse_args():
-    p = argparse.ArgumentParser("Qwen3-ASR test script aligned with SFT prompt+audio training")
+    p = argparse.ArgumentParser("Qwen3-ASR SLU test script")
 
     p.add_argument("--exp_dir", type=str, required=True,
                    help="Experiment directory. Will load train_conf.json from this directory")
@@ -299,10 +237,7 @@ def parse_args():
                    help="If exp_dir contains checkpoints, automatically use latest checkpoint")
 
     p.add_argument("--input_jsonl", type=str, required=True,
-                   help="Input JSONL with fields like text_id, audio, prompt, text")
-
-    p.add_argument("--score_name", type=str, required=True,
-                   help='e.g. "content pronunciation vocabulary"')
+                   help="Input JSONL with fields like text_id, query, audio, prompt")
 
     p.add_argument("--output_root", type=str, default="checkpoints",
                    help='Root output dir. Default: "checkpoints"')
@@ -354,7 +289,6 @@ def main():
         print(f"[info] use latest checkpoint: {model_path}")
 
     dtype = resolve_dtype(dtype_str, args.device)
-    score_names = parse_score_names(args.score_name)
     jsonl_name = get_jsonl_name(args.input_jsonl)
 
     asr_wrapper = Qwen3ASRModel.from_pretrained(
@@ -370,7 +304,7 @@ def main():
         text_id = str(row.get("text_id", f"line{i}")).strip()
         audio_path = row.get("audio", "")
         prompt = row.get("prompt", "")
-        label_text = row.get("text", "")
+        query = row.get("query", "")
 
         if not audio_path:
             print(f"[skip] line {i}: no audio field")
@@ -387,25 +321,16 @@ def main():
             top_p=top_p,
         )
 
-        pred_scores = try_parse_score_dict(pred_raw)
-        label_scores = try_parse_score_dict(label_text)
-
         rows_out.append({
             "text_id": text_id,
+            "query": query,
             "pred_raw": pred_raw,
-            "label_raw": label_text,
-            "pred_scores": pred_scores,
-            "label_scores": label_scores,
+            "pred_semantics": try_parse_semantics_list(pred_raw),
         })
 
         print(f"[{i}/{len(rows)}] done: {text_id}")
 
-    write_prediction_files(
-        rows_out=rows_out,
-        score_names=score_names,
-        output_root=args.output_root,
-        jsonl_name=jsonl_name,
-    )
+    write_slu_prediction_jsonl(rows_out=rows_out, output_root=args.output_root, jsonl_name=jsonl_name)
 
 
 if __name__ == "__main__":
