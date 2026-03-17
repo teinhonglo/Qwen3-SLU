@@ -110,16 +110,16 @@ def build_wav_index(audio_root: Path) -> Dict[str, List[Path]]:
 
 
 def resolve_wav(raw_id: str, wav_index: Dict[str, List[Path]]) -> Path:
-    raw_id = str(raw_id)
-    if raw_id in wav_index and len(wav_index[raw_id]) == 1:
-        return wav_index[raw_id][0]
-    suffix_matches = []
-    for stem, paths in wav_index.items():
-        if stem.endswith(raw_id):
-            suffix_matches.extend(paths)
-    if len(suffix_matches) == 1:
-        return suffix_matches[0]
-    raise FileNotFoundError(f"Cannot uniquely resolve wav for id={raw_id}")
+    raw_id = str(raw_id).strip()
+    matches = wav_index.get(raw_id, [])
+    uniq = sorted({str(p): p for p in matches}.values(), key=lambda p: str(p))
+
+    if len(uniq) == 1:
+        return uniq[0]
+    if len(uniq) > 1:
+        raise RuntimeError(f"Multiple wavs found for id={raw_id}: {uniq}")
+
+    raise FileNotFoundError(f"Cannot find wav for id={raw_id}")
 
 
 def to_semantics_text(record: dict) -> str:
@@ -152,11 +152,16 @@ def main():
         out_path = jsonl_root / f"{split}.jsonl"
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
+        missing = []
+
         with out_path.open("w", encoding="utf-8") as f:
             for i, r in enumerate(records, start=1):
                 rid = str(r.get("id", i))
-                print(f"wav_index {wav_index}")
-                wav = resolve_wav(rid, wav_index)
+                try:
+                    wav = resolve_wav(rid, wav_index)
+                except FileNotFoundError:
+                    missing.append(rid)
+                    continue
                 query = r.get("query", "")
                 semantics_text = to_semantics_text(r)
                 row = {
@@ -169,6 +174,11 @@ def main():
                     "semantics": r.get("semantics", []),
                 }
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+        if missing:
+            miss_path = jsonl_root / f"{split}.missing_wavs.txt"
+            miss_path.write_text("\n".join(missing) + "\n", encoding="utf-8")
+            print(f"[WARN] {split}: skipped {len(missing)} records without exact wav match. See {miss_path}")
 
         print(f"[INFO] Wrote {out_path}")
 
