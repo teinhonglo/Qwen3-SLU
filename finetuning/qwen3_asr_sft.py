@@ -224,6 +224,16 @@ def load_train_conf(train_conf_path: str) -> Optional[List[Dict[str, Any]]]:
     return [training_args, model_args]
 
 
+
+
+def has_nonempty_json_lines(path: str) -> bool:
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                return True
+    return False
+
+
 def main():
     args_cli = parse_args()
 
@@ -268,13 +278,21 @@ def main():
     patch_outer_forward(model)
     model.generation_config = GenerationConfig.from_model_config(model.config)
 
-    raw_ds = load_dataset(
-        "json",
-        data_files={
-            "train": args_cli.train_file,
-            **({"validation": args_cli.eval_file} if args_cli.eval_file else {}),
-        },
-    )
+    data_files = {}
+    if not has_nonempty_json_lines(args_cli.train_file):
+        raise ValueError(
+            f"Train jsonl is empty or has no valid lines: {args_cli.train_file}. "
+            "Please check stage-0 preprocessing and exact wav-id matching."
+        )
+    data_files["train"] = args_cli.train_file
+
+    if args_cli.eval_file:
+        if has_nonempty_json_lines(args_cli.eval_file):
+            data_files["validation"] = args_cli.eval_file
+        else:
+            print(f"[WARN] Eval jsonl is empty, disable eval: {args_cli.eval_file}")
+
+    raw_ds = load_dataset("json", data_files=data_files)
     ds = raw_ds.map(make_preprocess_fn_prefix_only(processor), num_proc=1)
 
     keep = {"prompt", "audio", "target", "prefix_text"}
@@ -304,7 +322,7 @@ def main():
         save_safetensors=True,
         eval_strategy="steps",
         eval_steps=save_steps,
-        do_eval=bool(args_cli.eval_file),
+        do_eval=("validation" in data_files),
         bf16=use_bf16,
         fp16=not use_bf16,
         ddp_find_unused_parameters=False,
