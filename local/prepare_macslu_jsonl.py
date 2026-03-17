@@ -155,6 +155,7 @@ def main():
         with out_path.open("w", encoding="utf-8") as f:
             for i, r in enumerate(records, start=1):
                 rid = str(r.get("id", i))
+                print(f"wav_index {wav_index}")
                 wav = resolve_wav(rid, wav_index)
                 query = r.get("query", "")
                 semantics_text = to_semantics_text(r)
