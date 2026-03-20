@@ -2,6 +2,18 @@
 
 This script fine-tunes **Qwen3-ASR** using JSONL audio-text pairs. It supports multi-GPU training via `torchrun`.
 
+### LoRA `train_conf` example
+
+You can use the ready-made LoRA config example:
+
+- `conf/macslu_qwen3_asr_17b_lora_llm.json` (LoRA on **LLM backbone only**)
+
+To train LoRA on both **audio encoder + LLM backbone**, change:
+
+```json
+"lora_mode": "audio_encoder_llm_backbone"
+```
+
 ### 1) Setup
 
 First, please install the two Python packages `qwen-asr` and `datasets` using the command below.

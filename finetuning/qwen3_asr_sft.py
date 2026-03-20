@@ -227,6 +227,49 @@ def load_train_conf(train_conf_path: str) -> Optional[List[Dict[str, Any]]]:
     return [training_args, model_args]
 
 
+def maybe_enable_lora(model, model_args_conf: Dict[str, Any]):
+    finetune_type = str(model_args_conf.get("finetune_type", "full")).strip().lower()
+    if finetune_type == "full":
+        return model
+    if finetune_type != "lora":
+        raise ValueError(
+            "model_args.finetune_type must be one of: ['full', 'lora']"
+        )
+
+    try:
+        from peft import LoraConfig, TaskType, get_peft_model
+    except ImportError as e:
+        raise ImportError(
+            "LoRA finetuning requires `peft`. Please install it first, e.g. `pip install peft`."
+        ) from e
+
+    lora_mode = str(model_args_conf.get("lora_mode", "llm_backbone")).strip().lower()
+    if lora_mode not in {"llm_backbone", "audio_encoder_llm_backbone"}:
+        raise ValueError(
+            "model_args.lora_mode must be one of: ['llm_backbone', 'audio_encoder_llm_backbone']"
+        )
+
+    lora_r = int(model_args_conf.get("lora_r", 8))
+    lora_alpha = int(model_args_conf.get("lora_alpha", 16))
+    lora_dropout = float(model_args_conf.get("lora_dropout", 0.05))
+    lora_bias = str(model_args_conf.get("lora_bias", "none"))
+
+    lora_cfg = LoraConfig(
+        task_type=TaskType.FEATURE_EXTRACTION,
+        r=lora_r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        bias=lora_bias,
+        target_modules="all-linear",
+        modules_to_save=["lm_head"],
+        exclude_modules=["audio_tower"] if lora_mode == "llm_backbone" else None,
+    )
+
+    model = get_peft_model(model, lora_cfg)
+    model.print_trainable_parameters()
+    return model
+
+
 def main():
     args_cli = parse_args()
 
@@ -277,6 +320,8 @@ def main():
     )
     model = asr_wrapper.model
     processor = asr_wrapper.processor
+
+    model = maybe_enable_lora(model, model_args_conf)
 
     patch_outer_forward(model)
     model.generation_config = GenerationConfig.from_model_config(model.config)

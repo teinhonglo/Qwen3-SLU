@@ -1,0 +1,34 @@
+[
+    {
+        "sr": 16000,
+        "per_device_train_batch_size": 2,
+        "per_device_eval_batch_size": 4,
+        "gradient_accumulation_steps": 64,
+        "learning_rate": 2e-5,
+        "num_train_epochs": 3,
+        "warmup_ratio": 0.02,
+        "save_strategy": "steps",
+        "save_steps": 200,
+        "save_total_limit": 5,
+        "logging_steps": 10,
+        "dataloader_num_workers": 2,
+        "dataloader_pin_memory": true,
+        "dataloader_persistent_workers": true,
+        "dataloader_prefetch_factor": 2,
+        "lr_scheduler_type": "linear",
+        "max_new_tokens": 256,
+        "do_sample": false,
+        "temperature": 1.0,
+        "top_p": 1.0
+    },
+    {
+        "model_path": "Qwen/Qwen3-ASR-1.7B",
+        "dtype": "auto",
+        "finetune_type": "lora",
+        "lora_mode": "llm_backbone",
+        "lora_r": 8,
+        "lora_alpha": 16,
+        "lora_dropout": 0.05,
+        "lora_bias": "none"
+    }
+]
