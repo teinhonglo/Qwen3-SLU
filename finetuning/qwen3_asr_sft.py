@@ -179,6 +179,17 @@ def save_prompt_txt(save_dir: str, prompt: str):
     with open(prompt_path, "w", encoding="utf-8") as f:
         f.write(prompt or "")
 
+
+def save_finetune_meta(save_dir: str, model_args_conf: Dict[str, Any]):
+    os.makedirs(save_dir, exist_ok=True)
+    meta = {
+        "finetune_type": str(model_args_conf.get("finetune_type", "full")).strip().lower(),
+        "base_model_path": model_args_conf.get("model_path", ""),
+    }
+    meta_path = os.path.join(save_dir, "finetune_meta.json")
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+
 class CastFloatInputsTrainer(Trainer):
     def _prepare_inputs(self, inputs):
         inputs = super()._prepare_inputs(inputs)
@@ -190,10 +201,11 @@ class CastFloatInputsTrainer(Trainer):
         return inputs
 
 class MakeEveryCheckpointInferableCallback(TrainerCallback):
-    def __init__(self, processor, model=None, default_prompt: str = ""):
+    def __init__(self, processor, model=None, default_prompt: str = "", model_args_conf: Optional[Dict[str, Any]] = None):
         self.processor = processor
         self.model = model
         self.default_prompt = default_prompt
+        self.model_args_conf = model_args_conf or {}
 
     def _save_infer_files(self, save_dir: str):
         os.makedirs(save_dir, exist_ok=True)
@@ -207,6 +219,7 @@ class MakeEveryCheckpointInferableCallback(TrainerCallback):
             self.model.generation_config.save_pretrained(save_dir)
 
         save_prompt_txt(save_dir, self.default_prompt)
+        save_finetune_meta(save_dir, self.model_args_conf)
 
     def on_save(self, args: TrainingArguments, state, control, **kwargs):
         if args.process_index != 0:
@@ -411,6 +424,7 @@ def main():
                 processor=processor,
                 model=model,
                 default_prompt=default_prompt,
+                model_args_conf=model_args_conf,
             )
         ],
     )
@@ -432,6 +446,7 @@ def main():
 
     if trainer.args.process_index == 0:
         save_prompt_txt(training_args.output_dir, default_prompt)
+        save_finetune_meta(training_args.output_dir, model_args_conf)
 
     resume_from = (args_cli.resume_from or "").strip()
     if not resume_from and args_cli.resume == 1:
@@ -443,6 +458,26 @@ def main():
         trainer.train(resume_from_checkpoint=resume_from)
     else:
         trainer.train()
+
+    if trainer.args.process_index == 0:
+        final_dir = os.path.join(training_args.output_dir, "final")
+        os.makedirs(final_dir, exist_ok=True)
+        trainer.save_model(final_dir)
+        if hasattr(processor, "save_pretrained"):
+            processor.save_pretrained(final_dir)
+        if hasattr(processor, "tokenizer") and processor.tokenizer is not None:
+            processor.tokenizer.save_pretrained(final_dir)
+        if getattr(model, "generation_config", None) is not None:
+            model.generation_config.save_pretrained(final_dir)
+        save_prompt_txt(final_dir, default_prompt)
+        save_finetune_meta(final_dir, model_args_conf)
+
+        finetune_type = str(model_args_conf.get("finetune_type", "full")).strip().lower()
+        if finetune_type == "lora":
+            lora_dir = os.path.join(training_args.output_dir, "lora_adapter")
+            model.save_pretrained(lora_dir)
+            save_finetune_meta(lora_dir, model_args_conf)
+            print(f"[save] LoRA adapter weights saved to: {lora_dir}")
 
 
 if __name__ == "__main__":

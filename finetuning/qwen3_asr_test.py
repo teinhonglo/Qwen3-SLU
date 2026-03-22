@@ -236,6 +236,10 @@ def parse_args():
                    help="Experiment directory. Will load train_conf.json from this directory")
     p.add_argument("--auto_latest_checkpoint", action="store_true",
                    help="If exp_dir contains checkpoints, automatically use latest checkpoint")
+    p.add_argument("--lora_path", type=str, default="",
+                   help="Optional LoRA adapter path. If empty, will auto-detect from exp_dir when finetune_type=lora")
+    p.add_argument("--auto_latest_lora_checkpoint", action="store_true",
+                   help="When finetuning is LoRA and --auto_latest_checkpoint is set, use latest checkpoint as adapter path")
 
     p.add_argument("--input_jsonl", type=str, required=True,
                    help="Input JSONL with fields like text_id, query, audio, prompt")
@@ -266,6 +270,36 @@ def load_train_conf_from_exp_dir(exp_dir: str) -> Optional[List[Dict[str, Any]]]
     return cfg
 
 
+def maybe_load_finetune_meta(path: str) -> Dict[str, Any]:
+    if not path:
+        return {}
+    meta_path = os.path.join(path, "finetune_meta.json")
+    if not os.path.isfile(meta_path):
+        return {}
+    with open(meta_path, "r", encoding="utf-8") as f:
+        try:
+            obj = json.load(f)
+        except Exception:
+            return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def attach_lora_if_needed(asr_wrapper, lora_path: str):
+    if not lora_path:
+        return asr_wrapper
+    try:
+        from peft import PeftModel
+    except ImportError as e:
+        raise ImportError(
+            "Loading LoRA adapter requires `peft`. Please install it first, e.g. `pip install peft`."
+        ) from e
+
+    asr_wrapper.model = PeftModel.from_pretrained(asr_wrapper.model, lora_path)
+    asr_wrapper.model.eval()
+    print(f"[info] loaded LoRA adapter: {lora_path}")
+    return asr_wrapper
+
+
 def main():
     args = parse_args()
 
@@ -281,13 +315,42 @@ def main():
     top_p = float(training_args_conf.get("top_p", 1.0))
     dtype_str = str(model_args_conf.get("dtype", "auto"))
 
-    model_path = args.exp_dir
+    finetune_type = str(model_args_conf.get("finetune_type", "full")).strip().lower()
+    base_model_path = str(model_args_conf.get("model_path", "")).strip()
+    model_path = args.exp_dir if finetune_type == "full" else base_model_path
     if args.auto_latest_checkpoint:
-        latest_ckpt = find_latest_checkpoint(model_path)
+        latest_ckpt = find_latest_checkpoint(args.exp_dir)
         if latest_ckpt is None:
-            raise ValueError(f"No checkpoint-* found under: {model_path}")
-        model_path = latest_ckpt
-        print(f"[info] use latest checkpoint: {model_path}")
+            raise ValueError(f"No checkpoint-* found under: {args.exp_dir}")
+        if finetune_type == "full":
+            model_path = latest_ckpt
+            print(f"[info] use latest full checkpoint: {model_path}")
+        elif args.auto_latest_lora_checkpoint:
+            args.lora_path = latest_ckpt
+            print(f"[info] use latest LoRA checkpoint as adapter: {args.lora_path}")
+
+    if finetune_type == "lora" and not model_path:
+        raise ValueError("model_args.model_path is required for LoRA inference")
+
+    lora_path = (args.lora_path or "").strip()
+    if finetune_type == "lora" and not lora_path:
+        candidate_paths = [
+            os.path.join(args.exp_dir, "lora_adapter"),
+            os.path.join(args.exp_dir, "final"),
+            args.exp_dir,
+        ]
+        for c in candidate_paths:
+            meta = maybe_load_finetune_meta(c)
+            if meta.get("finetune_type") == "lora" and os.path.isfile(os.path.join(c, "adapter_config.json")):
+                lora_path = c
+                break
+            if os.path.isfile(os.path.join(c, "adapter_config.json")):
+                lora_path = c
+                break
+    if finetune_type == "lora" and not lora_path:
+        raise ValueError(
+            "LoRA finetune detected but no adapter found. Please pass --lora_path or ensure exp_dir has lora_adapter/"
+        )
 
     dtype = resolve_dtype(dtype_str, args.device)
     jsonl_name = get_jsonl_name(args.input_jsonl)
@@ -297,6 +360,7 @@ def main():
         dtype=dtype,
         device_map=args.device,
     )
+    asr_wrapper = attach_lora_if_needed(asr_wrapper, lora_path if finetune_type == "lora" else "")
 
     rows = load_jsonl(args.input_jsonl)
     rows_out = []

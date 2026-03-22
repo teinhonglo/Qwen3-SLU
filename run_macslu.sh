@@ -83,6 +83,7 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
             python finetuning/qwen3_asr_test.py \
                 --exp_dir $exp_dir \
                 --auto_latest_checkpoint \
+                --auto_latest_lora_checkpoint \
                 --input_jsonl $test_jsonl \
                 --output_root $exp_dir \
                 --device cuda:0

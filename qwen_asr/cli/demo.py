@@ -139,6 +139,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--asr-checkpoint", required=True, help="Qwen3-ASR model checkpoint path or HF repo id.")
     parser.add_argument(
+        "--lora-path",
+        default=None,
+        help="Optional LoRA adapter path (Transformers backend only).",
+    )
+    parser.add_argument(
         "--aligner-checkpoint",
         default=None,
         help="Qwen3-ForcedAligner checkpoint path or HF repo id (optional; enables timestamps when provided).",
@@ -251,6 +256,32 @@ def _merge_dicts(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, An
     out = dict(base)
     out.update(override)
     return out
+
+
+def _maybe_load_prompt_from_checkpoint(asr_checkpoint: str) -> str:
+    if not asr_checkpoint:
+        return ""
+    prompt_path = os.path.join(asr_checkpoint, "prompt.txt")
+    if not os.path.isfile(prompt_path):
+        return ""
+    with open(prompt_path, "r", encoding="utf-8") as f:
+        return f.read().strip()
+
+
+def _attach_lora_adapter(asr: Qwen3ASRModel, lora_path: Optional[str]) -> Qwen3ASRModel:
+    lp = (lora_path or "").strip()
+    if not lp:
+        return asr
+    if asr.backend != "transformers":
+        raise ValueError("--lora-path is only supported when --backend=transformers.")
+    try:
+        from peft import PeftModel
+    except Exception as e:
+        raise ImportError("Loading LoRA adapter requires `peft` (pip install peft).") from e
+
+    asr.model = PeftModel.from_pretrained(asr.model, lp)
+    asr.model.eval()
+    return asr
 
 
 def _coerce_special_types(d: Dict[str, Any]) -> Dict[str, Any]:
@@ -467,8 +498,8 @@ def build_demo(
         if has_aligner:
             btn.click(
                 run,
-                inputs=[audio_in, lang_in, ts_in],
-                outputs=[out_lang, out_text, out_ts, out_ts_html, prompt_in],
+                inputs=[audio_in, lang_in, ts_in, prompt_in],
+                outputs=[out_lang, out_text, out_ts, out_ts_html],
             )
             viz_btn.click(
                 visualize,
@@ -494,6 +525,7 @@ def main(argv=None) -> int:
     backend = args.backend
     asr_ckpt = args.asr_checkpoint
     aligner_ckpt = args.aligner_checkpoint
+    lora_path = args.lora_path
 
     user_backend_kwargs = _parse_json_dict(args.backend_kwargs, name="--backend-kwargs")
     user_aligner_kwargs = _parse_json_dict(args.aligner_kwargs, name="--aligner-kwargs")
@@ -515,6 +547,7 @@ def main(argv=None) -> int:
             forced_aligner_kwargs=forced_aligner_kwargs,
             **backend_kwargs,
         )
+        asr = _attach_lora_adapter(asr, lora_path)
     else:
         asr = Qwen3ASRModel.LLM(
             model=asr_ckpt,
@@ -522,8 +555,17 @@ def main(argv=None) -> int:
             forced_aligner_kwargs=forced_aligner_kwargs,
             **backend_kwargs,
         )
+        if lora_path:
+            raise ValueError("--lora-path is only supported for transformers backend.")
 
-    demo = build_demo(asr, asr_ckpt, backend, aligner_ckpt=aligner_ckpt)
+    default_prompt = _maybe_load_prompt_from_checkpoint(asr_ckpt)
+    demo = build_demo(
+        asr,
+        asr_ckpt,
+        backend,
+        aligner_ckpt=aligner_ckpt,
+        default_prompt=default_prompt,
+    )
 
     launch_kwargs: Dict[str, Any] = dict(
         server_name=args.ip,
