@@ -178,11 +178,6 @@ def build_parser() -> argparse.ArgumentParser:
             "Example: '{\"dtype\":\"bfloat16\",\"device_map\":\"cuda:0\"}'\n"
         ),
     )
-    parser.add_argument(
-        "--prompt-file",
-        default="checkpoints/prompt.txt",
-        help="Prompt txt path to preload into Gradio textarea (default: checkpoints/prompt.txt).",
-    )
 
     # Gradio server args
     parser.add_argument("--ip", default="0.0.0.0", help="Server bind IP for Gradio (default: 0.0.0.0).")
@@ -266,13 +261,6 @@ def _coerce_special_types(d: Dict[str, Any]) -> Dict[str, Any]:
         else:
             out[k] = v
     return out
-
-
-def _read_prompt_file(prompt_file: str) -> str:
-    if not prompt_file or not os.path.isfile(prompt_file):
-        return ""
-    with open(prompt_file, "r", encoding="utf-8") as f:
-        return f.read().strip()
 
 
 def _make_timestamp_html(audio_upload: Any, timestamps: Any) -> str:
@@ -383,7 +371,13 @@ def build_demo(
         )
 
         with gr.Row():
-            with gr.Column(scale=2):
+            with gr.Column(scale=3):
+                prompt_in = gr.TextArea(
+                    label="Prompt",
+                    value=default_prompt,
+                    lines=6,
+                    interactive=True,
+                )
                 audio_in = gr.Audio(label="Audio Input (上传音频)", type="numpy")
                 lang_in = gr.Dropdown(
                     label="Language (语种)",
@@ -398,13 +392,6 @@ def build_demo(
                     )
                 else:
                     ts_in = gr.State(False)
-
-                prompt_in = gr.TextArea(
-                    label="Prompt",
-                    value=default_prompt,
-                    lines=6,
-                    interactive=True,
-                )
 
                 btn = gr.Button("Transcribe (识别)", variant="primary")
 
@@ -480,8 +467,8 @@ def build_demo(
         if has_aligner:
             btn.click(
                 run,
-                inputs=[audio_in, lang_in, ts_in, prompt_in],
-                outputs=[out_lang, out_text, out_ts, out_ts_html],
+                inputs=[audio_in, lang_in, ts_in],
+                outputs=[out_lang, out_text, out_ts, out_ts_html, prompt_in],
             )
             viz_btn.click(
                 visualize,
@@ -536,14 +523,7 @@ def main(argv=None) -> int:
             **backend_kwargs,
         )
 
-    default_prompt = _read_prompt_file(args.prompt_file)
-    demo = build_demo(
-        asr,
-        asr_ckpt,
-        backend,
-        aligner_ckpt=aligner_ckpt,
-        default_prompt=default_prompt,
-    )
+    demo = build_demo(asr, asr_ckpt, backend, aligner_ckpt=aligner_ckpt)
 
     launch_kwargs: Dict[str, Any] = dict(
         server_name=args.ip,

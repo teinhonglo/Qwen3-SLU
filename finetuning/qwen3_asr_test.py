@@ -305,6 +305,7 @@ def main():
         text_id = str(row.get("text_id", f"line{i}")).strip()
         audio_path = row.get("audio", "")
         prompt = row.get("prompt", "")
+        print(prompt)
         query = row.get("query", "")
 
         if not audio_path:

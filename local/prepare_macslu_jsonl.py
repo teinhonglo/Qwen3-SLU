@@ -221,7 +221,7 @@ def main():
                     "text_id": rid,
                     "query": query,
                     "audio": str(wav_path),
-                    "prompt": "",
+                    "prompt": prompt,
                     "text": f"language None<asr_text>{query}<slu>{semantics_text}",
                     "semantics": semantics
                 }

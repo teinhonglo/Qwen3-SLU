@@ -254,7 +254,7 @@ def load_train_conf(train_conf_path: str) -> Optional[List[Dict[str, Any]]]:
     return [training_args, model_args]
 
 
-def maybe_enable_lora(model, model_args_conf: Dict[str, Any]):
+def enable_lora(model, model_args_conf: Dict[str, Any]):
     finetune_type = str(model_args_conf.get("finetune_type", "full")).strip().lower()
     if finetune_type == "full":
         return model
@@ -348,7 +348,7 @@ def main():
     model = asr_wrapper.model
     processor = asr_wrapper.processor
 
-    model = maybe_enable_lora(model, model_args_conf)
+    model = enable_lora(model, model_args_conf)
 
     patch_outer_forward(model)
     model.generation_config = GenerationConfig.from_model_config(model.config)
