@@ -221,6 +221,7 @@ def write_slu_prediction_jsonl(rows_out: List[Dict[str, Any]], output_root: str,
             item = {
                 "id": row["text_id"],
                 "query": row.get("query", ""),
+                "pred_query": row.get("pred_query", ""),
                 "semantics": row.get("pred_semantics", []),
             }
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
@@ -321,9 +322,16 @@ def main():
             top_p=top_p,
         )
 
+        if "<slu>" in pred_raw:
+            pred_query = pred_raw.split("<slu>")[0]
+            pred_raw = pred_raw.split("<slu>")[1]
+        else:
+            pred_query = ""
+
         rows_out.append({
             "text_id": text_id,
             "query": query,
+            "pred_query": pred_query,
             "pred_raw": pred_raw,
             "pred_semantics": try_parse_semantics_list(pred_raw),
         })

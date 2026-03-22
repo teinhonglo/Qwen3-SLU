@@ -127,6 +127,14 @@ def to_semantics_text(ori_semantics):
     """
     results = []
 
+    SLOT_MAPPING = {
+        "body": "对象",
+        "object": "对象",
+        "feature": "对象功能", 
+        "part": "调节内容",
+        "action": "操作"
+    }
+
     if not isinstance(ori_semantics, dict):
         return results
 
@@ -147,6 +155,12 @@ def to_semantics_text(ori_semantics):
             for x in items:
                 name = x.get("name")
                 value = x.get("value")
+
+                if name in SLOT_MAPPING:
+                    name = SLOT_MAPPING[name]
+                
+                #if value in SLOT_MAPPING:
+                #    value = SLOT_MAPPING[value]
 
                 if name == "intent":
                     new_item["intent"] = value
@@ -207,8 +221,8 @@ def main():
                     "text_id": rid,
                     "query": query,
                     "audio": str(wav_path),
-                    "prompt": prompt,
-                    "text": "language None<asr_text>"+semantics_text,
+                    "prompt": "",
+                    "text": f"language None<asr_text>{query}<slu>{semantics_text}",
                     "semantics": semantics
                 }
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
