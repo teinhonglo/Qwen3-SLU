@@ -178,6 +178,11 @@ def build_parser() -> argparse.ArgumentParser:
             "Example: '{\"dtype\":\"bfloat16\",\"device_map\":\"cuda:0\"}'\n"
         ),
     )
+    parser.add_argument(
+        "--prompt-file",
+        default="checkpoints/prompt.txt",
+        help="Prompt txt path to preload into Gradio textarea (default: checkpoints/prompt.txt).",
+    )
 
     # Gradio server args
     parser.add_argument("--ip", default="0.0.0.0", help="Server bind IP for Gradio (default: 0.0.0.0).")
@@ -261,6 +266,13 @@ def _coerce_special_types(d: Dict[str, Any]) -> Dict[str, Any]:
         else:
             out[k] = v
     return out
+
+
+def _read_prompt_file(prompt_file: str) -> str:
+    if not prompt_file or not os.path.isfile(prompt_file):
+        return ""
+    with open(prompt_file, "r", encoding="utf-8") as f:
+        return f.read().strip()
 
 
 def _make_timestamp_html(audio_upload: Any, timestamps: Any) -> str:
@@ -347,6 +359,7 @@ def build_demo(
     asr_ckpt: str,
     backend: str,
     aligner_ckpt: Optional[str] = None,
+    default_prompt: str = "",
 ) -> gr.Blocks:
     supported_langs_raw = asr.get_supported_languages()
     lang_choices_disp, lang_map = _build_choices_and_map([x for x in supported_langs_raw])
@@ -386,6 +399,13 @@ def build_demo(
                 else:
                     ts_in = gr.State(False)
 
+                prompt_in = gr.TextArea(
+                    label="Prompt",
+                    value=default_prompt,
+                    lines=6,
+                    interactive=True,
+                )
+
                 btn = gr.Button("Transcribe (识别)", variant="primary")
 
             with gr.Column(scale=2):
@@ -408,7 +428,7 @@ def build_demo(
         else:
             out_ts_html = gr.State("")
 
-        def run(audio_upload: Any, lang_disp: str, return_ts: bool):
+        def run(audio_upload: Any, lang_disp: str, return_ts: bool, prompt_text: str):
             audio_obj = _parse_audio_any(audio_upload)
 
             language = None
@@ -420,6 +440,7 @@ def build_demo(
             results = asr.transcribe(
                 audio=audio_obj,
                 language=language,
+                context=prompt_text,
                 return_time_stamps=return_ts,
             )
             if not isinstance(results, list) or len(results) != 1:
@@ -459,7 +480,7 @@ def build_demo(
         if has_aligner:
             btn.click(
                 run,
-                inputs=[audio_in, lang_in, ts_in],
+                inputs=[audio_in, lang_in, ts_in, prompt_in],
                 outputs=[out_lang, out_text, out_ts, out_ts_html],
             )
             viz_btn.click(
@@ -470,7 +491,7 @@ def build_demo(
         else:
             btn.click(
                 run,
-                inputs=[audio_in, lang_in, ts_in],
+                inputs=[audio_in, lang_in, ts_in, prompt_in],
                 outputs=[out_lang, out_text],
             )
 
@@ -515,7 +536,14 @@ def main(argv=None) -> int:
             **backend_kwargs,
         )
 
-    demo = build_demo(asr, asr_ckpt, backend, aligner_ckpt=aligner_ckpt)
+    default_prompt = _read_prompt_file(args.prompt_file)
+    demo = build_demo(
+        asr,
+        asr_ckpt,
+        backend,
+        aligner_ckpt=aligner_ckpt,
+        default_prompt=default_prompt,
+    )
 
     launch_kwargs: Dict[str, Any] = dict(
         server_name=args.ip,

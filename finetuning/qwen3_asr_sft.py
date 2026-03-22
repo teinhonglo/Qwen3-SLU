@@ -155,6 +155,30 @@ class DataCollatorForQwen3ASRFinetuning:
         return full_inputs
 
 
+
+
+def extract_default_prompt(dataset) -> str:
+    prompts = []
+    for ex in dataset:
+        p = str(ex.get("prompt", "") or "").strip()
+        if p:
+            prompts.append(p)
+
+    if not prompts:
+        return ""
+
+    first = prompts[0]
+    if any(p != first for p in prompts[1:]):
+        print("[warn] Multiple prompt values found in train set; using the first non-empty prompt for prompt.txt")
+    return first
+
+
+def save_prompt_txt(save_dir: str, prompt: str):
+    os.makedirs(save_dir, exist_ok=True)
+    prompt_path = os.path.join(save_dir, "prompt.txt")
+    with open(prompt_path, "w", encoding="utf-8") as f:
+        f.write(prompt or "")
+
 class CastFloatInputsTrainer(Trainer):
     def _prepare_inputs(self, inputs):
         inputs = super()._prepare_inputs(inputs)
@@ -166,9 +190,10 @@ class CastFloatInputsTrainer(Trainer):
         return inputs
 
 class MakeEveryCheckpointInferableCallback(TrainerCallback):
-    def __init__(self, processor, model=None):
+    def __init__(self, processor, model=None, default_prompt: str = ""):
         self.processor = processor
         self.model = model
+        self.default_prompt = default_prompt
 
     def _save_infer_files(self, save_dir: str):
         os.makedirs(save_dir, exist_ok=True)
@@ -180,6 +205,8 @@ class MakeEveryCheckpointInferableCallback(TrainerCallback):
 
         if self.model is not None and getattr(self.model, "generation_config", None) is not None:
             self.model.generation_config.save_pretrained(save_dir)
+
+        save_prompt_txt(save_dir, self.default_prompt)
 
     def on_save(self, args: TrainingArguments, state, control, **kwargs):
         if args.process_index != 0:
@@ -341,6 +368,8 @@ def main():
         if drop:
             ds[split] = ds[split].remove_columns(drop)
 
+    default_prompt = extract_default_prompt(ds["train"])
+
     collator = DataCollatorForQwen3ASRFinetuning(processor=processor, sampling_rate=sr)
 
     training_args = TrainingArguments(
@@ -377,7 +406,13 @@ def main():
         eval_dataset=ds.get("validation", None),
         data_collator=collator,
         tokenizer=processor.tokenizer,
-        callbacks=[MakeEveryCheckpointInferableCallback(processor=processor, model=model)],
+        callbacks=[
+            MakeEveryCheckpointInferableCallback(
+                processor=processor,
+                model=model,
+                default_prompt=default_prompt,
+            )
+        ],
     )
 
     os.makedirs(training_args.output_dir, exist_ok=True)
@@ -394,6 +429,9 @@ def main():
 
     if getattr(model, "generation_config", None) is not None:
         model.generation_config.save_pretrained(training_args.output_dir)
+
+    if trainer.args.process_index == 0:
+        save_prompt_txt(training_args.output_dir, default_prompt)
 
     resume_from = (args_cli.resume_from or "").strip()
     if not resume_from and args_cli.resume == 1:
