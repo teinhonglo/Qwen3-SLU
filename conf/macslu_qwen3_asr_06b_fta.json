@@ -24,6 +24,6 @@
     {
         "model_path": "Qwen/Qwen3-ASR-0.6B",
         "dtype": "auto",
-        "freeze_components": []
+        "freeze_components": ["audio_encoder", "token_embedding"]
     }
 ]

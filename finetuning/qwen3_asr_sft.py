@@ -297,6 +297,52 @@ def enable_lora(model, model_args_conf: Dict[str, Any]):
     return model
 
 
+def apply_freeze_components(model, model_args_conf: Dict[str, Any]):
+    freeze_components = model_args_conf.get("freeze_components", [])
+    if isinstance(freeze_components, str):
+        freeze_components = re.split(r"[\s,+]+", freeze_components.strip()) if freeze_components.strip() else []
+    elif not isinstance(freeze_components, list):
+        raise ValueError("model_args.freeze_components must be a string or a list of strings")
+
+    aliases = {
+        "audio_encoder": "audio_encoder",
+        "audio": "audio_encoder",
+        "audio_tower": "audio_encoder",
+        "token_embedding": "token_embedding",
+        "token_embeddings": "token_embedding",
+        "embedding": "token_embedding",
+        "embed_tokens": "token_embedding",
+    }
+
+    normalized = []
+    for item in freeze_components:
+        key = aliases.get(str(item).strip().lower())
+        if key is None:
+            raise ValueError(
+                "Unsupported freeze component: "
+                f"{item}. Supported values: audio_encoder, token_embedding"
+            )
+        if key not in normalized:
+            normalized.append(key)
+
+    for comp in normalized:
+        if comp == "audio_encoder":
+            module = model.thinker.audio_tower
+        else:
+            module = model.thinker.model.embed_tokens
+        for p in module.parameters():
+            p.requires_grad = False
+
+    if normalized:
+        print(f"[freeze] Components frozen: {', '.join(normalized)}")
+
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    pct = (100.0 * trainable / total) if total else 0.0
+    print(f"[params] trainable={trainable:,} / total={total:,} ({pct:.2f}%)")
+    return model
+
+
 def main():
     args_cli = parse_args()
 
@@ -349,6 +395,7 @@ def main():
     processor = asr_wrapper.processor
 
     model = enable_lora(model, model_args_conf)
+    model = apply_freeze_components(model, model_args_conf)
 
     patch_outer_forward(model)
     model.generation_config = GenerationConfig.from_model_config(model.config)
