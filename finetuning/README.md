@@ -20,17 +20,15 @@ To train LoRA on both **audio encoder + LLM backbone**, change:
 In `model_args`, you can freeze selected modules during training:
 
 ```json
-"freeze_components": ["audio_encoder"]
+"freeze_components": ["thinker.audio_tower"]
 ```
 
-Supported values:
-- `audio_encoder`
-- `token_embedding`
+Please provide exact names from `model.named_modules()` or `model.named_parameters()`.
 
 You can freeze both at once:
 
 ```json
-"freeze_components": ["audio_encoder", "token_embedding"]
+"freeze_components": ["thinker.audio_tower", "thinker.model.embed_tokens"]
 ```
 
 ### 1) Setup
