@@ -7,7 +7,7 @@ This script fine-tunes **Qwen3-ASR** using JSONL audio-text pairs. It supports m
 You can use the ready-made LoRA config example:
 
 - `conf/macslu_qwen3_asr_17b_lora_llm.json` (LoRA on **LLM backbone only**)
-- `conf/macslu_qwen3_asr_06b_fta.json` (full fine-tuning while freezing **audio encoder + token embedding** by exact module names)
+- `conf/macslu_qwen3_asr_06b_fta.json` (full fine-tuning while freezing **audio encoder + token embedding**)
 
 To train LoRA on both **audio encoder + LLM backbone**, change:
 
