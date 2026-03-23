@@ -297,6 +297,47 @@ def enable_lora(model, model_args_conf: Dict[str, Any]):
     return model
 
 
+def apply_freeze_components(model, model_args_conf: Dict[str, Any]):
+    freeze_components = model_args_conf.get("freeze_components", [])
+    if isinstance(freeze_components, str):
+        freeze_components = [freeze_components.strip()] if freeze_components.strip() else []
+    elif not isinstance(freeze_components, list):
+        raise ValueError("model_args.freeze_components must be a string or a list of strings")
+    freeze_components = [str(x).strip() for x in freeze_components if str(x).strip()]
+
+    named_modules = dict(model.named_modules())
+    named_parameters = dict(model.named_parameters())
+
+    frozen_items = []
+    for name in freeze_components:
+        if name in named_modules:
+            for p in named_modules[name].parameters():
+                p.requires_grad = False
+            frozen_items.append(f"module:{name}")
+            continue
+
+        if name in named_parameters:
+            named_parameters[name].requires_grad = False
+            frozen_items.append(f"param:{name}")
+            continue
+
+        available_modules = ", ".join(sorted(k for k in named_modules.keys() if k)[:20])
+        raise ValueError(
+            f"Unknown freeze component: {name}. "
+            "Please provide an exact module name or parameter name from model.named_modules()/model.named_parameters(). "
+            f"Example modules: {available_modules}"
+        )
+
+    if frozen_items:
+        print(f"[freeze] Frozen items: {', '.join(frozen_items)}")
+
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    pct = (100.0 * trainable / total) if total else 0.0
+    print(f"[params] trainable={trainable:,} / total={total:,} ({pct:.2f}%)")
+    return model
+
+
 def main():
     args_cli = parse_args()
 
@@ -349,6 +390,7 @@ def main():
     processor = asr_wrapper.processor
 
     model = enable_lora(model, model_args_conf)
+    model = apply_freeze_components(model, model_args_conf)
 
     patch_outer_forward(model)
     model.generation_config = GenerationConfig.from_model_config(model.config)
