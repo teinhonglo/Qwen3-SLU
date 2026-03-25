@@ -167,22 +167,7 @@ def get_noise_list(noise_wav_scp_filename: Path) -> Tuple[List[str], Dict[str, s
     return noise_utts, noise_wavs
 
 
-def load_reco2dur(path: Path) -> Dict[str, float]:
-    result = {}
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            toks = line.strip().split()
-            if len(toks) < 2:
-                continue
-            result[toks[0]] = float(toks[1])
-    return result
-
-
-def maybe_load_noise_durations(noise_dir: Path, noise_wavs: Dict[str, str]) -> Dict[str, float]:
-    reco2dur = noise_dir / "reco2dur"
-    if reco2dur.exists():
-        return load_reco2dur(reco2dur)
-
+def compute_noise_durations(noise_wavs: Dict[str, str]) -> Dict[str, float]:
     noise2dur = {}
     for utt, wav_spec in noise_wavs.items():
         if wav_spec.endswith("|"):
@@ -228,7 +213,7 @@ def augment_wav(
             if noise_utt not in noise2dur:
                 raise ValueError(
                     f"Missing duration for foreground noise utt '{noise_utt}'. "
-                    f"Provide {Path(noise).parent / 'reco2dur'} or use file-path wav entries."
+                    "Only direct .wav file paths in wav.scp are supported for foreground duration calculation."
                 )
             snr = random.choice(fg_snr_opts)
             snrs.append(snr)
@@ -325,7 +310,7 @@ def main():
         prompt = Path(args.prompt_file).read_text(encoding="utf-8").strip()
 
     noise_wavs: Dict[str, str] = {}
-    noise_reco2dur: Dict[str, float] = {}
+    noise_durations: Dict[str, float] = {}
     bg_noise_utts: List[str] = []
     fg_noise_utts: List[str] = []
 
@@ -334,14 +319,14 @@ def main():
         bg_noise_wav_scp = bg_noise_dir / "wav.scp"
         bg_noise_utts, bg_noise_wavs = get_noise_list(bg_noise_wav_scp)
         noise_wavs.update(bg_noise_wavs)
-        noise_reco2dur.update(maybe_load_noise_durations(bg_noise_dir, bg_noise_wavs))
+        noise_durations.update(compute_noise_durations(bg_noise_wavs))
 
     if args.fg_noise_dir:
         fg_noise_dir = Path(args.fg_noise_dir)
         fg_noise_wav_scp = fg_noise_dir / "wav.scp"
         fg_noise_utts, fg_noise_wavs = get_noise_list(fg_noise_wav_scp)
         noise_wavs.update(fg_noise_wavs)
-        noise_reco2dur.update(maybe_load_noise_durations(fg_noise_dir, fg_noise_wavs))
+        noise_durations.update(compute_noise_durations(fg_noise_wavs))
 
     random.seed(args.random_seed)
 
@@ -381,7 +366,7 @@ def main():
                     fg_noise_utts=fg_noise_utts,
                     bg_noise_utts=bg_noise_utts,
                     noise_wavs=noise_wavs,
-                    noise2dur=noise_reco2dur,
+                    noise2dur=noise_durations,
                     interval=args.fg_interval,
                     num_opts=num_bg_noises,
                 )
