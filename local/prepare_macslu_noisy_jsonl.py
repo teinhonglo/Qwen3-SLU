@@ -253,7 +253,6 @@ def augment_wav(
         + " - - |"
     )
 
-
 def materialize_noisy_audio(clean_wav_path: Path, noisy_cmd: str, output_wav_path: Path) -> Path:
     output_wav_path.parent.mkdir(parents=True, exist_ok=True)
     if output_wav_path.exists():
@@ -270,7 +269,6 @@ def materialize_noisy_audio(clean_wav_path: Path, noisy_cmd: str, output_wav_pat
 
 def shlex_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
-
 
 def to_semantics_text(ori_semantics):
     results = []
@@ -390,6 +388,7 @@ def main():
                     interval=args.fg_interval,
                     num_opts=num_bg_noises,
                 )
+                
                 output_wav_path = materialize_noisy_audio(
                     clean_wav_path=wav_path,
                     noisy_cmd=noisy_audio,
