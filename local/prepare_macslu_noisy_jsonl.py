@@ -6,6 +6,7 @@ import json
 import os
 import random
 import shutil
+import subprocess
 import tarfile
 import wave
 from pathlib import Path
@@ -252,6 +253,22 @@ def augment_wav(
         + " - - |"
     )
 
+def materialize_noisy_audio(clean_wav_path: Path, noisy_cmd: str, output_wav_path: Path) -> Path:
+    output_wav_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_wav_path.exists():
+        return output_wav_path
+
+    if noisy_cmd == str(clean_wav_path):
+        shutil.copy2(clean_wav_path, output_wav_path)
+        return output_wav_path
+
+    cmd = f"{noisy_cmd} cat > {shlex_quote(str(output_wav_path))}"
+    subprocess.run(["bash", "-lc", cmd], check=True)
+    return output_wav_path
+
+
+def shlex_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
 
 def to_semantics_text(ori_semantics):
     results = []
@@ -342,6 +359,7 @@ def main():
 
         split_out_dir = jsonl_root / f"{split}_snr{primary_snr}"
         out_path = split_out_dir / f"{split}.jsonl"
+        wav_out_dir = split_out_dir / "wavs"
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         missing = []
@@ -370,13 +388,19 @@ def main():
                     interval=args.fg_interval,
                     num_opts=num_bg_noises,
                 )
+                
+                output_wav_path = materialize_noisy_audio(
+                    clean_wav_path=wav_path,
+                    noisy_cmd=noisy_audio,
+                    output_wav_path=(wav_out_dir / f"{rid}.wav"),
+                )
 
                 query = r.get("query", "")
                 semantics_text, semantics = to_semantics_text(r.get("semantics", []))
                 row = {
                     "text_id": rid,
                     "query": query,
-                    "audio": noisy_audio,
+                    "audio": str(output_wav_path.resolve()),
                     "prompt": prompt,
                     "text": f"language None<asr_text>{query}<slu>{semantics_text}",
                     "semantics": semantics,
