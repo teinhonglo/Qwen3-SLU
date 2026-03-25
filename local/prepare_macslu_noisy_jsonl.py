@@ -150,6 +150,12 @@ def wav_duration_seconds(wav_path: Path) -> float:
         raise ValueError(f"Invalid sample rate in wav: {wav_path}")
     return frames / fr
 
+def wav_sample_rate(wav_path: Path) -> int:
+    with wave.open(str(wav_path), "rb") as wf:
+        sample_rate = wf.getframerate()
+    if sample_rate <= 0:
+        raise ValueError(f"Invalid sample rate in wav: {wav_path}")
+    return sample_rate
 
 def get_noise_list(noise_wav_scp_filename: Path) -> Tuple[List[str], Dict[str, str]]:
     noise_wavs = {}
@@ -182,6 +188,7 @@ def compute_noise_durations(noise_wavs: Dict[str, str]) -> Dict[str, float]:
 def augment_wav(
     wav: str,
     dur: float,
+    sample_rate: int,
     fg_snr_opts: List[int],
     bg_snr_opts: List[int],
     fg_noise_utts: List[str],
@@ -197,11 +204,21 @@ def augment_wav(
     noises = []
     start_times = []
 
+    def maybe_resample_noise_spec(noise_spec: str) -> str:
+        noise_spec = noise_spec.strip()
+        if noise_spec.endswith("|"):
+            return noise_spec
+        noise_path = Path(noise_spec)
+        if noise_path.suffix.lower() == ".wav":
+            return f"sox {shlex_quote(str(noise_path))} -t wav -r {sample_rate} - |"
+        return noise_spec
+
     if bg_noise_utts:
         num = random.choice(num_opts)
         for _ in range(num):
             noise_utt = random.choice(bg_noise_utts)
-            noise = f'wav-reverberate --duration={dur_str} "{noise_wavs[noise_utt]}" - |'
+            noise_spec = maybe_resample_noise_spec(noise_wavs[noise_utt])
+            noise = f'wav-reverberate --duration={dur_str} "{noise_spec}" - |'
             snr = random.choice(bg_snr_opts)
             snrs.append(snr)
             start_times.append(0)
@@ -210,7 +227,7 @@ def augment_wav(
     if fg_noise_utts:
         while tot_noise_dur < dur:
             noise_utt = random.choice(fg_noise_utts)
-            noise = noise_wavs[noise_utt]
+            noise = maybe_resample_noise_spec(noise_wavs[noise_utt])
             if noise_utt not in noise2dur:
                 raise ValueError(
                     f"Missing duration for foreground noise utt '{noise_utt}'. "
@@ -376,9 +393,11 @@ def main():
 
                 wav_spec = str(wav_path)
                 wav_dur = wav_duration_seconds(wav_path)
+                wav_sr = wav_sample_rate(wav_path)
                 noisy_audio = augment_wav(
                     wav=wav_spec,
                     dur=wav_dur,
+                    sample_rate=wav_sr,
                     fg_snr_opts=fg_snrs,
                     bg_snr_opts=bg_snrs,
                     fg_noise_utts=fg_noise_utts,
