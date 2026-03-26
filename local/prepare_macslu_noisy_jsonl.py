@@ -279,7 +279,10 @@ def materialize_noisy_audio(clean_wav_path: Path, noisy_cmd: str, output_wav_pat
         shutil.copy2(clean_wav_path, output_wav_path)
         return output_wav_path
 
-    cmd = f"{noisy_cmd} cat > {shlex_quote(str(output_wav_path))}"
+    cmd = (
+        f"{noisy_cmd} "
+        f"sox -t wav - -t wav {shlex_quote(str(output_wav_path))}"
+    )
     subprocess.run(["bash", "-lc", cmd], check=True)
     return output_wav_path
 
@@ -407,7 +410,7 @@ def main():
                     interval=args.fg_interval,
                     num_opts=num_bg_noises,
                 )
-                
+
                 output_wav_path = materialize_noisy_audio(
                     clean_wav_path=wav_path,
                     noisy_cmd=noisy_audio,
