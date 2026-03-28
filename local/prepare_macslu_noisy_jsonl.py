@@ -376,10 +376,9 @@ def main():
         wav_index = build_wav_index(split_audio_dir)
         if not wav_index:
             raise RuntimeError(f"No wav files found in {split_audio_dir}")
-
-        split_out_dir = jsonl_root / f"{split}_snr{primary_snr}"
-        out_path = split_out_dir / f"{split}.jsonl"
-        wav_out_dir = split_out_dir / "wavs"
+            
+        out_path = jsonl_root / f"{split}_snr{primary_snr}.jsonl"
+        wav_out_dir = jsonl_root / f"wavs_snr{primary_snr}"
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         missing = []
@@ -389,6 +388,7 @@ def main():
                 rid = f"id_{str(r.get('id', i))}"
 
                 wav_path = resolve_wav(rid, wav_index)
+                
                 if wav_path is None:
                     print(f"ID {rid} NOT found")
                     missing.append(rid)
@@ -416,15 +416,29 @@ def main():
                     noisy_cmd=noisy_audio,
                     output_wav_path=(wav_out_dir / f"{rid}.wav"),
                 )
-
                 query = r.get("query", "")
-                semantics_text, semantics = to_semantics_text(r.get("semantics", []))
+                semantics = r.get("semantics", [])
+
+                '''
+                # 訓練時跳過
+                if len(semantics) == 0 and split == "train":
+                    continue
+                '''
+                
+                semantics_text, semantics = to_semantics_text(semantics)
+                
+                payload = {
+                    "asr_text": query,
+                    "semantics": semantics_text
+                }
+                
+                payload = json.dumps(payload, ensure_ascii=False)
                 row = {
                     "text_id": rid,
                     "query": query,
                     "audio": str(output_wav_path.resolve()),
                     "prompt": prompt,
-                    "text": f"language None<asr_text>{query}<slu>{semantics_text}",
+                    "text": f"language None<asr_text>{payload}",
                     "semantics": semantics,
                 }
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")

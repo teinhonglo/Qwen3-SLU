@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-A gradio demo for Qwen3 ASR models.
+A gradio demo for Qwen3 SLU models.
 """
 
 import argparse
@@ -30,6 +30,18 @@ import torch
 from qwen_asr import Qwen3ASRModel
 from scipy.io.wavfile import write as wav_write
 
+LOCAL_SAMPLE_AUDIO_MAP = {
+    "sample_1": "/share/nas167/teinhonglo/github_repo/Qwen3-SLU/data/macslu/audio/test/audio_test/id_26.wav",
+    "sample_2": "/share/nas167/teinhonglo/github_repo/Qwen3-SLU/data/macslu/audio/dev/audio_dev/id_19152.wav"
+}
+
+from opencc import OpenCC
+cc = OpenCC("s2tw")
+def to_traditional_text(text: Optional[str]) -> str:
+    try:
+        return cc.convert(text)
+    except:
+        return text
 
 def _title_case_display(s: str) -> str:
     s = (s or "").strip()
@@ -125,7 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="qwen-asr-demo",
         description=(
-            "Launch a Gradio demo for Qwen3 ASR models (Transformers / vLLM).\n\n"
+            "Launch a Gradio demo for Qwen3 SLU models (Transformers / vLLM).\n\n"
             "Examples:\n"
             "  qwen-asr-demo --asr-checkpoint Qwen/Qwen3-ASR-1.7B\n"
             "  qwen-asr-demo --asr-checkpoint Qwen/Qwen3-ASR-1.7B --aligner-checkpoint Qwen/Qwen3-ForcedAligner-0.6B\n"
@@ -363,55 +375,64 @@ def build_demo(
     with gr.Blocks(theme=theme, css=css) as demo:
         gr.Markdown(
             f"""
-# Qwen3 ASR Demo
-**Backend:** `{backend}`  
-**ASR Checkpoint:** `{asr_ckpt}`  
-**Forced Aligner:** `{aligner_ckpt if aligner_ckpt else "(none)"}`  
+# Qwen3 SLU Demo
+**Backend:** `{backend}`
+**SLU Checkpoint:** `{asr_ckpt}`
+**Forced Aligner:** `{aligner_ckpt if aligner_ckpt else "(none)"}` 
 """
         )
 
         with gr.Row():
-            with gr.Column(scale=3):
+            with gr.Column(scale=2):
+                prompt_state_raw = gr.State(value=default_prompt)
+
                 prompt_in = gr.TextArea(
                     label="Prompt",
-                    value=default_prompt,
+                    value=to_traditional_text(default_prompt),
                     lines=6,
+                    interactive=False,
+                )
+                audio_in = gr.Audio(label="Audio Input", type="numpy")
+                sample_dropdown = gr.Dropdown(
+                    label="Sample Audio",
+                    choices=list(LOCAL_SAMPLE_AUDIO_MAP.keys()),
+                    value=None,
                     interactive=True,
                 )
-                audio_in = gr.Audio(label="Audio Input (上传音频)", type="numpy")
                 lang_in = gr.Dropdown(
-                    label="Language (语种)",
+                    label="Language",
                     choices=lang_choices,
                     value="Auto",
                     interactive=True,
                 )
                 if has_aligner:
                     ts_in = gr.Checkbox(
-                        label="Return Timestamps (是否返回时间戳)",
+                        label="Return Timestamps",
                         value=True,
                     )
                 else:
                     ts_in = gr.State(False)
 
-                btn = gr.Button("Transcribe (识别)", variant="primary")
+                btn = gr.Button("Transcribe", variant="primary")
 
             with gr.Column(scale=2):
                 out_lang = gr.Textbox(label="Detected Language", lines=1)
                 out_text = gr.Textbox(label="Result Text", lines=12)
 
             if has_aligner:
-                with gr.Column(scale=3):
-                    out_ts = gr.JSON(label="Timestamps（时间戳结果）")
-                    viz_btn = gr.Button("Visualize Timestamps (可视化时间戳)", variant="secondary")
+                with gr.Column(scale=2):
+                    out_ts = gr.JSON(label="Timestamps")
+                    viz_btn = gr.Button("Visualize Timestamps", variant="secondary")
             else:
-                with gr.Column(scale=3):
-                    out_ts = gr.State(None)
-                    viz_btn = gr.State(None)
+                #with gr.Column(scale=2):
+                #    out_ts = gr.State(None)
+                #    viz_btn = gr.State(None)
+                pass
 
         # Put the visualization panel below the three columns
         if has_aligner:
             with gr.Row():
-                out_ts_html = gr.HTML(label="Timestamps Visualization (时间戳可视化结果)")
+                out_ts_html = gr.HTML(label="Timestamps Visualization")
         else:
             out_ts_html = gr.State("")
 
@@ -437,7 +458,8 @@ def build_demo(
                 )
 
             r = results[0]
-
+            raw_text = getattr(r, "text", "") or ""
+            display_text = to_traditional_text(raw_text)
             if has_aligner:
                 ts_payload = None
                 if return_ts:
@@ -451,24 +473,38 @@ def build_demo(
                     ]
                 return (
                     getattr(r, "language", "") or "",
-                    getattr(r, "text", "") or "",
+                    display_text,
                     gr.update(value=ts_payload) if return_ts else gr.update(value=None),
                     gr.update(value=""),  # clear html on each transcribe
                 )
             else:
                 return (
                     getattr(r, "language", "") or "",
-                    getattr(r, "text", "") or "",
+                    display_text,
                 )
 
         def visualize(audio_upload: Any, timestamps_json: Any):
             return _make_timestamp_html(audio_upload, timestamps_json)
+        
+        def load_sample_audio(selected_name: Optional[str]):
+            if not selected_name:
+                return gr.update()
+            audio_path = LOCAL_SAMPLE_AUDIO_MAP.get(selected_name)
+            if not audio_path or not os.path.isfile(audio_path):
+                return gr.update()
+            return gr.update(value=audio_path)
+
+        sample_dropdown.change(
+            load_sample_audio,
+            inputs=[sample_dropdown],
+            outputs=[audio_in],
+        )
 
         if has_aligner:
             btn.click(
                 run,
-                inputs=[audio_in, lang_in, ts_in],
-                outputs=[out_lang, out_text, out_ts, out_ts_html, prompt_in],
+                inputs=[audio_in, lang_in, ts_in, prompt_state_raw],
+                outputs=[out_lang, out_text, out_ts, out_ts_html],
             )
             viz_btn.click(
                 visualize,
@@ -478,7 +514,7 @@ def build_demo(
         else:
             btn.click(
                 run,
-                inputs=[audio_in, lang_in, ts_in, prompt_in],
+                inputs=[audio_in, lang_in, ts_in, prompt_state_raw],
                 outputs=[out_lang, out_text],
             )
 
@@ -522,8 +558,14 @@ def main(argv=None) -> int:
             forced_aligner_kwargs=forced_aligner_kwargs,
             **backend_kwargs,
         )
-
-    demo = build_demo(asr, asr_ckpt, backend, aligner_ckpt=aligner_ckpt)
+    
+    if os.path.exists(os.path.join(asr_ckpt, "prompt.txt")):
+        with open(os.path.join(asr_ckpt, "prompt.txt"), "r") as fn:
+           default_prompt = fn.read()
+    else:
+        default_prompt = ""
+        
+    demo = build_demo(asr, asr_ckpt, backend, aligner_ckpt=aligner_ckpt, default_prompt=default_prompt)
 
     launch_kwargs: Dict[str, Any] = dict(
         server_name=args.ip,
@@ -536,7 +578,8 @@ def main(argv=None) -> int:
     if args.ssl_keyfile is not None:
         launch_kwargs["ssl_keyfile"] = args.ssl_keyfile
 
-    demo.queue(default_concurrency_limit=int(args.concurrency)).launch(**launch_kwargs)
+    #demo.queue(default_concurrency_limit=int(args.concurrency)).launch(**launch_kwargs)
+    demo.launch(**launch_kwargs)
     return 0
 
 

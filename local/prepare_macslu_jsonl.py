@@ -198,10 +198,10 @@ def main():
 
         with out_path.open("w", encoding="utf-8") as f:
             for i, r in enumerate(records, start=1):
-                rid = f"id_{str(r.get("id", i))}"
+                rid = f"id_{str(r.get('id', i))}"
 
                 wav_path = resolve_wav(rid, wav_index)
-
+                
                 if wav_path is None:
                     print(f"ID {rid} NOT found")
                     missing.append(rid)
@@ -217,12 +217,19 @@ def main():
                 '''
                 
                 semantics_text, semantics = to_semantics_text(semantics)
+                
+                payload = {
+                    "asr_text": query,
+                    "semantics": semantics_text
+                }
+                
+                payload = json.dumps(payload, ensure_ascii=False)
                 row = {
                     "text_id": rid,
                     "query": query,
                     "audio": str(wav_path),
                     "prompt": prompt,
-                    "text": f"language None<asr_text>{query}<slu>{semantics_text}",
+                    "text": f"language None<asr_text>{payload}",
                     "semantics": semantics
                 }
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")

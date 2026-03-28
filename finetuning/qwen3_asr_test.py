@@ -103,7 +103,6 @@ def _extract_first_json_array(text: str) -> str:
     m = re.search(r"\[.*\]", text, flags=re.DOTALL)
     return m.group(0) if m else text
 
-
 def try_parse_semantics_list(text: str) -> List[Dict[str, Any]]:
     payload = _extract_first_json_array(text)
     try:
@@ -114,6 +113,43 @@ def try_parse_semantics_list(text: str) -> List[Dict[str, Any]]:
         pass
     return []
 
+def extract_payload_text(raw_text: str) -> str:
+    """
+    Example:
+        language English<asr_text>{"content": 8, "vocabulary":4,"pronunciation":2}
+    -> returns:
+        {"content": 8, "vocabulary":4,"pronunciation":2}
+    """
+    raw_text = (raw_text or "").strip()
+    m = re.match(r"^language\s+.+?<asr_text>(.*)$", raw_text, flags=re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    return raw_text
+
+def try_parse_score_dict(text: str) -> Dict[str, Any]:
+    """
+    Robustly parse score json from model output / label text.
+    """
+    payload = extract_payload_text(text)
+
+    try:
+        obj = json.loads(payload)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+
+    m = re.search(r"\{.*\}", payload, flags=re.DOTALL)
+    if m:
+        candidate = m.group(0)
+        try:
+            obj = json.loads(candidate)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+
+    return {}
 
 def infer_one(
     asr_wrapper,
@@ -122,7 +158,7 @@ def infer_one(
     sr: int = 16000,
     max_new_tokens: int = 256,
     do_sample: bool = False,
-    temperature: float = 1.0,
+    temperature: float = 0.0,
     top_p: float = 1.0,
 ) -> str:
     processor = asr_wrapper.processor
@@ -152,6 +188,7 @@ def infer_one(
         gen_kwargs["temperature"] = temperature
         gen_kwargs["top_p"] = top_p
 
+    model.eval()
     with torch.inference_mode():
         gen_out = model.generate(**inputs, **gen_kwargs)
 
@@ -274,11 +311,11 @@ def main():
         raise ValueError("Unable to load train_conf from exp_dir")
 
     training_args_conf, model_args_conf = train_conf
-    sr = int(training_args_conf.get("sr", 16000))
-    max_new_tokens = int(training_args_conf.get("max_new_tokens", 256))
-    do_sample = bool(training_args_conf.get("do_sample", False))
-    temperature = float(training_args_conf.get("temperature", 1.0))
-    top_p = float(training_args_conf.get("top_p", 1.0))
+    sr = int(model_args_conf.get("sr", 16000))
+    max_new_tokens = int(model_args_conf.get("max_new_tokens", 256))
+    do_sample = bool(model_args_conf.get("do_sample", False))
+    temperature = float(model_args_conf.get("temperature", 0.0))
+    top_p = float(model_args_conf.get("top_p", 1.0))
     dtype_str = str(model_args_conf.get("dtype", "auto"))
 
     model_path = args.exp_dir
@@ -305,7 +342,7 @@ def main():
         text_id = str(row.get("text_id", f"line{i}")).strip()
         audio_path = row.get("audio", "")
         prompt = row.get("prompt", "")
-        print(prompt)
+        #print(prompt)
         query = row.get("query", "")
 
         if not audio_path:
@@ -322,9 +359,9 @@ def main():
             temperature=temperature,
             top_p=top_p,
         )
-
+        '''
         if "<slu>" in pred_raw:
-            pred_query = pred_raw.split("<slu>")[0]
+            pred_query = pred_raw.split("<slu>")[0].split("<asr_text>")[1]
             pred_raw = pred_raw.split("<slu>")[1]
         else:
             pred_query = ""
@@ -335,6 +372,18 @@ def main():
             "pred_query": pred_query,
             "pred_raw": pred_raw,
             "pred_semantics": try_parse_semantics_list(pred_raw),
+        })
+        '''
+        pred_json = try_parse_score_dict(pred_raw)
+        pred_query = pred_json["asr_text"]
+        pred_semantics = json.loads(pred_json["semantics"])
+
+        rows_out.append({
+            "text_id": text_id,
+            "query": query,
+            "pred_query": pred_query,
+            "pred_raw": pred_raw,
+            "pred_semantics": pred_semantics
         })
 
         print(f"[{i}/{len(rows)}] done: {text_id}")

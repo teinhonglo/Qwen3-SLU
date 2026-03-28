@@ -155,8 +155,6 @@ class DataCollatorForQwen3ASRFinetuning:
         return full_inputs
 
 
-
-
 def extract_default_prompt(dataset) -> str:
     prompts = []
     for ex in dataset:
@@ -228,7 +226,7 @@ def parse_args():
                    help="JSON config path with format: [training_args, model_args]")
     p.add_argument('--seed', type=int, default=66)
     p.add_argument("--train_file", type=str, default="train.jsonl")
-    p.add_argument("--eval_file", type=str, default="")
+    p.add_argument("--eval_file", type=str, default="dev.jsonl")
     p.add_argument("--output_dir", type=str, default="./qwen3-asr-finetuning-out")
 
     # Resume
@@ -252,90 +250,6 @@ def load_train_conf(train_conf_path: str) -> Optional[List[Dict[str, Any]]]:
     if not isinstance(training_args, dict) or not isinstance(model_args, dict):
         raise ValueError("train_conf entries must both be dictionaries")
     return [training_args, model_args]
-
-
-def enable_lora(model, model_args_conf: Dict[str, Any]):
-    finetune_type = str(model_args_conf.get("finetune_type", "full")).strip().lower()
-    if finetune_type == "full":
-        return model
-    if finetune_type != "lora":
-        raise ValueError(
-            "model_args.finetune_type must be one of: ['full', 'lora']"
-        )
-
-    try:
-        from peft import LoraConfig, TaskType, get_peft_model
-    except ImportError as e:
-        raise ImportError(
-            "LoRA finetuning requires `peft`. Please install it first, e.g. `pip install peft`."
-        ) from e
-
-    lora_mode = str(model_args_conf.get("lora_mode", "llm_backbone")).strip().lower()
-    if lora_mode not in {"llm_backbone", "audio_encoder_llm_backbone"}:
-        raise ValueError(
-            "model_args.lora_mode must be one of: ['llm_backbone', 'audio_encoder_llm_backbone']"
-        )
-
-    lora_r = int(model_args_conf.get("lora_r", 8))
-    lora_alpha = int(model_args_conf.get("lora_alpha", 16))
-    lora_dropout = float(model_args_conf.get("lora_dropout", 0.05))
-    lora_bias = str(model_args_conf.get("lora_bias", "none"))
-
-    lora_cfg = LoraConfig(
-        task_type=TaskType.FEATURE_EXTRACTION,
-        r=lora_r,
-        lora_alpha=lora_alpha,
-        lora_dropout=lora_dropout,
-        bias=lora_bias,
-        target_modules="all-linear",
-        modules_to_save=["lm_head"],
-        exclude_modules=["audio_tower"] if lora_mode == "llm_backbone" else None,
-    )
-
-    model = get_peft_model(model, lora_cfg)
-    model.print_trainable_parameters()
-    return model
-
-
-def apply_freeze_components(model, model_args_conf: Dict[str, Any]):
-    freeze_components = model_args_conf.get("freeze_components", [])
-    if isinstance(freeze_components, str):
-        freeze_components = [freeze_components.strip()] if freeze_components.strip() else []
-    elif not isinstance(freeze_components, list):
-        raise ValueError("model_args.freeze_components must be a string or a list of strings")
-    freeze_components = [str(x).strip() for x in freeze_components if str(x).strip()]
-
-    named_modules = dict(model.named_modules())
-    named_parameters = dict(model.named_parameters())
-
-    frozen_items = []
-    for name in freeze_components:
-        if name in named_modules:
-            for p in named_modules[name].parameters():
-                p.requires_grad = False
-            frozen_items.append(f"module:{name}")
-            continue
-
-        if name in named_parameters:
-            named_parameters[name].requires_grad = False
-            frozen_items.append(f"param:{name}")
-            continue
-
-        available_modules = ", ".join(sorted(k for k in named_modules.keys() if k)[:20])
-        raise ValueError(
-            f"Unknown freeze component: {name}. "
-            "Please provide an exact module name or parameter name from model.named_modules()/model.named_parameters(). "
-            f"Example modules: {available_modules}"
-        )
-
-    if frozen_items:
-        print(f"[freeze] Frozen items: {', '.join(frozen_items)}")
-
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total = sum(p.numel() for p in model.parameters())
-    pct = (100.0 * trainable / total) if total else 0.0
-    print(f"[params] trainable={trainable:,} / total={total:,} ({pct:.2f}%)")
-    return model
 
 
 def main():
@@ -364,21 +278,7 @@ def main():
     if not model_path:
         raise KeyError("model_args.model_path is required in train_conf")
 
-    sr = int(training_args_conf.get("sr", 16000))
-    batch_size = int(training_args_conf.get("per_device_train_batch_size", 32))
-    grad_acc = int(training_args_conf.get("gradient_accumulation_steps", 4))
-    learning_rate = float(training_args_conf.get("learning_rate", 2e-5))
-    num_train_epochs = float(training_args_conf.get("num_train_epochs", 1))
-    logging_steps = int(training_args_conf.get("logging_steps", 10))
-    lr_scheduler_type = training_args_conf.get("lr_scheduler_type", "linear")
-    warmup_ratio = float(training_args_conf.get("warmup_ratio", 0.02))
-    num_workers = int(training_args_conf.get("dataloader_num_workers", 4))
-    pin_memory = bool(training_args_conf.get("dataloader_pin_memory", True))
-    persistent_workers = bool(training_args_conf.get("dataloader_persistent_workers", True))
-    prefetch_factor = int(training_args_conf.get("dataloader_prefetch_factor", 2))
-    save_strategy = training_args_conf.get("save_strategy", "steps")
-    save_steps = int(training_args_conf.get("save_steps", 200))
-    save_total_limit = int(training_args_conf.get("save_total_limit", 5))
+    sr = int(model_args_conf.get("sr", 16000))
 
     use_bf16 = torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8
     asr_wrapper = Qwen3ASRModel.from_pretrained(
@@ -389,8 +289,9 @@ def main():
     model = asr_wrapper.model
     processor = asr_wrapper.processor
 
-    model = enable_lora(model, model_args_conf)
-    model = apply_freeze_components(model, model_args_conf)
+    if training_args_conf["gradient_checkpointing"]:
+        model.config.use_cache = False
+        model.gradient_checkpointing_enable()
 
     patch_outer_forward(model)
     model.generation_config = GenerationConfig.from_model_config(model.config)
@@ -399,7 +300,7 @@ def main():
         "json",
         data_files={
             "train": args_cli.train_file,
-            **({"validation": args_cli.eval_file} if args_cli.eval_file else {}),
+            "validation": args_cli.eval_file,
         },
     )
     ds = raw_ds.map(make_preprocess_fn_prefix_only(processor), num_proc=1)
@@ -416,36 +317,17 @@ def main():
 
     training_args = TrainingArguments(
         output_dir=args_cli.output_dir,
-        per_device_train_batch_size=batch_size,
-        gradient_accumulation_steps=grad_acc,
-        learning_rate=learning_rate,
-        num_train_epochs=num_train_epochs,
-        logging_steps=logging_steps,
-        lr_scheduler_type=lr_scheduler_type,
-        warmup_ratio=warmup_ratio,
-        dataloader_num_workers=num_workers,
-        dataloader_pin_memory=pin_memory,
-        dataloader_persistent_workers=persistent_workers,
-        dataloader_prefetch_factor=prefetch_factor if num_workers > 0 else None,
-        save_strategy=save_strategy,
-        save_steps=save_steps,
-        save_total_limit=save_total_limit,
-        save_safetensors=True,
-        eval_strategy="steps",
-        eval_steps=save_steps,
-        do_eval=bool(args_cli.eval_file),
+        do_eval=True,
         bf16=use_bf16,
         fp16=not use_bf16,
-        ddp_find_unused_parameters=False,
-        remove_unused_columns=False,
-        report_to="none",
+        **training_args_conf
     )
 
     trainer = CastFloatInputsTrainer(
         model=model,
         args=training_args,
         train_dataset=ds["train"],
-        eval_dataset=ds.get("validation", None),
+        eval_dataset=ds["validation"],
         data_collator=collator,
         tokenizer=processor.tokenizer,
         callbacks=[

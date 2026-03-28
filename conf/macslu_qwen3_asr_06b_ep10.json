@@ -1,14 +1,15 @@
 [
     {
-        "sr": 16000,
         "per_device_train_batch_size": 4,
         "per_device_eval_batch_size": 4,
         "gradient_accumulation_steps": 32,
         "learning_rate": 2e-5,
-        "num_train_epochs": 3,
+        "num_train_epochs": 10,
         "warmup_ratio": 0.02,
         "save_strategy": "steps",
         "save_steps": 200,
+        "eval_strategy": "steps",
+        "eval_steps": 200,
         "save_total_limit": 5,
         "logging_steps": 10,
         "dataloader_num_workers": 2,
@@ -16,19 +17,20 @@
         "dataloader_persistent_workers": true,
         "dataloader_prefetch_factor": 2,
         "lr_scheduler_type": "linear",
-        "max_new_tokens": 256,
-        "do_sample": false,
-        "temperature": 1.0,
-        "top_p": 1.0
+        "save_safetensors": true,
+        "ddp_find_unused_parameters": false,
+        "remove_unused_columns": false,
+        "gradient_checkpointing": false,
+        "report_to": "none"
     },
     {
         "model_path": "Qwen/Qwen3-ASR-0.6B",
         "dtype": "auto",
-        "finetune_type": "lora",
-        "lora_mode": "llm_backbone",
-        "lora_r": 8,
-        "lora_alpha": 16,
-        "lora_dropout": 0.05,
-        "lora_bias": "none"
+        "sr": 16000,
+        "max_new_tokens": 256,
+        "do_sample": false,
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "freeze_components": []
     }
 ]
