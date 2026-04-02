@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 import librosa
 import torch
 from qwen_asr import Qwen3ASRModel
-
+from peft.peft_model import PeftModelForCausalLM
 
 _CKPT_RE = re.compile(r"^checkpoint-(\d+)$")
 
@@ -309,11 +309,31 @@ def main():
     dtype = resolve_dtype(dtype_str, args.device)
     jsonl_name = get_jsonl_name(args.input_jsonl)
 
-    asr_wrapper = Qwen3ASRModel.from_pretrained(
-        model_path,
-        dtype=dtype,
-        device_map=args.device,
-    )
+    # LoRA
+    lora_config = model_args_conf.get("lora_config", None)
+    if lora_config:
+        lora_type = model_args_conf.get("lora_type", "default")
+        print(f"LoRA Finetuning {lora_type}")
+        lora_path = model_path
+        model_path = model_args_conf["model_path"]
+
+        asr_wrapper = Qwen3ASRModel.from_pretrained(
+            model_path,
+            dtype=dtype,
+            device_map=args.device,
+        )
+        asr_wrapper.model = PeftModelForCausalLM.from_pretrained(
+            asr_wrapper.model,
+            lora_path,
+            torch_dtype=torch.bfloat16,
+        )
+    else:
+        print("Full Finetuning")
+        asr_wrapper = Qwen3ASRModel.from_pretrained(
+            model_path,
+            dtype=dtype,
+            device_map=args.device,
+        )
 
     rows = load_jsonl(args.input_jsonl)
     rows_out = []

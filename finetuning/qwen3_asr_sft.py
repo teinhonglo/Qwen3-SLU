@@ -28,7 +28,8 @@ from datasets import load_dataset
 from qwen_asr import Qwen3ASRModel
 from transformers import (GenerationConfig, Trainer, TrainerCallback,
                           TrainingArguments)
-
+from peft import LoraConfig, TaskType, get_peft_model
+from peft.peft_model import PeftModel
 
 def patch_outer_forward(model):
     cls = model.__class__
@@ -295,6 +296,24 @@ def main():
 
     patch_outer_forward(model)
     model.generation_config = GenerationConfig.from_model_config(model.config)
+
+    # LoRA
+    lora_config = model_args_conf.get("lora_config", None)
+    if lora_config:
+        lora_type = model_args_conf.get("lora_type", "default")
+        print(f"LoRA Finetuning {lora_type}")
+        for k,v in model.named_parameters():
+            print(k)
+        
+        peft_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            **lora_config
+        )
+        
+        model = get_peft_model(model, peft_config)
+        model.print_trainable_parameters()
+    else:
+        print("Full Finetuning")
 
     raw_ds = load_dataset(
         "json",
