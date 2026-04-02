@@ -44,6 +44,7 @@
             "lora_dropout": 0.1,
             "target_modules": "all-linear"
         },
-        "wandb_project": "qwen3-asr-finetuning"
+        "wandb_project": "qwen3-asr-finetuning",
+        "wandb_log_model": "false"
     }
 ]

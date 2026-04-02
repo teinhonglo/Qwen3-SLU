@@ -37,6 +37,7 @@
         "temperature": 1.0,
         "top_p": 1.0,
         "freeze_components": [],
-        "wandb_project": "qwen3-asr-finetuning"
+        "wandb_project": "qwen3-asr-finetuning",
+        "wandb_log_model": "false"
     }
 ]

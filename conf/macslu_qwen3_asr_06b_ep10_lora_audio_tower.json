@@ -44,6 +44,7 @@
             "lora_dropout": 0.1,
             "target_modules": "^thinker\\.audio_tower\\.(layers\\.\\d+\\.(self_attn\\.(q_proj|k_proj|v_proj|out_proj)|fc1|fc2)|proj1|proj2)$"
         },
-        "wandb_project": "qwen3-asr-finetuning"
+        "wandb_project": "qwen3-asr-finetuning",
+        "wandb_log_model": "false"
     }
 ]

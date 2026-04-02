@@ -363,6 +363,7 @@ def main():
     training_args_conf["run_name"] = os.path.basename(args_cli.output_dir)
     if model_args_conf.get("wandb_project"):
         os.environ["WANDB_PROJECT"] = model_args_conf["wandb_project"]
+    os.environ["WANDB_LOG_MODEL"] = str(model_args_conf.get("wandb_log_model", "false")).lower()
 
     training_args = TrainingArguments(
         output_dir=args_cli.output_dir,
