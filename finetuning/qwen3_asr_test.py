@@ -92,26 +92,6 @@ def unwrap_generate_output(gen_out):
     return gen_out
 
 
-def _extract_first_json_array(text: str) -> str:
-    text = (text or "").strip()
-    if not text:
-        return "[]"
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.startswith("json"):
-            text = text[4:].strip()
-    m = re.search(r"\[.*\]", text, flags=re.DOTALL)
-    return m.group(0) if m else text
-
-def try_parse_semantics_list(text: str) -> List[Dict[str, Any]]:
-    payload = _extract_first_json_array(text)
-    try:
-        obj = json.loads(payload)
-        if isinstance(obj, list):
-            return obj
-    except Exception:
-        pass
-    return []
 
 def extract_payload_text(raw_text: str) -> str:
     """
