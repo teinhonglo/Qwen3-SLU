@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 import numpy as np
@@ -219,6 +220,30 @@ class MakeEveryCheckpointInferableCallback(TrainerCallback):
         return control
 
 
+class SaveBestCheckpointCallback(TrainerCallback):
+    def __init__(self, output_dir: str, best_ckpt_name: str = "checkpoint-best"):
+        self.output_dir = output_dir
+        self.best_ckpt_dir = os.path.join(output_dir, best_ckpt_name)
+        self.last_best_src = None
+
+    def on_save(self, args: TrainingArguments, state, control, **kwargs):
+        best_src = getattr(state, "best_model_checkpoint", None)
+        if not best_src or not os.path.isdir(best_src):
+            return control
+
+        if best_src == self.last_best_src:
+            return control
+
+        if args.process_index == 0:
+            if os.path.exists(self.best_ckpt_dir):
+                shutil.rmtree(self.best_ckpt_dir)
+            shutil.copytree(best_src, self.best_ckpt_dir)
+            print(f"[best] Saved best checkpoint from {best_src} to {self.best_ckpt_dir}")
+
+        self.last_best_src = best_src
+        return control
+
+
 def parse_args():
     p = argparse.ArgumentParser("Qwen3-ASR Finetuning")
 
@@ -271,6 +296,7 @@ def main():
         raise ValueError("--train_conf is required")
 
     training_args_conf, model_args_conf = train_conf
+    training_args_conf = dict(training_args_conf)
 
     if not args_cli.train_file:
         raise ValueError("TRAIN_FILE is required (json/jsonl). Needs fields: audio, text, optional prompt")
@@ -334,6 +360,11 @@ def main():
 
     collator = DataCollatorForQwen3ASRFinetuning(processor=processor, sampling_rate=sr)
 
+    training_args_conf["run_name"] = os.path.basename(args_cli.output_dir)
+    if model_args_conf.get("wandb_project"):
+        os.environ["WANDB_PROJECT"] = model_args_conf["wandb_project"]
+    os.environ["WANDB_LOG_MODEL"] = str(model_args_conf.get("wandb_log_model", "false")).lower()
+
     training_args = TrainingArguments(
         output_dir=args_cli.output_dir,
         do_eval=True,
@@ -354,7 +385,8 @@ def main():
                 processor=processor,
                 model=model,
                 default_prompt=default_prompt,
-            )
+            ),
+            SaveBestCheckpointCallback(output_dir=args_cli.output_dir),
         ],
     )
 
