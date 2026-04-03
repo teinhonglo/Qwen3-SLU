@@ -219,29 +219,36 @@ class MakeEveryCheckpointInferableCallback(TrainerCallback):
         self._save_infer_files(ckpt_dir)
         return control
 
+def save_best_checkpoint(
+    best_src: str,
+    output_dir: str,
+    processor=None,
+    model=None,
+    default_prompt: str = "",
+    best_ckpt_name: str = "checkpoint-best",
+):
+    if not best_src or not os.path.isdir(best_src):
+        print(
+            "[best] checkpoint-best not created: no best_model_checkpoint was selected. "
+            "Please make sure evaluation runs and load_best_model_at_end=true."
+        )
+        return
 
-class SaveBestCheckpointCallback(TrainerCallback):
-    def __init__(self, output_dir: str, best_ckpt_name: str = "checkpoint-best"):
-        self.output_dir = output_dir
-        self.best_ckpt_dir = os.path.join(output_dir, best_ckpt_name)
-        self.last_best_src = None
+    best_ckpt_dir = os.path.join(output_dir, best_ckpt_name)
+    if os.path.exists(best_ckpt_dir):
+        shutil.rmtree(best_ckpt_dir)
+    shutil.copytree(best_src, best_ckpt_dir)
 
-    def on_save(self, args: TrainingArguments, state, control, **kwargs):
-        best_src = getattr(state, "best_model_checkpoint", None)
-        if not best_src or not os.path.isdir(best_src):
-            return control
+    if processor is not None:
+        processor.save_pretrained(best_ckpt_dir)
+        if hasattr(processor, "tokenizer") and processor.tokenizer is not None:
+            processor.tokenizer.save_pretrained(best_ckpt_dir)
 
-        if best_src == self.last_best_src:
-            return control
+    if model is not None and getattr(model, "generation_config", None) is not None:
+        model.generation_config.save_pretrained(best_ckpt_dir)
 
-        if args.process_index == 0:
-            if os.path.exists(self.best_ckpt_dir):
-                shutil.rmtree(self.best_ckpt_dir)
-            shutil.copytree(best_src, self.best_ckpt_dir)
-            print(f"[best] Saved best checkpoint from {best_src} to {self.best_ckpt_dir}")
-
-        self.last_best_src = best_src
-        return control
+    save_prompt_txt(best_ckpt_dir, default_prompt)
+    print(f"[best] Saved best checkpoint from {best_src} to {best_ckpt_dir}")
 
 
 def parse_args():
@@ -261,7 +268,6 @@ def parse_args():
 
     return p.parse_args()
 
-
 def load_train_conf(train_conf_path: str) -> Optional[List[Dict[str, Any]]]:
     if not train_conf_path:
         return None
@@ -276,7 +282,6 @@ def load_train_conf(train_conf_path: str) -> Optional[List[Dict[str, Any]]]:
     if not isinstance(training_args, dict) or not isinstance(model_args, dict):
         raise ValueError("train_conf entries must both be dictionaries")
     return [training_args, model_args]
-
 
 def main():
     args_cli = parse_args()
@@ -328,8 +333,6 @@ def main():
     if lora_config:
         lora_type = model_args_conf.get("lora_type", "default")
         print(f"LoRA Finetuning {lora_type}")
-        for k,v in model.named_parameters():
-            print(k)
         
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
@@ -337,7 +340,9 @@ def main():
         )
         
         model = get_peft_model(model, peft_config)
+        print("="*100)
         model.print_trainable_parameters()
+        print("="*100)
     else:
         print("Full Finetuning")
 
@@ -386,7 +391,6 @@ def main():
                 model=model,
                 default_prompt=default_prompt,
             ),
-            SaveBestCheckpointCallback(output_dir=args_cli.output_dir),
         ],
     )
 
@@ -406,7 +410,15 @@ def main():
         model.generation_config.save_pretrained(training_args.output_dir)
 
     if trainer.args.process_index == 0:
+        save_best_checkpoint(
+            best_src=getattr(trainer.state, "best_model_checkpoint", None),
+            output_dir=training_args.output_dir,
+            processor=processor,
+            model=model,
+            default_prompt=default_prompt,
+        )
         save_prompt_txt(training_args.output_dir, default_prompt)
+
 
     resume_from = (args_cli.resume_from or "").strip()
     if not resume_from and args_cli.resume == 1:

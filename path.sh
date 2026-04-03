@@ -1,6 +1,6 @@
 export PYTHONNOUSERSITE=1
-export WANDB_DISABLED=true
-export WANDB_MODE=offline
+#export WANDB_DISABLED=true
+#export WANDB_MODE=offline
 #export PYTHONPATH="."
 
 KALDI_ROOT=/share/nas167/teinhonglo/espnets/espnet-2025/tools/kaldi
