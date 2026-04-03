@@ -409,17 +409,6 @@ def main():
     if getattr(model, "generation_config", None) is not None:
         model.generation_config.save_pretrained(training_args.output_dir)
 
-    if trainer.args.process_index == 0:
-        save_best_checkpoint(
-            best_src=getattr(trainer.state, "best_model_checkpoint", None),
-            output_dir=training_args.output_dir,
-            processor=processor,
-            model=model,
-            default_prompt=default_prompt,
-        )
-        save_prompt_txt(training_args.output_dir, default_prompt)
-
-
     resume_from = (args_cli.resume_from or "").strip()
     if not resume_from and args_cli.resume == 1:
         resume_from = find_latest_checkpoint(training_args.output_dir) or ""
@@ -430,6 +419,16 @@ def main():
         trainer.train(resume_from_checkpoint=resume_from)
     else:
         trainer.train()
+
+    if trainer.args.process_index == 0:
+        save_best_checkpoint(
+            best_src=getattr(trainer.state, "best_model_checkpoint", None),
+            output_dir=training_args.output_dir,
+            processor=processor,
+            model=model,
+            default_prompt=default_prompt,
+        )
+        save_prompt_txt(training_args.output_dir, default_prompt)
 
 
 if __name__ == "__main__":
