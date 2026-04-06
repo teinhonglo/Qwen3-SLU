@@ -10,7 +10,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Read semantics from preprocessed JSONL and output\n"
-            "1) domain -> intents\n"
+            "1) domain -> intents & slots\n"
             "2) domain-intent -> slots\n"
             "as JSONL mapping files."
         )
@@ -65,16 +65,15 @@ def read_jsonl(path: Path) -> Iterable[dict]:
             yield row
 
 
-def extract_mappings(
-    rows: Iterable[dict],
-) -> Tuple[Dict[str, Set[str]], Dict[Tuple[str, str], Set[str]]]:
-    domain_to_intents: Dict[str, Set[str]] = defaultdict(set)
-    domain_intent_to_slots: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
+def extract_mappings(rows: Iterable[dict]):
+    domain_to_intents = {}
+    domain_intent_to_slots = {}
 
     for row in rows:
         semantics = _normalize_semantics(row.get("semantics", []))
 
         for item in semantics:
+            
             if not isinstance(item, dict):
                 continue
 
@@ -86,21 +85,20 @@ def extract_mappings(
                 continue
             domain = domain.strip()
 
-            if isinstance(intent, str) and intent.strip():
-                intent = intent.strip()
-                domain_to_intents[domain].add(intent)
-            else:
-                intent = ""
+            if domain not in domain_to_intents:
+                domain_to_intents[domain] = {"intents": set(), "slots": set()}
+            
+            domain_to_intents[domain]["intents"].add(intent)
+            for s_k, s_v in slots.items():
+                domain_to_intents[domain]["slots"].add(s_v)
+            
+            domain_intent = f"{domain}-{intent}"
 
-            if not isinstance(slots, dict):
-                continue
+            if domain_intent not in domain_intent_to_slots:
+                domain_intent_to_slots[domain_intent] = {"slots": set()}
 
-            for slot_name in slots.keys():
-                if not isinstance(slot_name, str):
-                    continue
-                slot_name = slot_name.strip()
-                if slot_name:
-                    domain_intent_to_slots[(domain, intent)].add(slot_name)
+            for s_k, s_v in slots.items():
+                domain_intent_to_slots[domain_intent]["slots"].add(s_v)
 
     return domain_to_intents, domain_intent_to_slots
 
@@ -111,7 +109,8 @@ def write_domain_intents_jsonl(path: Path, mapping: Dict[str, Set[str]]) -> None
         for domain in sorted(mapping.keys()):
             record = {
                 "domain": domain,
-                "intents": sorted(mapping[domain]),
+                "intents": list(mapping[domain]["intents"]),
+                "slots": list(mapping[domain]["slots"]),
             }
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -122,11 +121,10 @@ def write_domain_intent_slots_jsonl(
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
-        for (domain, intent) in sorted(mapping.keys()):
+        for domain_intent in sorted(mapping.keys()):
             record = {
-                "domain": domain,
-                "intent": intent,
-                "slots": sorted(mapping[(domain, intent)]),
+                "domain_intent": domain_intent,
+                "slots": list(mapping[domain_intent]["slots"]),
             }
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -141,7 +139,6 @@ def main() -> None:
 
     rows = list(read_jsonl(input_jsonl))
     domain_to_intents, domain_intent_to_slots = extract_mappings(rows)
-
     write_domain_intents_jsonl(domain_intents_out, domain_to_intents)
     write_domain_intent_slots_jsonl(domain_intent_slots_out, domain_intent_to_slots)
 

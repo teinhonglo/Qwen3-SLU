@@ -321,17 +321,14 @@ def main():
     model = asr_wrapper.model
     processor = asr_wrapper.processor
 
-    if training_args_conf["gradient_checkpointing"]:
-        model.config.use_cache = False
-        model.gradient_checkpointing_enable()
-
     patch_outer_forward(model)
     model.generation_config = GenerationConfig.from_model_config(model.config)
 
     # LoRA
     lora_config = model_args_conf.get("lora_config", None)
-    if lora_config:
-        lora_type = model_args_conf.get("lora_type", "default")
+    lora_type = model_args_conf.get("lora_type", "default")
+    
+    if lora_config and lora_type == "default":
         print(f"LoRA Finetuning {lora_type}")
         
         peft_config = LoraConfig(
@@ -345,6 +342,10 @@ def main():
         print("="*100)
     else:
         print("Full Finetuning")
+    
+    if training_args_conf["gradient_checkpointing"]:
+        model.config.use_cache = False
+        model.gradient_checkpointing_enable()
 
     raw_ds = load_dataset(
         "json",

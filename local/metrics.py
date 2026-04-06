@@ -109,6 +109,7 @@ def calculate_metrics(predict_file, ground_truth_file):
         sys.exit(1)
 
     total_count = len(predict_lines)
+    success_count =0
     overall_match_count = 0
     intent_match_count = 0
     slot_tp = slot_fp = slot_fn = 0
@@ -120,7 +121,7 @@ def calculate_metrics(predict_file, ground_truth_file):
             pred_data = json.loads(pred_line.strip())
             gt_data = json.loads(gt_line.strip())
 
-            pred_semantics = normalize_semantics(pred_data.get("semantics", []))
+            pred_semantics = normalize_semantics(pred_data.get("pred_semantics", []))
             gt_semantics = normalize_semantics(gt_data.get("semantics", []))
 
             if pred_semantics == gt_semantics:
@@ -153,6 +154,7 @@ def calculate_metrics(predict_file, ground_truth_file):
             query_hyp_tokens = tokenize_for_mer(pred_data.get("pred_query", ""))
             mer_errors += edit_distance(query_ref_tokens, query_hyp_tokens)
             mer_ref_len += len(query_ref_tokens)
+            success_count += 1
         except Exception as e:
             print(f"Warning: failed at line {i}: {e}", file=sys.stderr)
 
@@ -166,6 +168,7 @@ def calculate_metrics(predict_file, ground_truth_file):
 
     return {
         "total_count": total_count,
+        "success_count": success_count,
         "overall_match_count": overall_match_count,
         "overall_accuracy": overall_accuracy,
         "intent_match_count": intent_match_count,
@@ -193,6 +196,7 @@ def main():
     print("Evaluation Results")
     print("-" * 60)
     print(f"Total: {r['total_count']}")
+    print(f"Success_count: {r['success_count']}")
     print(f"Overall accuracy: {r['overall_accuracy']:.4f}")
     print(f"Intent accuracy:  {r['intent_accuracy']:.4f}")
     print(f"Slot P/R/F1:      {r['slot_precision']:.4f} / {r['slot_recall']:.4f} / {r['slot_f1']:.4f}")

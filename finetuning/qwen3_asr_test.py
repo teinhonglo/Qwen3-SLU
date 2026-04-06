@@ -238,8 +238,9 @@ def write_slu_prediction_jsonl(rows_out: List[Dict[str, Any]], output_root: str,
             item = {
                 "id": row["text_id"],
                 "query": row.get("query", ""),
+                "semantics": row.get("semantics", []),
                 "pred_query": row.get("pred_query", ""),
-                "semantics": row.get("pred_semantics", []),
+                "pred_semantics": row.get("pred_semantics", []),
             }
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
@@ -344,6 +345,7 @@ def main():
         prompt = row.get("prompt", "")
         #print(prompt)
         query = row.get("query", "")
+        semantics = row.get("semantics", "")
 
         if not audio_path:
             print(f"[skip] line {i}: no audio field")
@@ -376,11 +378,17 @@ def main():
         '''
         pred_json = try_parse_score_dict(pred_raw)
         pred_query = pred_json["asr_text"]
-        pred_semantics = json.loads(pred_json["semantics"])
+        
+        try:
+            pred_semantics = json.loads(pred_json["semantics"])
+        except:
+            print(f"[WARNING] Processing failed for {text_id}: {pred_json['semantics']}")
+            pred_semantics = [{"Failed": pred_json["semantics"]}]
 
         rows_out.append({
             "text_id": text_id,
             "query": query,
+            "semantics": semantics,
             "pred_query": pred_query,
             "pred_raw": pred_raw,
             "pred_semantics": pred_semantics
