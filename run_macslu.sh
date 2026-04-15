@@ -6,10 +6,12 @@ set -euo pipefail
 # data config
 repo_id="Gatsby1984/MAC_SLU"
 data_root="data/macslu"
+exp_root="exp/macslu"
 download_dir=${data_root}/raw
 extract_root=${data_root}/audio
 audio_dir=${data_root}/audio
 json_root=data-json/macslu
+inference_mode="--auto_latest_checkpoint"
 prompt_file=""   # 可指定外部 prompt 檔案，空字串則使用 prepare_macslu_jsonl.py 內建 prompt
 
 # training config
@@ -33,7 +35,7 @@ if [ ! -f "$train_conf" ]; then
 fi
 
 conf_tag=$(basename -s .json $train_conf)
-exp_root=exp/macslu/${conf_tag}${suffix}
+exp_root=$exp_root/${conf_tag}${suffix}
 
 if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
     echo "Stage 0: Download MAC-SLU and prepare jsonl"
@@ -81,8 +83,8 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
 
         CUDA_VISIBLE_DEVICES="$gpuid" \
             python finetuning/qwen3_asr_test.py \
+                $inference_mode \
                 --exp_dir $exp_dir \
-                --auto_latest_checkpoint \
                 --input_jsonl $test_jsonl \
                 --output_root $exp_dir \
                 --device cuda:0
@@ -101,7 +103,7 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
             continue
         fi
 
-        python local/metrics.py "$pred_file" "$gt_file" | tee ${exp_root}/${test_set}/metrics.txt
+        python local/metrics.py --output_dir ${exp_root}/${test_set} "$pred_file" "$gt_file" | tee ${exp_root}/${test_set}/metrics.txt
     done
 fi
 

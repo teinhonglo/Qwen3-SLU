@@ -167,7 +167,7 @@ def infer_one(
     if do_sample:
         gen_kwargs["temperature"] = temperature
         gen_kwargs["top_p"] = top_p
-
+    
     model.eval()
     with torch.inference_mode():
         gen_out = model.generate(**inputs, **gen_kwargs)
@@ -236,7 +236,7 @@ def write_slu_prediction_jsonl(rows_out: List[Dict[str, Any]], output_root: str,
     with open(out_path, "w", encoding="utf-8") as f:
         for row in rows_out:
             item = {
-                "id": row["text_id"],
+                "text_id": row["text_id"],
                 "query": row.get("query", ""),
                 "semantics": row.get("semantics", []),
                 "pred_query": row.get("pred_query", ""),
@@ -252,8 +252,12 @@ def parse_args():
 
     p.add_argument("--exp_dir", type=str, required=True,
                    help="Experiment directory. Will load train_conf.json from this directory")
+    
     p.add_argument("--auto_latest_checkpoint", action="store_true",
                    help="If exp_dir contains checkpoints, automatically use latest checkpoint")
+
+    p.add_argument("--auto_best_checkpoint", action="store_true",
+                   help="If exp_dir contains checkpoints, automatically use best checkpoint")
 
     p.add_argument("--input_jsonl", type=str, required=True,
                    help="Input JSONL with fields like text_id, query, audio, prompt")
@@ -300,12 +304,15 @@ def main():
     dtype_str = str(model_args_conf.get("dtype", "auto"))
 
     model_path = args.exp_dir
-    if args.auto_latest_checkpoint:
+    if args.auto_best_checkpoint:
+        model_path = os.path.join(model_path, "checkpoint-best")
+    elif args.auto_latest_checkpoint:
         latest_ckpt = find_latest_checkpoint(model_path)
         if latest_ckpt is None:
             raise ValueError(f"No checkpoint-* found under: {model_path}")
         model_path = latest_ckpt
-        print(f"[info] use latest checkpoint: {model_path}")
+    
+    print(f"[info] use checkpoint: {model_path}")
 
     dtype = resolve_dtype(dtype_str, args.device)
     jsonl_name = get_jsonl_name(args.input_jsonl)

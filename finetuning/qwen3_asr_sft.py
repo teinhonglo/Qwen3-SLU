@@ -28,7 +28,7 @@ import torch
 from datasets import load_dataset
 from qwen_asr import Qwen3ASRModel
 from transformers import (GenerationConfig, Trainer, TrainerCallback,
-                          TrainingArguments)
+                          TrainingArguments, BitsAndBytesConfig)
 from peft import LoraConfig, TaskType, get_peft_model
 from peft.peft_model import PeftModel
 
@@ -313,24 +313,43 @@ def main():
     sr = int(model_args_conf.get("sr", 16000))
 
     use_bf16 = torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8
-    asr_wrapper = Qwen3ASRModel.from_pretrained(
-        model_path,
-        dtype=torch.bfloat16 if use_bf16 else torch.float16,
-        device_map=None,
-    )
+    # LoRA
+    lora_config = model_args_conf.get("lora_config", None)
+    lora_type = model_args_conf.get("lora_type", "default")
+    
+    if lora_type == "qlora":
+        # load pretrained model (reload)
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16
+        )
+        asr_wrapper = Qwen3ASRModel.from_pretrained(
+            model_path,
+            dtype=torch.bfloat16 if use_bf16 else torch.float16,
+            quantization_config=bnb_config,
+            device_map=None,
+        )
+    else:
+        # load pretrained model
+        asr_wrapper = Qwen3ASRModel.from_pretrained(
+            model_path,
+            dtype=torch.bfloat16 if use_bf16 else torch.float16,
+            device_map=None,
+        )
+        
     model = asr_wrapper.model
     processor = asr_wrapper.processor
 
     patch_outer_forward(model)
     model.generation_config = GenerationConfig.from_model_config(model.config)
-
-    # LoRA
-    lora_config = model_args_conf.get("lora_config", None)
-    lora_type = model_args_conf.get("lora_type", "default")
     
-    if lora_config and lora_type == "default":
+    if lora_config:
+        if lora_type not in ["default", "qlora"]:
+            raise ValueError(f"lora_type: {lora_type} is NOT implemented yet.")
+
         print(f"LoRA Finetuning {lora_type}")
-        
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             **lora_config

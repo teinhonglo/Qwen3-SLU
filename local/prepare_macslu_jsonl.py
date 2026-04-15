@@ -120,7 +120,7 @@ def resolve_wav(raw_id: str, wav_index: Dict[str, List[Path]]) -> Path:
     else:
         return None
 
-def to_semantics_text(ori_semantics):
+def to_semantics_text(ori_semantics, query_text, args):
     """
     Convert dev_set.jsonl semantics format to icl_label.jsonl semantics format.
     # https://github.com/Gatsby-web/MAC_SLU/blob/main/icl_label.jsonl
@@ -149,7 +149,8 @@ def to_semantics_text(ori_semantics):
             new_item = {
                 "domain": domain,
                 "intent": "",
-                "slots": {}
+                "slots": {},
+                #"implicit_slots": {}
             }
 
             for x in items:
@@ -165,6 +166,9 @@ def to_semantics_text(ori_semantics):
                 if name == "intent":
                     new_item["intent"] = value
                 elif name is not None:
+                    #if value not in query_text: 
+                    #    new_item["implicit_slots"][name] = value
+                    #else:    
                     new_item["slots"][name] = value
 
             results.append(new_item)
@@ -216,7 +220,7 @@ def main():
                     continue
                 '''
                 
-                semantics_text, semantics = to_semantics_text(semantics)
+                semantics_text, semantics = to_semantics_text(semantics, query, args)
                 
                 payload = {
                     "asr_text": query,
