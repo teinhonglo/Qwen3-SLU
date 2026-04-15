@@ -13,6 +13,7 @@ audio_dir=${data_root}/audio
 json_root=data-json/macslu
 inference_mode="--auto_latest_checkpoint"
 prompt_file=""   # 可指定外部 prompt 檔案，空字串則使用 prepare_macslu_jsonl.py 內建 prompt
+attention_map_opts="" # e.g., --save_attention_map --attn_layers all --attn_mode rollout --attn_imgs_dir imgs
 
 # training config
 nj=4
@@ -87,7 +88,8 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
                 --exp_dir $exp_dir \
                 --input_jsonl $test_jsonl \
                 --output_root $exp_dir \
-                --device cuda:0
+                --device cuda:0 \
+                $attention_map_opts
     done
 fi
 

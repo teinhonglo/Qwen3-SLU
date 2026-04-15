@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 import librosa
 import torch
+import numpy as np
 from qwen_asr import Qwen3ASRModel
 from peft.peft_model import PeftModelForCausalLM
 
@@ -90,6 +91,122 @@ def unwrap_generate_output(gen_out):
     if isinstance(gen_out, (tuple, list)):
         return gen_out[0]
     return gen_out
+
+
+def _lazy_import_pyplot():
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return None
+    return plt
+
+
+def save_attention_artifacts(
+    asr_wrapper,
+    audio_path: str,
+    prompt: str,
+    save_root: str,
+    sample_id: str,
+    attn_layers: str = "all",
+    attn_mode: str = "mean",
+    sr: int = 16000,
+):
+    processor = asr_wrapper.processor
+    model = asr_wrapper.model
+    device = next(model.parameters()).device
+    model_dtype = getattr(model, "dtype", torch.float16)
+
+    wav = load_audio(audio_path, sr=sr)
+    prefix_text = build_prefix_text(processor, prompt)
+    inputs = processor(
+        text=[prefix_text],
+        audio=[wav],
+        return_tensors="pt",
+        padding=True,
+        truncation=False,
+    )
+    inputs = move_inputs_to_device(inputs, device=device, model_dtype=model_dtype)
+
+    with torch.inference_mode():
+        outputs = model(**inputs, output_attentions=True, use_cache=False, return_dict=True)
+
+    attentions = getattr(outputs, "attentions", None)
+    if attentions is None:
+        print(f"[WARNING] attention not available for {sample_id}")
+        return
+
+    # [num_layers, heads, tgt, src]
+    stack = torch.stack([a[0].detach().float().cpu() for a in attentions], dim=0)
+    num_layers = stack.size(0)
+    if attn_layers.lower() != "all":
+        selected = []
+        for x in attn_layers.split(","):
+            x = x.strip()
+            if not x:
+                continue
+            idx = int(x)
+            if idx < 0:
+                idx += num_layers
+            if idx < 0 or idx >= num_layers:
+                raise ValueError(f"attn layer index out of range: {idx} (num_layers={num_layers})")
+            selected.append(idx)
+        if not selected:
+            raise ValueError("attn_layers provided but empty after parsing")
+        stack = stack[selected]
+
+    # [num_layers, tgt, src]
+    layer_head_mean = stack.mean(dim=1)
+
+    # 常見分析 1: layer/head 平均的全域 attention map
+    if attn_mode == "rollout":
+        eye = torch.eye(layer_head_mean.size(-1), dtype=layer_head_mean.dtype)
+        rollout = eye
+        for layer_attn in layer_head_mean:
+            a = (layer_attn + eye).clamp(min=0)
+            a = a / a.sum(dim=-1, keepdim=True).clamp(min=1e-12)
+            rollout = a @ rollout
+        global_map = rollout.numpy()
+    else:
+        global_map = layer_head_mean.mean(dim=0).numpy()
+
+    # 常見分析 1: layer/head 平均的全域 attention map
+    # 常見分析 2: 各 layer 對角線平均 (localness proxy)
+    per_layer_diag_mean = torch.diagonal(layer_head_mean, dim1=-2, dim2=-1).mean(dim=-1).numpy()
+
+    os.makedirs(save_root, exist_ok=True)
+    npz_path = os.path.join(save_root, f"{sample_id}.npz")
+    np.savez_compressed(
+        npz_path,
+        attention_global=global_map,
+        attention_per_layer_diag_mean=per_layer_diag_mean,
+    )
+
+    plt = _lazy_import_pyplot()
+    if plt is None:
+        print(f"[WARNING] matplotlib not installed; skip png for {sample_id}")
+        return
+
+    fig = plt.figure(figsize=(14, 5))
+    ax1 = fig.add_subplot(1, 2, 1)
+    im = ax1.imshow(global_map, aspect="auto", interpolation="nearest")
+    title = "Rollout Attention Map" if attn_mode == "rollout" else "Mean Attention Map (layers x heads averaged)"
+    ax1.set_title(title)
+    ax1.set_xlabel("Key position")
+    ax1.set_ylabel("Query position")
+    fig.colorbar(im, ax=ax1, fraction=0.046, pad=0.04)
+
+    ax2 = fig.add_subplot(1, 2, 2)
+    ax2.plot(np.arange(len(per_layer_diag_mean)), per_layer_diag_mean, marker="o")
+    ax2.set_title("Per-layer diagonal attention mean")
+    ax2.set_xlabel("Layer index")
+    ax2.set_ylabel("Diagonal mean")
+    ax2.grid(alpha=0.3)
+    fig.tight_layout()
+
+    png_path = os.path.join(save_root, f"{sample_id}.png")
+    fig.savefig(png_path, dpi=180)
+    plt.close(fig)
+    print(f"[info] saved attention artifacts: {png_path}, {npz_path}")
 
 
 
@@ -267,6 +384,16 @@ def parse_args():
 
     p.add_argument("--device", type=str, default="cuda:0",
                    help='e.g. "cuda:0", "cuda:1", "cpu"')
+    p.add_argument("--save_attention_map", action="store_true",
+                   help="Save attention-map artifacts for each sample")
+    p.add_argument("--attention_img_dir", type=str, default="imgs/attention",
+                   help="Relative folder under output_root/<split>/ for attention maps")
+    p.add_argument("--attn_imgs_dir", type=str, default=None,
+                   help="Alias of --attention_img_dir")
+    p.add_argument("--attn_layers", type=str, default="all",
+                   help='Layer selection for attention map. e.g. "all", "0,1,2,-1"')
+    p.add_argument("--attn_mode", type=str, default="mean", choices=["mean", "rollout"],
+                   help='Attention map mode. "mean" or "rollout"')
     return p.parse_args()
 
 
@@ -345,6 +472,8 @@ def main():
 
     rows = load_jsonl(args.input_jsonl)
     rows_out = []
+    attn_img_dir = args.attn_imgs_dir if args.attn_imgs_dir else args.attention_img_dir
+    attn_root = os.path.join(args.output_root, jsonl_name, attn_img_dir)
 
     for i, row in enumerate(rows, start=1):
         text_id = str(row.get("text_id", f"line{i}")).strip()
@@ -400,6 +529,18 @@ def main():
             "pred_raw": pred_raw,
             "pred_semantics": pred_semantics
         })
+
+        if args.save_attention_map:
+            save_attention_artifacts(
+                asr_wrapper=asr_wrapper,
+                audio_path=audio_path,
+                prompt=prompt,
+                save_root=attn_root,
+                sample_id=text_id,
+                attn_layers=args.attn_layers,
+                attn_mode=args.attn_mode,
+                sr=sr,
+            )
 
         print(f"[{i}/{len(rows)}] done: {text_id}")
 
