@@ -31,6 +31,19 @@ You can freeze both at once:
 "freeze_components": ["thinker.audio_tower", "thinker.model.embed_tokens"]
 ```
 
+### LoRA `exclude_modules` regex support
+
+In `peft.LoraConfig`, `exclude_modules` supports regex **when passed as a single string**.
+
+- Example (exclude audio encoder):
+
+```json
+"exclude_modules": "^thinker\\.audio_tower\\."
+```
+
+If you pass a **list of strings**, PEFT uses exact/end-with name matching instead of regex semantics.
+Also note that older PEFT versions (for example, 0.13.2) may not support `exclude_modules` at all.
+
 ### 1) Setup
 
 First, please install the two Python packages `qwen-asr` and `datasets` using the command below.
