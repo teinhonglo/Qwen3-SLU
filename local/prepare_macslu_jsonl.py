@@ -150,7 +150,7 @@ def to_semantics_text(ori_semantics, query_text, args):
                 "domain": domain,
                 "intent": "",
                 "slots": {},
-                #"implicit_slots": {}
+                "implicit_slots": {}
             }
 
             for x in items:
@@ -166,10 +166,10 @@ def to_semantics_text(ori_semantics, query_text, args):
                 if name == "intent":
                     new_item["intent"] = value
                 elif name is not None:
-                    #if value not in query_text: 
-                    #    new_item["implicit_slots"][name] = value
-                    #else:    
-                    new_item["slots"][name] = value
+                    if value not in query_text: 
+                        new_item["implicit_slots"][name] = value
+                    else:    
+                        new_item["slots"][name] = value
 
             results.append(new_item)
 
