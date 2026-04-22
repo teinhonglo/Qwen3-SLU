@@ -259,7 +259,7 @@ class Qwen3ASRThinkerTextDecoderLayer(GradientCheckpointingLayer):
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         # Self Attention
-        hidden_states, _ = self.self_attn(
+        hidden_states, self_attn_weights = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -276,7 +276,7 @@ class Qwen3ASRThinkerTextDecoderLayer(GradientCheckpointingLayer):
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
-        return hidden_states
+        return (hidden_states, self_attn_weights)
 
 
 @auto_docstring
@@ -1037,7 +1037,8 @@ class Qwen3ASRThinkerTextModel(Qwen3ASRPreTrainedModel):
 
         # create position embeddings to be shared across the decoder layers
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
-
+        
+        all_self_attns = ()
         # decoder layers
         for layer_idx, decoder_layer in enumerate(self.layers):
             layer_outputs = decoder_layer(
@@ -1049,13 +1050,16 @@ class Qwen3ASRThinkerTextModel(Qwen3ASRPreTrainedModel):
                 position_embeddings=position_embeddings,
                 **kwargs,
             )
-            hidden_states = layer_outputs
+            # hidden_states = layer_outputs
+            hidden_states = layer_outputs[0]
+            all_self_attns += (layer_outputs[1],)
 
         hidden_states = self.norm(hidden_states)
 
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=past_key_values,
+            attentions=all_self_attns,
         )
 
 

@@ -4,6 +4,9 @@
 import os
 import re
 import json
+import matplotlib.pyplot as plt
+import numpy as np
+import seaborn as sns
 import argparse
 from typing import Any, Dict, List, Optional
 
@@ -140,7 +143,11 @@ def infer_one(
     do_sample: bool = False,
     temperature: float = 0.0,
     top_p: float = 1.0,
+    output_root: str = "",
 ) -> str:
+    ################ set eager mode
+    #asr_wrapper.model.thinker.config._attn_implementation = "eager"
+    # print(f"Check mode: {asr_wrapper.model.thinker.config._attn_implementation}")
     processor = asr_wrapper.processor
     model = asr_wrapper.model
     device = next(model.parameters()).device
@@ -170,7 +177,7 @@ def infer_one(
     
     model.eval()
     with torch.inference_mode():
-        gen_out = model.generate(**inputs, **gen_kwargs)
+        gen_out = model.generate(**inputs, **gen_kwargs, output_attentions=True)
 
     output_ids = unwrap_generate_output(gen_out)
 
@@ -186,7 +193,101 @@ def infer_one(
         gen_only_ids = output_ids
 
     decoded = batch_decode_text(processor, gen_only_ids)[0].strip()
+    ########### Attention Heat map ############
+    #print(gen_out)
+    #plot_split_attention_heatmap(gen_out, inputs, asr_wrapper, audio_path, target_layer=-1, output_root=output_root)
+    #######################
+
     return decoded
+
+def plot_split_attention_heatmap(gen_out, inputs, asr_wrapper, audio_path, target_layer=-1, output_root=""):
+    """
+    gen_out: return from model.generate
+    inputs: inputs of model.generate (找音訊位置)
+    asr_wrapper: model
+    audio_path: 圖片存檔名稱
+    target_layer: 預設最後一層
+    """
+    if gen_out.attentions is None:
+        print("錯誤: gen_out.attentions 為 None")
+        return
+
+    tokenizer = asr_wrapper.processor.tokenizer
+    # print(gen_out) # shape: sequences[[...]], sttentions, past_key_values
+    # print(inputs) # shape: input_ids[[...]], attention_mas, feature_attenion_mask, input_features
+    full_ids = gen_out.sequences[0].cpu().tolist()
+    all_tokens_text = [tokenizer.decode([tid]) for tid in full_ids]
+    
+    prefix_len = inputs["input_ids"].shape[1]
+    total_seq_len = len(full_ids)
+    num_gen_steps = len(gen_out.attentions)
+
+    # 1. get indices of Audio, Prompt, Output token
+    # Audio
+    audio_token_id = asr_wrapper.model.config.thinker_config.audio_token_id
+    input_ids = inputs["input_ids"][0]
+    audio_indices = (input_ids == audio_token_id).nonzero(as_tuple=True)[0].cpu().tolist()
+    
+    # Prompt (Prefix 中除去 Audio 的部分)
+    prompt_indices = [i for i in range(prefix_len) if i not in audio_indices]
+    
+    # Output
+    output_indices = list(range(prefix_len, total_seq_len))
+    #2. whole heat map
+    heatmap_matrix = np.zeros((num_gen_steps, total_seq_len))
+    for i in range(num_gen_steps):
+        step_attn = gen_out.attentions[i][target_layer][0]
+        avg_attn = step_attn.mean(dim=0)[0].cpu().numpy()
+        heatmap_matrix[i, :len(avg_attn)] = avg_attn
+
+    #3. split heat map
+    audio_attn = heatmap_matrix[:, audio_indices].copy()
+    prompt_attn = heatmap_matrix[:, prompt_indices].copy()
+    output_attn = heatmap_matrix[:, output_indices].copy()
+
+    # set axis labels
+    y_labels = all_tokens_text[prefix_len:]
+    audio_x_labels = [all_tokens_text[i] for i in audio_indices]
+    prompt_x_labels = [all_tokens_text[i] for i in prompt_indices]
+    output_x_labels = [all_tokens_text[i] for i in output_indices]
+
+    #4. draw heat map (1 Row, 3 Columns)
+    widths = [max(len(prompt_indices), 10), max(len(audio_indices), 10), max(len(output_indices), 10)]
+    fig, axes = plt.subplots(1, 3, figsize=(26, 11), gridspec_kw={'width_ratios': widths}, sharey=True)
+
+    # Heatmap 參數
+    kwargs_base = dict(cmap="viridis", cbar=True, yticklabels=y_labels)
+
+    # 圖 1: Prompt Zone
+    if prompt_attn.size > 0:
+        vmax_prompt = np.percentile(prompt_attn[:, 1:], 99.9) if np.max(prompt_attn) > 0 else 0.1
+        sns.heatmap(prompt_attn, ax=axes[0], xticklabels=prompt_x_labels, vmax=vmax_prompt, **kwargs_base)
+        axes[0].set_xlabel("Instruction / Context", fontsize=11)
+        plt.setp(axes[0].get_xticklabels(), rotation=90, fontsize=5)
+    axes[0].set_title(f"1. PROMPT ZONE\n(Locally Scaled vmax={vmax_prompt:.4f})", fontsize=14, color='blue', weight='bold')
+
+    # 圖 2: Audio Zone
+    # vmax: values to anchor the colormap
+    if audio_attn.size > 0:
+        vmax_audio = np.percentile(audio_attn, 99.9) if np.max(audio_attn) > 0 else 0.1
+        # audio_indices 幀數表示時間
+        sns.heatmap(audio_attn, ax=axes[1], xticklabels=False, vmax=vmax_audio, **kwargs_base)
+        axes[1].set_xlabel(f"Audio Time Frames (0 to {len(audio_indices)})", fontsize=11)
+    axes[1].set_title(f"2. AUDIO ZONE\n(Locally Scaled vmax={vmax_audio:.4f})", fontsize=14, color='red', weight='bold')
+
+    # 圖 3: Output Zone
+    if output_attn.size > 0:
+        vmax_output = np.percentile(output_attn, 99.9) if np.max(output_attn) > 0 else 0.1
+        sns.heatmap(output_attn, ax=axes[2], xticklabels=output_x_labels, vmax=vmax_output, **kwargs_base)
+        axes[2].set_xlabel("Previous Generated Tokens", fontsize=11)
+        plt.setp(axes[2].get_xticklabels(), rotation=90, fontsize=5)
+    axes[2].set_title(f"3. OUTPUT\n(Locally Scaled vmax={vmax_output:.4f})", fontsize=14, color='green', weight='bold')
+    
+    filename = os.path.basename(audio_path).replace(".wav", "")
+    save_path = f"{output_root}/split_attn_independent_{filename}.png"
+    plt.savefig(save_path, dpi=300)
+    plt.close()
+    print(f"[success] split heat map saved: {save_path}")
 
 
 def load_jsonl(path: str) -> List[Dict[str, Any]]:
@@ -345,6 +446,7 @@ def main():
 
     rows = load_jsonl(args.input_jsonl)
     rows_out = []
+    failed = 0
 
     for i, row in enumerate(rows, start=1):
         text_id = str(row.get("text_id", f"line{i}")).strip()
@@ -367,6 +469,7 @@ def main():
             do_sample=do_sample,
             temperature=temperature,
             top_p=top_p,
+            output_root=args.output_root,
         )
         '''
         if "<slu>" in pred_raw:
@@ -384,13 +487,13 @@ def main():
         })
         '''
         pred_json = try_parse_score_dict(pred_raw)
-        pred_query = pred_json["asr_text"]
+        pred_query = pred_json.get("asr_text", "FAILED")
         
         try:
             pred_semantics = json.loads(pred_json["semantics"])
         except:
-            print(f"[WARNING] Processing failed for {text_id}: {pred_json['semantics']}")
-            pred_semantics = [{"Failed": pred_json["semantics"]}]
+            print(f"[WARNING] Processing failed for {text_id}: {pred_json}")
+            pred_semantics = [{"FAILED": pred_json}]
 
         rows_out.append({
             "text_id": text_id,
