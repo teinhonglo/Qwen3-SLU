@@ -119,6 +119,68 @@ def slot_mer_metric(slot_tp, slot_fp, slot_fn):
     return slot_precision, slot_recall, slot_f1
 
 
+def get_intent_group(intent_num):
+    if intent_num == 1:
+        return "1_intent"
+    if intent_num == 2:
+        return "2_intent"
+    if intent_num >= 3:
+        return "3plus_intent"
+    return None
+
+
+def init_group_stats():
+    return {
+        "total_count": 0,
+        "overall_match_count": 0,
+        "intent_match_count": 0,
+        "slot_tp": 0,
+        "slot_fp": 0,
+        "slot_fn": 0,
+        "implicit_slot_tp": 0,
+        "implicit_slot_fp": 0,
+        "implicit_slot_fn": 0,
+        "query_mer_errors": 0,
+        "query_mer_ref_lens": 0,
+        "slot_match_counts": 0,
+        "valid_slotss": 0,
+    }
+
+
+def finalize_group_stats(group_stats):
+    slot_precision, slot_recall, slot_f1 = slot_mer_metric(
+        group_stats["slot_tp"], group_stats["slot_fp"], group_stats["slot_fn"]
+    )
+    implicit_slot_precision, implicit_slot_recall, implicit_slot_f1 = slot_mer_metric(
+        group_stats["implicit_slot_tp"], group_stats["implicit_slot_fp"], group_stats["implicit_slot_fn"]
+    )
+
+    total_count = group_stats["total_count"]
+    return {
+        "total_count": total_count,
+        "overall_match_count": group_stats["overall_match_count"],
+        "overall_accuracy": group_stats["overall_match_count"] / total_count if total_count else 0.0,
+        "intent_match_count": group_stats["intent_match_count"],
+        "intent_accuracy": group_stats["intent_match_count"] / total_count if total_count else 0.0,
+        "slot_tp": group_stats["slot_tp"],
+        "slot_fp": group_stats["slot_fp"],
+        "slot_fn": group_stats["slot_fn"],
+        "slot_precision": slot_precision,
+        "slot_recall": slot_recall,
+        "slot_f1": slot_f1,
+        "implicit_slot_tp": group_stats["implicit_slot_tp"],
+        "implicit_slot_fp": group_stats["implicit_slot_fp"],
+        "implicit_slot_fn": group_stats["implicit_slot_fn"],
+        "implicit_slot_precision": implicit_slot_precision,
+        "implicit_slot_recall": implicit_slot_recall,
+        "implicit_slot_f1": implicit_slot_f1,
+        "query_mer_errors": group_stats["query_mer_errors"],
+        "query_mer_ref_lens": group_stats["query_mer_ref_lens"],
+        "query_mer": group_stats["query_mer_errors"] / group_stats["query_mer_ref_lens"] if group_stats["query_mer_ref_lens"] else 0.0,
+        "slot_match_accs": group_stats["slot_match_counts"] / group_stats["valid_slotss"] if group_stats["valid_slotss"] else 0.0,
+    }
+
+
 def calculate_metrics(predict_file, ground_truth_file):
     with open(predict_file, 'r', encoding='utf-8') as f_pred:
         predict_lines = f_pred.readlines()
@@ -139,6 +201,11 @@ def calculate_metrics(predict_file, ground_truth_file):
     mer_ref_lens = 0
     slot_match_counts = 0
     valid_slotss = 0
+    intent_group_stats = {
+        "1_intent": init_group_stats(),
+        "2_intent": init_group_stats(),
+        "3plus_intent": init_group_stats(),
+    }
     report_detail = {}
 
     for i, (pred_line, gt_line) in enumerate(zip(predict_lines, ground_truth_lines), start=1):
@@ -150,6 +217,7 @@ def calculate_metrics(predict_file, ground_truth_file):
 
             pred_semantics = normalize_semantics(pred_data.get("pred_semantics", []))
             gt_semantics = normalize_semantics(gt_data.get("semantics", []))
+            intent_group = get_intent_group(len(gt_semantics))
 
             report_detail[text_id] = {
                 "query_ori": gt_data.get("query", ""),
@@ -179,12 +247,16 @@ def calculate_metrics(predict_file, ground_truth_file):
 
             if pred_semantics == gt_semantics:
                 overall_match_count += 1
+                if intent_group is not None:
+                    intent_group_stats[intent_group]["overall_match_count"] += 1
 
             pred_intents = sorted([(s.get("domain"), s.get("intent")) for s in pred_semantics])
             gt_intents = sorted([(s.get("domain"), s.get("intent")) for s in gt_semantics])
             if pred_intents == gt_intents:
                 intent_match_count += 1
                 report_detail[text_id]["intent_match"] = 1
+                if intent_group is not None:
+                    intent_group_stats[intent_group]["intent_match_count"] += 1
 
             # slot
             pred_slot_set = set()
@@ -208,6 +280,10 @@ def calculate_metrics(predict_file, ground_truth_file):
             slot_tp += report_detail[text_id]["slot_tp"]
             slot_fp += report_detail[text_id]["slot_fp"]
             slot_fn += report_detail[text_id]["slot_fn"]
+            if intent_group is not None:
+                intent_group_stats[intent_group]["slot_tp"] += report_detail[text_id]["slot_tp"]
+                intent_group_stats[intent_group]["slot_fp"] += report_detail[text_id]["slot_fp"]
+                intent_group_stats[intent_group]["slot_fn"] += report_detail[text_id]["slot_fn"]
 
             # implicit slot
             pred_implicit_slot_set = set()
@@ -231,6 +307,10 @@ def calculate_metrics(predict_file, ground_truth_file):
             implicit_slot_tp += report_detail[text_id]["implicit_slot_tp"]
             implicit_slot_fp += report_detail[text_id]["implicit_slot_fp"]
             implicit_slot_fn += report_detail[text_id]["implicit_slot_fn"]
+            if intent_group is not None:
+                intent_group_stats[intent_group]["implicit_slot_tp"] += report_detail[text_id]["implicit_slot_tp"]
+                intent_group_stats[intent_group]["implicit_slot_fp"] += report_detail[text_id]["implicit_slot_fp"]
+                intent_group_stats[intent_group]["implicit_slot_fn"] += report_detail[text_id]["implicit_slot_fn"]
 
             # MER
             query_ref_tokens = tokenize_for_mer(report_detail[text_id]["query"])
@@ -242,6 +322,9 @@ def calculate_metrics(predict_file, ground_truth_file):
 
             mer_errors += mer_error
             mer_ref_lens += mer_ref_len
+            if intent_group is not None:
+                intent_group_stats[intent_group]["query_mer_errors"] += mer_error
+                intent_group_stats[intent_group]["query_mer_ref_lens"] += mer_ref_len
 
             # original slot (match)
             pred_slots_value = []
@@ -264,9 +347,14 @@ def calculate_metrics(predict_file, ground_truth_file):
 
             slot_match_counts += slot_match_count
             valid_slotss += valid_slots
+            if intent_group is not None:
+                intent_group_stats[intent_group]["slot_match_counts"] += slot_match_count
+                intent_group_stats[intent_group]["valid_slotss"] += valid_slots
             slot_match_acc = slot_match_count / valid_slots if valid_slots else 0.0
             
             success_count += 1
+            if intent_group is not None:
+                intent_group_stats[intent_group]["total_count"] += 1
 
             slot_precision, slot_recall, slot_f1 = slot_mer_metric(report_detail[text_id]["slot_tp"], report_detail[text_id]["slot_fp"], report_detail[text_id]["slot_fn"])
 
@@ -292,6 +380,7 @@ def calculate_metrics(predict_file, ground_truth_file):
     # mer
     mer = mer_errors / mer_ref_lens if mer_ref_lens else 0.0
     slot_match_accs = slot_match_counts / valid_slotss if valid_slotss else 0.0
+    intent_group_metrics = {k: finalize_group_stats(v) for k, v in intent_group_stats.items()}
 
     return {
         "total_count": total_count,
@@ -315,7 +404,8 @@ def calculate_metrics(predict_file, ground_truth_file):
         "query_mer_errors": mer_errors,
         "query_mer_ref_lens": mer_ref_lens,
         "query_mer": mer,
-        "slot_match_accs": slot_match_accs
+        "slot_match_accs": slot_match_accs,
+        "intent_group_metrics": intent_group_metrics
     }, report_detail
 
 
@@ -339,6 +429,15 @@ def main():
     print(f"Query MER:        {r['query_mer']:.4f} ({r['query_mer_errors']}/{r['query_mer_ref_lens']})")
     print(f"Slot Match accuracy:        {r['slot_match_accs']:.4f}")
     print("-" * 60)
+    for group_name, group_result in r["intent_group_metrics"].items():
+        print(f"[{group_name}] Total: {group_result['total_count']}")
+        print(f"[{group_name}] Overall accuracy: {group_result['overall_accuracy']:.4f}")
+        print(f"[{group_name}] Intent accuracy:  {group_result['intent_accuracy']:.4f}")
+        print(f"[{group_name}] Slot P/R/F1:      {group_result['slot_precision']:.4f} / {group_result['slot_recall']:.4f} / {group_result['slot_f1']:.4f}")
+        print(f"[{group_name}] Implicit Slot P/R/F1:      {group_result['implicit_slot_precision']:.4f} / {group_result['implicit_slot_recall']:.4f} / {group_result['implicit_slot_f1']:.4f}")
+        print(f"[{group_name}] Query MER:        {group_result['query_mer']:.4f} ({group_result['query_mer_errors']}/{group_result['query_mer_ref_lens']})")
+        print(f"[{group_name}] Slot Match accuracy:        {group_result['slot_match_accs']:.4f}")
+        print("-" * 60)
 
     with open(os.path.join(args.output_dir, "report_details.json"), "w") as write_file:
         json.dump(r_d, write_file, indent=4, ensure_ascii=False)
