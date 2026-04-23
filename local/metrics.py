@@ -220,6 +220,7 @@ def calculate_metrics(predict_file, ground_truth_file):
             intent_group = get_intent_group(len(gt_semantics))
 
             report_detail[text_id] = {
+                "intent_group": intent_group,
                 "query_ori": gt_data.get("query", ""),
                 "query": normalize_text(gt_data.get("query", "")),
                 "gt_semantics_ori": gt_data.get("semantics", []),

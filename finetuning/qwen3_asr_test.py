@@ -145,9 +145,6 @@ def infer_one(
     top_p: float = 1.0,
     output_root: str = "",
 ) -> str:
-    ################ set eager mode
-    #asr_wrapper.model.thinker.config._attn_implementation = "eager"
-    # print(f"Check mode: {asr_wrapper.model.thinker.config._attn_implementation}")
     processor = asr_wrapper.processor
     model = asr_wrapper.model
     device = next(model.parameters()).device
