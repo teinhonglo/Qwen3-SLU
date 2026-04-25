@@ -31,6 +31,7 @@ from transformers import (GenerationConfig, Trainer, TrainerCallback,
                           TrainingArguments, BitsAndBytesConfig)
 from peft import LoraConfig, TaskType, get_peft_model
 from peft.peft_model import PeftModel
+from utils import OverallEvalMetricsCallback
 
 def patch_outer_forward(model):
     cls = model.__class__
@@ -311,6 +312,7 @@ def main():
         raise KeyError("model_args.model_path is required in train_conf")
 
     sr = int(model_args_conf.get("sr", 16000))
+    eval_max_new_tokens = int(model_args_conf.get("eval_max_new_tokens", 256))
 
     use_bf16 = torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8
     # LoRA
@@ -406,6 +408,13 @@ def main():
         data_collator=collator,
         tokenizer=processor.tokenizer,
         callbacks=[
+            OverallEvalMetricsCallback(
+                processor=processor,
+                eval_dataset=ds["validation"],
+                load_audio_fn=load_audio,
+                sampling_rate=sr,
+                max_new_tokens=eval_max_new_tokens,
+            ),
             MakeEveryCheckpointInferableCallback(
                 processor=processor,
                 model=model,
