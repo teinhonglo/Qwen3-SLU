@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 import numpy as np
@@ -31,7 +32,6 @@ from transformers import (GenerationConfig, Trainer, TrainerCallback,
                           TrainingArguments, BitsAndBytesConfig)
 from peft import LoraConfig, TaskType, get_peft_model
 from peft.peft_model import PeftModel
-from utils import OverallEvalMetricsCallback
 
 def patch_outer_forward(model):
     cls = model.__class__
@@ -110,6 +110,7 @@ def make_preprocess_fn_prefix_only(processor):
             "prompt": prompt,
             "audio": ex["audio"],
             "target": ex["text"],
+            
             "prefix_text": prefix_text,
         }
 
@@ -408,13 +409,6 @@ def main():
         data_collator=collator,
         tokenizer=processor.tokenizer,
         callbacks=[
-            OverallEvalMetricsCallback(
-                processor=processor,
-                eval_dataset=ds["validation"],
-                load_audio_fn=load_audio,
-                sampling_rate=sr,
-                max_new_tokens=eval_max_new_tokens,
-            ),
             MakeEveryCheckpointInferableCallback(
                 processor=processor,
                 model=model,

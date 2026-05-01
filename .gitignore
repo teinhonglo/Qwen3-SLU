@@ -25,3 +25,4 @@ env/
 data*
 exp
 .gradio
+wandb
