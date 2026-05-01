@@ -109,7 +109,7 @@ def extract_embedding(asr_wrapper, audio_path: str, prompt: str = "") -> np.ndar
 
     model_dtype = getattr(model, "dtype", torch.float16)
     inputs = move_inputs_to_device(inputs, device=str(device), model_dtype=model_dtype)
-
+    
     audio_features = model.thinker.get_audio_features(
         input_features=inputs["input_features"],
         feature_attention_mask=inputs.get("feature_attention_mask"),
