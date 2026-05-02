@@ -345,6 +345,49 @@ def write_slu_prediction_jsonl(rows_out: List[Dict[str, Any]], output_root: str,
     print(f"[info] saved: {out_path}")
 
 
+def build_corrected_prompt(corrected_prompt: str, pred_json: Dict[str, Any]) -> str:
+    pred_json_text = json.dumps(pred_json, ensure_ascii=False)
+    return f"""{corrected_prompt}
+
+pred_json:
+{pred_json_text}
+"""
+
+
+def write_corrected_jsonl(
+    rows_out: List[Dict[str, Any]],
+    output_jsonl_dir: str,
+    corrected_prompt: str,
+    jsonl_name: str,
+):
+    save_dir = os.path.join(output_jsonl_dir, jsonl_name)
+    os.makedirs(save_dir, exist_ok=True)
+    out_path = os.path.join(save_dir, "corrected.jsonl")
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        for row in rows_out:
+            item = {
+                "text_id": row["text_id"],
+                "query": row.get("query", ""),
+                "audio": row.get("audio", ""),
+                "prompt": build_corrected_prompt(corrected_prompt, row.get("pred_json", {})),
+                "text": row.get("text", ""),
+                "semantics": row.get("semantics", []),
+            }
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+    print(f"[info] saved corrected jsonl: {out_path}")
+
+
+def load_corrected_prompt(corrected_prompt_file: str) -> str:
+    if not corrected_prompt_file:
+        return ""
+    if not os.path.isfile(corrected_prompt_file):
+        raise FileNotFoundError(f"corrected prompt file not found: {corrected_prompt_file}")
+    with open(corrected_prompt_file, "r", encoding="utf-8") as f:
+        return f.read().strip()
+
+
 def parse_args():
     p = argparse.ArgumentParser("Qwen3-ASR SLU test script")
 
@@ -365,6 +408,10 @@ def parse_args():
 
     p.add_argument("--device", type=str, default="cuda:0",
                    help='e.g. "cuda:0", "cuda:1", "cpu"')
+    p.add_argument("--output_jsonl_dir", type=str, default="",
+                   help="Output corrected jsonl dir. If empty, do not write corrected jsonl")
+    p.add_argument("--corrected_prompt_file", type=str, default="data/macslu/corrected_prompt.txt",
+                   help="Correction prompt file path for corrected jsonl")
     return p.parse_args()
 
 
@@ -495,7 +542,10 @@ def main():
         rows_out.append({
             "text_id": text_id,
             "query": query,
+            "audio": audio_path,
+            "text": row.get("text", ""),
             "semantics": semantics,
+            "pred_json": pred_json,
             "pred_query": pred_query,
             "pred_raw": pred_raw,
             "pred_semantics": pred_semantics
@@ -504,6 +554,14 @@ def main():
         print(f"[{i}/{len(rows)}] done: {text_id}")
 
     write_slu_prediction_jsonl(rows_out=rows_out, output_root=args.output_root, jsonl_name=jsonl_name)
+    if args.output_jsonl_dir:
+        corrected_prompt = load_corrected_prompt(args.corrected_prompt_file)
+        write_corrected_jsonl(
+            rows_out=rows_out,
+            output_jsonl_dir=args.output_jsonl_dir,
+            corrected_prompt=corrected_prompt,
+            jsonl_name=jsonl_name,
+        )
 
 
 if __name__ == "__main__":
