@@ -45,6 +45,7 @@ DOMAIN_TO_SLOTS = {
 PLACEHOLDER_CANDIDATES = {"all": ["全部", "所有", "全车"], "mid": ["中", "中间", "平衡点"], "max": ["最大", "最高"], "min": ["最小", "最低"]}
 TARGET_SLOT_NAMES = {"value", "模式", "页面", "座椅记忆位置"}
 VALUE_PATTERNS = [r"[一二三四五六七八九十两零〇百千万]+度", r"[一二三四五六七八九十两零〇百千万]+挡", r"\d+度", r"\d+挡", r"最大", r"最小", r"最高", r"最低", r"自动", r"中", r"玫红色|红色|蓝色|绿色|白色|黑色|黄色|紫色|橙色"]
+
 DOMAIN_TRIGGERS = {
     "车载控制": ["打开", "关闭", "调到", "设置", "切换", "空调", "车窗", "座椅", "天窗", "灯", "屏幕"],
     "音乐": ["播放", "放一首", "听", "歌", "音乐", "歌手", "歌曲"],
@@ -67,6 +68,7 @@ def load_jsonl(path):
             try:
                 rows.append(json.loads(line))
             except json.JSONDecodeError as e:
+
                 raise ValueError(f"Invalid JSONL at {path}:{i}") from e
     return rows
 
@@ -117,6 +119,7 @@ def get_all_slot_pairs(frame):
 def rebuild_slots(frame, query):
     merged = dict(get_all_slot_pairs(frame))
     slots, implicit = {}, {}
+
     for k, v in merged.items():
         if v is None or str(v) == "":
             continue
@@ -321,7 +324,6 @@ def run_tests():
     assert out1["semantics"][0]["domain"] == "音乐"
     out2 = audit_and_fix_row(base, "test", [], [], aggressive_fix=True)
     assert out2["semantics"][0]["domain"] == "车载控制" and out2["semantics"][0]["intent"] == "车身控制"
-
     print("All tests passed.")
 
 
@@ -375,6 +377,7 @@ def main():
         by_split[it["split"]] = by_split.get(it["split"], 0) + 1
         by_rule[it["rule_id"]] = by_rule.get(it["rule_id"], 0) + 1
         by_sev[it["severity"]] = by_sev.get(it["severity"], 0) + 1
+        
     summary = {
         "total_rows": total_rows,
         "total_frames": total_frames,
