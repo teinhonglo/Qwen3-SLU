@@ -33,6 +33,151 @@ DOMAIN_ACTION_PATTERNS = {
 TEMP_HINT_KEYWORDS = ["空调", "温度", "制冷", "制热"]
 NUMERIC_VALUE_PATTERN = re.compile(r"^[0-9]+$|^[零一二三四五六七八九十百千万两〇]+$")
 
+# Embedded schema text (default source). This is intentionally defined in-code
+# so the fixer can run even when external labels files are unavailable.
+DOMAIN_INTENT_LIST = """
+- 车载控制
+    - 车机控制
+    - 车身控制
+    - 提供信息
+- 地图
+    - 导航
+    - 提供地址
+    - 查询路况
+    - 查询定位
+    - 查询路程
+    - 查询前方路线
+    - 导航路线规划
+    - 设置常用地址
+    - 导航到常用地址
+    - 沿途搜索
+    - 周边搜索
+    - 增加途经点
+    - 删除途经点
+    - 地图操作
+    - 上报事件
+    - sys.确认
+    - sys.取消
+    - sys.用户选择
+    - 限速查询
+    - 设置目的地
+    - 查询目的地
+    - 修改途经点
+    - 收藏
+    - 取消收藏
+- 音乐
+    - 播放音乐
+    - 播放控制
+    - 查询音乐信息
+    - 播放收藏
+    - 播放列表
+    - 播放历史
+    - 新手引导
+    - sys.用户选择
+    - sys.确认
+    - sys.取消
+- 打电话
+    - 拨打电话
+    - 电话控制
+    - 接听电话
+    - 挂断电话
+    - sys.确认
+    - sys.取消
+    - 查询信息
+    - sys.电话选择
+    - 拨打黄页号码
+- 收音机
+    - 播放电台
+    - 播放控制
+    - 播放收藏
+    - 收音机控制
+- 天气
+    - 查询天气
+    - 查询气象
+    - 查询温度
+    - 查询湿度
+    - 查询风力
+    - 查询风向
+    - 查询空气质量
+    - 查询紫外线
+    - 查询日出日落
+    - 查询活动
+    - 查询装备
+    - 穿衣推荐
+    - 新手引导
+    - 查询日期
+    - 查询城市
+    - 查询场景
+    - 查询护肤品
+    - 查询能见度
+    - 查询指数
+    - 查询降水量
+    - 查询降雪量
+    - sys.确认
+    - sys.取消
+    - sys.用户选择
+- 影视
+    - 播放影视
+    - 播放控制
+    - 播放收藏
+    - 播放列表
+    - 播放历史
+    - sys.确认
+    - sys.取消
+    - sys.用户选择
+    - 查询影视信息
+- 播放控制
+    - 播放控制
+"""
+
+SLOT_LIST = """
+- 地图-__act__:
+- 地图-__tgt__:
+- 地图-poi修饰:
+- 地图-poi名称:
+- 地图-poi目标:
+- 地图-poi类型:
+- 地图-sys.序列号:
+- 地图-sys.指代:
+- 地图-sys.页码:
+- 地图-事件:
+- 地图-充电功率:
+- 地图-充电品牌:
+- 地图-地图尺寸:
+- 地图-对象:
+- 地图-导航视角:
+- 地图-导航道路位置:
+- 地图-操作:
+- 地图-模式:
+- 地图-电站筛选条件:
+- 地图-终点修饰:
+- 地图-终点名称:
+- 地图-终点目标:
+- 地图-终点类型:
+- 地图-请求类型:
+- 地图-起点修饰:
+- 地图-起点名称:
+- 地图-起点类型:
+- 地图-距离:
+- 地图-距离排序:
+- 地图-路线偏好:
+- 地图-车载交互位置:
+- 地图-车载交互设备:
+- 地图-途经点修饰:
+- 地图-途经点名称:
+- 地图-途经点目标:
+- 地图-途经点类型:
+- 天气-__act__:
+- 天气-__tgt__:
+- 影视-片名:
+- 收音机-频道:
+- 车载控制-value:
+- 车载控制-调节内容:
+- 车载控制-车内灯类型:
+- 音乐-歌曲名:
+- 音乐-歌手名:
+"""
+
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -45,7 +190,7 @@ def parse_args():
 
 
 def load_labels_schema(labels_path: Path):
-    raw_text = labels_path.read_text(encoding="utf-8")
+    raw_text = labels_path.read_text(encoding="utf-8") if labels_path.exists() else ""
     lines = raw_text.splitlines()
     valid_domains = set()
     valid_intents_by_domain = defaultdict(set)
@@ -89,7 +234,7 @@ def load_labels_schema(labels_path: Path):
                 valid_domains.add(domain)
                 valid_slots_by_domain[domain].add(slot)
 
-    # Fallback: support python-constant style schema text, e.g.
+    # Fallback #1: support python-constant style schema text, e.g.
     # DOMAIN_INTENT_LIST = """...""" and SLOT_LIST = """..."""
     if not valid_domains or not valid_intents_by_domain:
         di_match = re.search(r"DOMAIN_INTENT_LIST\s*=\s*\"\"\"(.*?)\"\"\"", raw_text, flags=re.S)
@@ -120,6 +265,33 @@ def load_labels_schema(labels_path: Path):
                 if domain:
                     valid_domains.add(domain)
                     valid_slots_by_domain[domain].add(slot)
+
+    # Fallback #2: use embedded in-code schema constants.
+    if not valid_domains or not valid_intents_by_domain:
+        current_domain = None
+        for raw in DOMAIN_INTENT_LIST.splitlines():
+            line = raw.rstrip("\n")
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if line.startswith("- "):
+                current_domain = stripped[2:].strip()
+                valid_domains.add(current_domain)
+                valid_intents_by_domain[current_domain]
+            elif line.startswith("    - ") and current_domain:
+                valid_intents_by_domain[current_domain].add(stripped[2:].strip())
+        for raw in SLOT_LIST.splitlines():
+            stripped = raw.strip()
+            if not stripped.startswith("- "):
+                continue
+            left = stripped[2:].split(":", 1)[0].strip()
+            if "-" not in left:
+                continue
+            domain, slot = left.split("-", 1)
+            domain, slot = domain.strip(), slot.strip()
+            if domain:
+                valid_domains.add(domain)
+                valid_slots_by_domain[domain].add(slot)
 
     return valid_domains, dict(valid_intents_by_domain), dict(valid_slots_by_domain)
 
