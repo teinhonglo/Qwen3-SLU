@@ -45,7 +45,8 @@ def parse_args():
 
 
 def load_labels_schema(labels_path: Path):
-    lines = labels_path.read_text(encoding="utf-8").splitlines()
+    raw_text = labels_path.read_text(encoding="utf-8")
+    lines = raw_text.splitlines()
     valid_domains = set()
     valid_intents_by_domain = defaultdict(set)
     valid_slots_by_domain = defaultdict(set)
@@ -87,6 +88,38 @@ def load_labels_schema(labels_path: Path):
             if domain:
                 valid_domains.add(domain)
                 valid_slots_by_domain[domain].add(slot)
+
+    # Fallback: support python-constant style schema text, e.g.
+    # DOMAIN_INTENT_LIST = """...""" and SLOT_LIST = """..."""
+    if not valid_domains or not valid_intents_by_domain:
+        di_match = re.search(r"DOMAIN_INTENT_LIST\s*=\s*\"\"\"(.*?)\"\"\"", raw_text, flags=re.S)
+        sl_match = re.search(r"SLOT_LIST\s*=\s*\"\"\"(.*?)\"\"\"", raw_text, flags=re.S)
+        if di_match:
+            current_domain = None
+            for raw in di_match.group(1).splitlines():
+                line = raw.rstrip("\n")
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if line.startswith("- "):
+                    current_domain = stripped[2:].strip()
+                    valid_domains.add(current_domain)
+                    valid_intents_by_domain[current_domain]
+                elif line.startswith("    - ") and current_domain:
+                    valid_intents_by_domain[current_domain].add(stripped[2:].strip())
+        if sl_match:
+            for raw in sl_match.group(1).splitlines():
+                stripped = raw.strip()
+                if not stripped.startswith("- "):
+                    continue
+                left = stripped[2:].split(":", 1)[0].strip()
+                if "-" not in left:
+                    continue
+                domain, slot = left.split("-", 1)
+                domain, slot = domain.strip(), slot.strip()
+                if domain:
+                    valid_domains.add(domain)
+                    valid_slots_by_domain[domain].add(slot)
 
     return valid_domains, dict(valid_intents_by_domain), dict(valid_slots_by_domain)
 
