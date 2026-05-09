@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "stateful_decoding": true,
+  "schema_path": "data-json/macslu_dexperts/schema.json",
+  "experts": {
+    "domain_intent": {"path": "exp/macslu_dexperts_experts/domain_intent", "alpha": 1.2},
+    "slot_key": {"path": "exp/macslu_dexperts_experts/slot_key", "alpha": 0.8}
+  },
+  "grounding": {"mode": "copy_bias", "strength": 1.0},
+  "schema_mask": true
+}
