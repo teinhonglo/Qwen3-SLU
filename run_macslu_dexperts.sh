@@ -33,7 +33,7 @@ fi
 conf_tag=$(basename -s .json $train_conf)
 base_exp_dir=${exp_root}/${conf_tag}${suffix}
 dexperts_exp_root=${base_exp_dir}_dexperts
-expert_exp_root=exp/macslu_dexperts_experts/${conf_tag}${suffix}
+expert_exp_root=$base_exp_dir/dexperts_experts
 
 if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
     echo "Stage 0: Verify legacy MAC-SLU jsonl exists"
