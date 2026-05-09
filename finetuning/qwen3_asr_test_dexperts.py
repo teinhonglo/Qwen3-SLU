@@ -61,7 +61,7 @@ def main():
             return txt[0]
         return txt
 
-    def infer_one(asr_wrapper, audio_path, prompt, sr, max_new_tokens, do_sample, temperature, top_p, logits_processor=None):
+    def infer_one(asr_wrapper, audio_path, prompt, sr, max_new_tokens, do_sample, temperature, top_p, dexperts_kwargs=None):
         processor = asr_wrapper.processor
         model = asr_wrapper.model
         device = next(model.parameters()).device
@@ -74,7 +74,8 @@ def main():
         gen_kwargs = {"max_new_tokens": max_new_tokens, "do_sample": do_sample}
         if do_sample:
             gen_kwargs.update({"temperature": temperature, "top_p": top_p})
-        if logits_processor is not None:
+        if dexperts_kwargs is not None:
+            logits_processor = StateAwareDExpertsLogitsProcessor(base_prefix_len=prefix_len, **dexperts_kwargs)
             gen_kwargs['logits_processor'] = LogitsProcessorList([logits_processor])
         with torch.inference_mode():
             gen_out = model.generate(**inputs, **gen_kwargs)
@@ -118,13 +119,13 @@ def main():
     di_expert = ExpertLM(di_path, device=args.device) if args.use_dexperts else None
     sk_expert = ExpertLM(sk_path, device=args.device) if args.use_dexperts else None
     tok = asr_wrapper.processor.tokenizer if hasattr(asr_wrapper.processor, 'tokenizer') else asr_wrapper.processor
-    logits_processor = StateAwareDExpertsLogitsProcessor(tok, schema=schema, domain_intent_expert=di_expert, slot_key_expert=sk_expert, alpha_domain_intent=di_alpha, alpha_slot_key=sk_alpha, grounding_strength=gr, enable_schema_mask=not args.disable_schema_mask, enable_grounding=not args.disable_grounding) if args.use_dexperts else None
+    dexperts_kwargs = dict(tokenizer=tok, schema=schema, domain_intent_expert=di_expert, slot_key_expert=sk_expert, alpha_domain_intent=di_alpha, alpha_slot_key=sk_alpha, grounding_strength=gr, enable_schema_mask=not args.disable_schema_mask, enable_grounding=not args.disable_grounding) if args.use_dexperts else None
 
     rows = load_jsonl(args.input_jsonl)
     rows_out = []
     jsonl_name = get_jsonl_name(args.input_jsonl)
     for i, row in enumerate(rows, 1):
-        pred_raw = infer_one(asr_wrapper, row.get('audio', ''), row.get('prompt', ''), sr, max_new_tokens, do_sample, temperature, top_p, logits_processor=logits_processor)
+        pred_raw = infer_one(asr_wrapper, row.get('audio', ''), row.get('prompt', ''), sr, max_new_tokens, do_sample, temperature, top_p, dexperts_kwargs=dexperts_kwargs)
         pred_json = try_parse_score_dict(pred_raw)
         pred_query = pred_json.get('asr_text', 'FAILED')
         try:
