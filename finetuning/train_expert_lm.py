@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""Train a lightweight text-only expert causal LM from derived MAC-SLU corpora."""
+"""Train a lightweight text-only expert causal LM from prefix->next-token corpora."""
 import argparse
 import json
 import os
 
 
-
 def load_rows(path):
-    """Load JSONL rows from path with explicit error if file is missing."""
     if not os.path.isfile(path):
         raise FileNotFoundError(f"Input jsonl not found: {path}")
     rows = []
@@ -17,14 +15,16 @@ def load_rows(path):
             if not line:
                 continue
             try:
-                rows.append(json.loads(line))
+                row = json.loads(line)
             except json.JSONDecodeError as exc:
                 raise ValueError(f"Invalid JSON in {path}:{line_id}: {exc}") from exc
+            if "prefix_text" not in row or "target_token_text" not in row:
+                raise ValueError(f"Missing prefix_text/target_token_text in {path}:{line_id}")
+            rows.append(row)
     return rows
 
 
 def main():
-    """CLI entry for expert LM training."""
     ap = argparse.ArgumentParser("Train lightweight expert causal LM")
     ap.add_argument("--train_jsonl", required=True)
     ap.add_argument("--dev_jsonl", required=True)
@@ -45,20 +45,35 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path)
 
     def to_dataset(rows):
-        return Dataset.from_list(
-            [{"text": f"{r.get('input_text', '')}\n{r.get('target_text', '')}"} for r in rows]
-        )
+        return Dataset.from_list(rows)
 
-    train_ds = to_dataset(load_rows(args.train_jsonl))
-    dev_ds = to_dataset(load_rows(args.dev_jsonl))
+    def preprocess(example):
+        prefix = example["prefix_text"]
+        target = example["target_token_text"]
+        full = prefix + target
+        full_ids = tokenizer.encode(full, add_special_tokens=False)
+        prefix_ids = tokenizer.encode(prefix, add_special_tokens=False)
+        target_ids = full_ids[len(prefix_ids):]
 
-    def preprocess(batch):
-        out = tokenizer(batch["text"], truncation=True, max_length=args.max_length, padding="max_length")
-        out["labels"] = out["input_ids"].copy()
-        return out
+        full_ids = full_ids[: args.max_length]
+        attn = [1] * len(full_ids)
+        labels = [-100] * len(full_ids)
 
-    train_ds = train_ds.map(preprocess, batched=True, remove_columns=["text"])
-    dev_ds = dev_ds.map(preprocess, batched=True, remove_columns=["text"])
+        start = min(len(prefix_ids), len(full_ids))
+        max_tgt = max(0, len(full_ids) - start)
+        for i, tid in enumerate(target_ids[:max_tgt]):
+            labels[start + i] = tid
+
+        pad_len = args.max_length - len(full_ids)
+        if pad_len > 0:
+            full_ids = full_ids + [tokenizer.pad_token_id] * pad_len
+            attn = attn + [0] * pad_len
+            labels = labels + [-100] * pad_len
+
+        return {"input_ids": full_ids, "attention_mask": attn, "labels": labels}
+
+    train_ds = to_dataset(load_rows(args.train_jsonl)).map(preprocess, remove_columns=to_dataset(load_rows(args.train_jsonl)).column_names)
+    dev_ds = to_dataset(load_rows(args.dev_jsonl)).map(preprocess, remove_columns=to_dataset(load_rows(args.dev_jsonl)).column_names)
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
