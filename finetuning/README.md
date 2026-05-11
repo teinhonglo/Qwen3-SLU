@@ -195,3 +195,12 @@ torchrun --nproc_per_node=2 qwen3_asr_sft.py \
   --persistent_workers 1 \
   --prefetch_factor 2
 ```
+
+
+### Why LoRA works in `qwen3_asr_sft.py` but failed in `train_expert_lm.py` before
+
+`qwen3_asr_sft.py` applies LoRA directly on the original Qwen ASR model class, which already implements Hugging Face generation hooks expected by PEFT CausalLM wrappers (for example generation input preparation).
+
+`train_expert_lm.py` used a custom wrapper class `TextOnlyExpertModel` around the thinker text backbone + lm head. Before the fix, that wrapper did not expose generation helper methods PEFT expects during `get_peft_model(...)`, so LoRA initialization could fail with errors like missing `prepare_inputs_for_generation`.
+
+In short: the difference is not your LoRA JSON config itself; it is the model class interface PEFT sees at runtime.

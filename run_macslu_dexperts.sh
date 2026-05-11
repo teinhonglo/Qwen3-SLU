@@ -13,9 +13,9 @@ inference_mode="--auto_latest_checkpoint"
 nj=4
 gpuid=0
 suffix=
-train_conf=conf/macslu_qwen3_asr_06b.json
+train_conf=conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead.json
 seed=66
-expert_base_model=Qwen/Qwen3-ASR-0.6B
+expert_train_conf=conf/expert/macslu_qwen3_text_expert_17b.json
 
 # stage
 stage=0
@@ -27,6 +27,11 @@ test_sets="test"
 
 if [ ! -f "$train_conf" ]; then
     echo "[ERROR] train_conf not found: $train_conf"
+    exit 1
+fi
+
+if [ ! -f "$expert_train_conf" ]; then
+    echo "[ERROR] expert_train_conf not found: $expert_train_conf"
     exit 1
 fi
 
@@ -68,8 +73,7 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
         python finetuning/train_expert_lm.py \
             --train_jsonl ${dexperts_root}/domain_intent_train.jsonl \
             --dev_jsonl ${dexperts_root}/domain_intent_dev.jsonl \
-            --model_name_or_path ${expert_base_model} \
-            --init_from_asr \
+            --train_conf ${expert_train_conf} \
             --output_dir ${expert_exp_root}/domain_intent
 fi
 
@@ -79,8 +83,7 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
         python finetuning/train_expert_lm.py \
             --train_jsonl ${dexperts_root}/slot_key_train.jsonl \
             --dev_jsonl ${dexperts_root}/slot_key_dev.jsonl \
-            --model_name_or_path ${expert_base_model} \
-            --init_from_asr \
+            --train_conf ${expert_train_conf} \
             --output_dir ${expert_exp_root}/slot_key
 fi
 
