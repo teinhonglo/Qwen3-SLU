@@ -8,6 +8,7 @@ import os
 import torch
 from torch import nn
 from transformers import PreTrainedModel, PretrainedConfig
+from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import CausalLMOutput
 
 
@@ -20,8 +21,9 @@ class TextOnlyExpertConfig(PretrainedConfig):
         self.hidden_size = int(hidden_size)
 
 
-class TextOnlyExpertModel(PreTrainedModel):
+class TextOnlyExpertModel(PreTrainedModel, GenerationMixin):
     config_class = TextOnlyExpertConfig
+    supports_gradient_checkpointing = True
 
     def __init__(self, config, text_model=None, lm_head=None):
         super().__init__(config)
@@ -29,6 +31,19 @@ class TextOnlyExpertModel(PreTrainedModel):
             raise ValueError("text_model and lm_head are required")
         self.model = text_model
         self.lm_head = lm_head
+
+
+    def _set_gradient_checkpointing(self, module, value=False):
+        if hasattr(self.model, "_set_gradient_checkpointing"):
+            self.model._set_gradient_checkpointing(module, value=value)
+            return
+        if hasattr(self.model, "gradient_checkpointing"):
+            self.model.gradient_checkpointing = value
+            return
+        raise ValueError(
+            "Underlying text model does not expose gradient checkpointing controls; "
+            f"got {self.model.__class__.__name__}."
+        )
 
     def get_input_embeddings(self):
         return self.model.get_input_embeddings()
@@ -187,12 +202,14 @@ def main():
     train_ds = train_ds.map(preprocess, batched=True, remove_columns=["text"])
     dev_ds = dev_ds.map(preprocess, batched=True, remove_columns=["text"])
 
-    use_bf16 = torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8
+    has_cuda = torch.cuda.is_available()
+    use_bf16 = has_cuda and torch.cuda.get_device_capability(0)[0] >= 8
+    use_fp16 = has_cuda and not use_bf16
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         bf16=use_bf16,
-        fp16=not use_bf16,
+        fp16=use_fp16,
         **training_args_conf,
     )
     trainer = Trainer(model=model, args=training_args, train_dataset=train_ds, eval_dataset=dev_ds)
