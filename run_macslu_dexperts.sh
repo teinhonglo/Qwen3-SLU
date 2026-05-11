@@ -15,7 +15,7 @@ gpuid=0
 suffix=
 train_conf=conf/macslu_qwen3_asr_06b.json
 seed=66
-expert_base_model=Qwen/Qwen2.5-0.5B
+expert_base_model=Qwen/Qwen3-ASR-0.6B
 
 # stage
 stage=0
@@ -69,6 +69,7 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
             --train_jsonl ${dexperts_root}/domain_intent_train.jsonl \
             --dev_jsonl ${dexperts_root}/domain_intent_dev.jsonl \
             --model_name_or_path ${expert_base_model} \
+            --init_from_asr \
             --output_dir ${expert_exp_root}/domain_intent
 fi
 
@@ -79,6 +80,7 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
             --train_jsonl ${dexperts_root}/slot_key_train.jsonl \
             --dev_jsonl ${dexperts_root}/slot_key_dev.jsonl \
             --model_name_or_path ${expert_base_model} \
+            --init_from_asr \
             --output_dir ${expert_exp_root}/slot_key
 fi
 

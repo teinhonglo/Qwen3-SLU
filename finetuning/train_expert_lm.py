@@ -5,6 +5,56 @@ import json
 import os
 
 
+import torch
+from torch import nn
+from transformers import PreTrainedModel, PretrainedConfig
+from transformers.modeling_outputs import CausalLMOutput
+
+
+class TextOnlyExpertConfig(PretrainedConfig):
+    model_type = "qwen3_asr_text_expert"
+
+    def __init__(self, vocab_size, hidden_size, pad_token_id=None, **kwargs):
+        super().__init__(pad_token_id=pad_token_id, **kwargs)
+        self.vocab_size = int(vocab_size)
+        self.hidden_size = int(hidden_size)
+
+
+class TextOnlyExpertModel(PreTrainedModel):
+    config_class = TextOnlyExpertConfig
+
+    def __init__(self, config, text_model=None, lm_head=None):
+        super().__init__(config)
+        if text_model is None or lm_head is None:
+            raise ValueError("text_model and lm_head are required")
+        self.model = text_model
+        self.lm_head = lm_head
+
+    def get_input_embeddings(self):
+        return self.model.get_input_embeddings()
+
+    def set_input_embeddings(self, value):
+        self.model.set_input_embeddings(value)
+
+    def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            **kwargs,
+        )
+        hidden_states = outputs[0]
+        logits = self.lm_head(hidden_states)
+        loss = None
+        if labels is not None:
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
+            loss = loss_fct(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+            )
+        return CausalLMOutput(loss=loss, logits=logits)
+
 
 def load_rows(path):
     """Load JSONL rows from path with explicit error if file is missing."""
@@ -34,15 +84,36 @@ def main():
     ap.add_argument("--lr", type=float, default=5e-5)
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--batch_size", type=int, default=4)
+    ap.add_argument("--init_from_asr", action="store_true")
     args = ap.parse_args()
 
     from datasets import Dataset
     from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
+    from qwen_asr import Qwen3ASRModel
 
     os.makedirs(args.output_dir, exist_ok=True)
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
     tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path)
+    if args.init_from_asr:
+        asr_wrapper = Qwen3ASRModel.from_pretrained(args.model_name_or_path)
+        asr_model = asr_wrapper.model
+        thinker = asr_model.thinker
+        text_model = thinker.model
+        lm_head = thinker.lm_head
+        text_cfg = getattr(asr_model.config, "text_config", None)
+        hidden_size = getattr(text_cfg, "hidden_size", lm_head.in_features)
+        vocab_size = getattr(text_cfg, "vocab_size", lm_head.out_features)
+        model = TextOnlyExpertModel(
+            TextOnlyExpertConfig(
+                vocab_size=vocab_size,
+                hidden_size=hidden_size,
+                pad_token_id=tokenizer.pad_token_id,
+            ),
+            text_model=text_model,
+            lm_head=lm_head,
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path)
 
     def to_dataset(rows):
         return Dataset.from_list(
