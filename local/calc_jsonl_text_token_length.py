@@ -21,7 +21,7 @@ def parse_args():
     parser.add_argument(
         "--jsonl_files",
         nargs="+",
-        default=["train.jsonl", "dev.jsonl", "eval.jsonl"],
+        default=["train.jsonl", "dev.jsonl", "test.jsonl"],
         help="Jsonl file names under jsonl_data_dir.",
     )
     parser.add_argument(
