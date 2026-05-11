@@ -1,0 +1,22 @@
+[
+  {
+    "learning_rate": 5e-05,
+    "num_train_epochs": 3,
+    "per_device_train_batch_size": 2,
+    "per_device_eval_batch_size": 2,
+    "eval_strategy": "epoch",
+    "save_strategy": "epoch",
+    "logging_steps": 20,
+    "report_to": []
+  },
+  {
+    "max_length": 256,
+    "init_from_asr": true,
+    "use_lora": true,
+    "lora_r": 8,
+    "lora_alpha": 16,
+    "lora_dropout": 0.05,
+    "gradient_checkpointing": true,
+    "model_path": "Qwen/Qwen3-ASR-0.6B"
+  }
+]

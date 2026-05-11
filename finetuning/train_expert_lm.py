@@ -73,29 +73,46 @@ def load_rows(path):
     return rows
 
 
+
+def load_train_conf(path):
+    if not path or not os.path.isfile(path):
+        raise FileNotFoundError(f"train_conf not found: {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, list) or len(cfg) != 2:
+        raise ValueError("train_conf must be [training_args, model_args]")
+    if not isinstance(cfg[0], dict) or not isinstance(cfg[1], dict):
+        raise ValueError("train_conf entries must be dicts")
+    return cfg
+
 def main():
     """CLI entry for expert LM training."""
     ap = argparse.ArgumentParser("Train lightweight expert causal LM")
     ap.add_argument("--train_jsonl", required=True)
     ap.add_argument("--dev_jsonl", required=True)
-    ap.add_argument("--model_name_or_path", required=True)
+    ap.add_argument("--model_name_or_path", default=None, help="Optional override. If empty, use model_args.model_path from train_conf")
     ap.add_argument("--output_dir", required=True)
-    ap.add_argument("--max_length", type=int, default=256)
-    ap.add_argument("--lr", type=float, default=5e-5)
-    ap.add_argument("--epochs", type=int, default=3)
-    ap.add_argument("--batch_size", type=int, default=4)
-    ap.add_argument("--init_from_asr", action="store_true")
+    ap.add_argument("--train_conf", required=True, help="JSON config: [training_args, model_args]")
     args = ap.parse_args()
 
     from datasets import Dataset
     from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
+    from peft import LoraConfig, TaskType, get_peft_model
     from qwen_asr import Qwen3ASRModel
 
+    training_args_conf, model_args_conf = load_train_conf(args.train_conf)
+    training_args_conf = dict(training_args_conf)
+    model_args_conf = dict(model_args_conf)
+
+    model_name_or_path = args.model_name_or_path or model_args_conf.get("model_path")
+    if not model_name_or_path:
+        raise ValueError("model path is required: set --model_name_or_path or model_args.model_path in train_conf")
+
     os.makedirs(args.output_dir, exist_ok=True)
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
     tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
-    if args.init_from_asr:
-        asr_wrapper = Qwen3ASRModel.from_pretrained(args.model_name_or_path)
+    if model_args_conf.get("init_from_asr", True):
+        asr_wrapper = Qwen3ASRModel.from_pretrained(model_name_or_path)
         asr_model = asr_wrapper.model
         thinker = asr_model.thinker
         text_model = thinker.model
@@ -113,7 +130,23 @@ def main():
             lm_head=lm_head,
         )
     else:
-        model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path)
+        model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
+
+
+    if model_args_conf.get("use_lora", False):
+        peft_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=int(model_args_conf.get("lora_r", 8)),
+            lora_alpha=int(model_args_conf.get("lora_alpha", 16)),
+            lora_dropout=float(model_args_conf.get("lora_dropout", 0.05)),
+            target_modules="all-linear",
+        )
+        model = get_peft_model(model, peft_config)
+        model.print_trainable_parameters()
+
+    if model_args_conf.get("gradient_checkpointing", False):
+        model.config.use_cache = False
+        model.gradient_checkpointing_enable()
 
     def to_dataset(rows):
         return Dataset.from_list(
@@ -124,23 +157,20 @@ def main():
     dev_ds = to_dataset(load_rows(args.dev_jsonl))
 
     def preprocess(batch):
-        out = tokenizer(batch["text"], truncation=True, max_length=args.max_length, padding="max_length")
+        out = tokenizer(batch["text"], truncation=True, max_length=int(model_args_conf.get("max_length", 256)), padding="max_length")
         out["labels"] = out["input_ids"].copy()
         return out
 
     train_ds = train_ds.map(preprocess, batched=True, remove_columns=["text"])
     dev_ds = dev_ds.map(preprocess, batched=True, remove_columns=["text"])
 
+    use_bf16 = torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8
+
     training_args = TrainingArguments(
         output_dir=args.output_dir,
-        learning_rate=args.lr,
-        num_train_epochs=args.epochs,
-        per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
-        eval_strategy="epoch",
-        save_strategy="epoch",
-        logging_steps=20,
-        report_to=[],
+        bf16=use_bf16,
+        fp16=not use_bf16,
+        **training_args_conf,
     )
     trainer = Trainer(model=model, args=training_args, train_dataset=train_ds, eval_dataset=dev_ds)
     trainer.train()
