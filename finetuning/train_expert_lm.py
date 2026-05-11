@@ -155,7 +155,6 @@ def main():
     else:
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
 
-
     lora_type = model_args_conf.get("lora_type", "default")
     lora_config = model_args_conf.get("lora_config", None)
     if lora_config:
