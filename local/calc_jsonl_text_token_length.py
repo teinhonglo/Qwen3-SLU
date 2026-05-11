@@ -57,8 +57,8 @@ def main():
                 if not line.strip():
                     continue
                 sample = json.loads(line)
-                if "id" not in sample:
-                    raise KeyError(f"Missing 'id' in {jsonl_path}:{line_no}")
+                if "text_id" not in sample:
+                    raise KeyError(f"Missing 'text_id' in {jsonl_path}:{line_no}")
                 if "text" not in sample:
                     raise KeyError(f"Missing 'text' in {jsonl_path}:{line_no}")
 
@@ -71,7 +71,7 @@ def main():
 
                 rows.append(
                     {
-                        "id": sample["id"],
+                        "id": sample["text_id"],
                         "text": text,
                         "text_tokenized": " ".join(tokens),
                         "length": len(token_ids),

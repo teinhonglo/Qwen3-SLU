@@ -20,7 +20,7 @@ DEFAULT_PROMPT = """你是一个专业的车载系统自然语言理解（NLU）
 你需要严格遵循以下规则：
 1.  识别多个语义帧: 用户的单次查询可能包含多个独立的意图。你需要为每一个意图生成一个对应的语义结构。
 2.  输出格式: 你的输出必须是一个严格的 JSON List (列表)。
-3.  列表中的每一个 JSON 对象都必须包含且只包含这三个欄位："domain"、"intent"、"slots"、"implicit_slot"。
+3.  列表中的每一个 JSON 对象都必须包含且只包含这三个欄位："domain"、"intent"、"slots"、"implicit_slots"。
 4.  "slots" 必须是 JSON object且出現在asr_text中；若该意图无槽位，請輸出空物件 {}。
 5.  "implicit_slots" 必须是 JSON object；若该意图无槽位，請輸出空物件 {}。
 6.  如果没有匹配到任何领域和意图，请返回空列表 []。

@@ -36,6 +36,29 @@ class TextOnlyExpertModel(PreTrainedModel):
     def set_input_embeddings(self, value):
         self.model.set_input_embeddings(value)
 
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head = new_embeddings
+
+    def prepare_inputs_for_generation(self, input_ids, attention_mask=None, **kwargs):
+        if hasattr(self.model, "prepare_inputs_for_generation"):
+            model_inputs = self.model.prepare_inputs_for_generation(
+                input_ids=input_ids, attention_mask=attention_mask, **kwargs
+            )
+            if "input_ids" not in model_inputs:
+                model_inputs["input_ids"] = input_ids
+            if attention_mask is not None and "attention_mask" not in model_inputs:
+                model_inputs["attention_mask"] = attention_mask
+            return model_inputs
+        model_inputs = {"input_ids": input_ids}
+        if attention_mask is not None:
+            model_inputs["attention_mask"] = attention_mask
+        model_inputs.update(kwargs)
+        return model_inputs
+
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
         outputs = self.model(
             input_ids=input_ids,
@@ -132,14 +155,14 @@ def main():
     else:
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
 
-
-    if model_args_conf.get("use_lora", False):
+    lora_type = model_args_conf.get("lora_type", "default")
+    lora_config = model_args_conf.get("lora_config", None)
+    if lora_config:
+        if lora_type != "default":
+            raise ValueError(f"Unsupported lora_type for train_expert_lm.py: {lora_type}")
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
-            r=int(model_args_conf.get("lora_r", 8)),
-            lora_alpha=int(model_args_conf.get("lora_alpha", 16)),
-            lora_dropout=float(model_args_conf.get("lora_dropout", 0.05)),
-            target_modules="all-linear",
+            **lora_config,
         )
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()

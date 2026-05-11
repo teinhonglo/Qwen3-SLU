@@ -10,13 +10,25 @@
     "report_to": []
   },
   {
+    "model_path": "Qwen/Qwen3-ASR-0.6B",
     "max_length": 256,
     "init_from_asr": true,
-    "use_lora": true,
-    "lora_r": 8,
-    "lora_alpha": 16,
-    "lora_dropout": 0.05,
-    "gradient_checkpointing": true,
-    "model_path": "Qwen/Qwen3-ASR-0.6B"
+    "lora_type": "default",
+    "lora_config": {
+      "r": 8,
+      "lora_alpha": 32,
+      "lora_dropout": 0.1,
+      "target_modules": [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj"
+      ],
+      "modules_to_save": []
+    },
+    "gradient_checkpointing": true
   }
 ]

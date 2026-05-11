@@ -115,8 +115,8 @@ def extract_embedding(asr_wrapper, audio_path: str, prompt: str = "") -> np.ndar
         feature_attention_mask=inputs.get("feature_attention_mask"),
         audio_feature_lengths=None,
     )
-
-    pooled = audio_features.mean(dim=1).squeeze(0)
+    # T X D
+    pooled = audio_features.mean(dim=0).squeeze(0)
     return pooled.detach().cpu().to(torch.float32).numpy()
 
 
@@ -145,7 +145,7 @@ def build_topk(rows: List[dict], embeddings: np.ndarray, topk: int) -> List[dict
             items.append(
                 {
                     "text_id": target.get("text_id", ""),
-                    "semantics": target.get("semantics", []),
+                    "text": target.get("text", ""),
                     "similarity": float(score),
                 }
             )

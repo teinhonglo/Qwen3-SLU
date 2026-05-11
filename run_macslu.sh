@@ -21,6 +21,7 @@ gpuid=0
 suffix=
 train_conf=conf/macslu_qwen3_asr_06b.json
 seed=66
+checkpoint=
 
 # stage
 stage=0
@@ -37,6 +38,12 @@ fi
 
 conf_tag=$(basename -s .json $train_conf)
 exp_root=$exp_root/${conf_tag}${suffix}
+
+if [ "$checkpoint" != "" ]; then
+    training_opts="--resume_from $checkpoint --resume 1"
+else
+    training_opts=""
+fi
 
 if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
     echo "Stage 0: Download MAC-SLU and prepare jsonl"
@@ -64,7 +71,7 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
     exp_dir=$exp_root
 
     CUDA_VISIBLE_DEVICES=$gpuid \
-        python finetuning/qwen3_asr_sft.py --seed $seed \
+        python finetuning/qwen3_asr_sft.py --seed $seed $training_opts \
             --train_conf $train_conf \
             --train_file $data_dir/train.jsonl \
             --eval_file $data_dir/dev.jsonl \

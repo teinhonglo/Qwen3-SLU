@@ -16,7 +16,7 @@ attention_map_opts="" # e.g., --save_attention_map --attn_layers all --attn_mode
 nj=4
 gpuid=0
 suffix=
-train_conf=conf/macslu_qwen3_asr_06b.json
+train_conf=conf/slurp_qwen3_asr_06b.json
 seed=66
 
 # stage
