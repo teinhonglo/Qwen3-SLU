@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import inspect
 
 
 import torch
@@ -31,19 +32,6 @@ class TextOnlyExpertModel(PreTrainedModel, GenerationMixin):
             raise ValueError("text_model and lm_head are required")
         self.model = text_model
         self.lm_head = lm_head
-
-
-    def _set_gradient_checkpointing(self, module, value=False):
-        if hasattr(self.model, "_set_gradient_checkpointing"):
-            self.model._set_gradient_checkpointing(module, value=value)
-            return
-        if hasattr(self.model, "gradient_checkpointing"):
-            self.model.gradient_checkpointing = value
-            return
-        raise ValueError(
-            "Underlying text model does not expose gradient checkpointing controls; "
-            f"got {self.model.__class__.__name__}."
-        )
 
     def get_input_embeddings(self):
         return self.model.get_input_embeddings()
@@ -181,10 +169,6 @@ def main():
         )
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()
-
-    if model_args_conf.get("gradient_checkpointing", False):
-        model.config.use_cache = False
-        model.gradient_checkpointing_enable()
 
     def to_dataset(rows):
         return Dataset.from_list(
