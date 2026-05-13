@@ -167,6 +167,9 @@ def main():
             task_type=TaskType.CAUSAL_LM,
             **lora_config,
         )
+        # Ensure adapter_config.json records a valid base model path.
+        # For wrapped/custom models, PEFT may otherwise persist an empty string.
+        peft_config.base_model_name_or_path = model_name_or_path
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()
 
