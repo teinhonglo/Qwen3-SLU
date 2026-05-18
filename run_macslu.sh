@@ -14,6 +14,7 @@ json_root=data-json/macslu
 inference_mode="--auto_latest_checkpoint"
 prompt_file=""   # 可指定外部 prompt 檔案，空字串則使用 prepare_macslu_jsonl.py 內建 prompt
 attention_map_opts="" # e.g., --save_attention_map --attn_layers all --attn_mode rollout --attn_imgs_dir imgs
+decoding_conf="conf/decoding/basic_decoding.json"
 
 # training config
 nj=4
@@ -33,6 +34,11 @@ test_sets="test"
 
 if [ ! -f "$train_conf" ]; then
     echo "[ERROR] train_conf not found: $train_conf"
+    exit 1
+fi
+
+if [ ! -f "$decoding_conf" ]; then
+    echo "[ERROR] decoding_conf not found: $decoding_conf"
     exit 1
 fi
 
@@ -96,6 +102,7 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
                 --input_jsonl $test_jsonl \
                 --output_root $exp_dir \
                 --device cuda:0 \
+                --decoding_conf $decoding_conf \
                 $attention_map_opts
     done
 fi
