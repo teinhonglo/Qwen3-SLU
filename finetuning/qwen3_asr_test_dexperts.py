@@ -85,8 +85,17 @@ def main():
         return batch_decode_text(processor, gen_only_ids)[0].strip()
 
     cfg = load_dexperts_config(args.dexperts_config) if args.dexperts_config else {}
-    _, mc = load_train_conf_from_exp_dir(args.exp_dir)
-    sr = int(mc.get('sr', 16000)); max_new_tokens = int(mc.get('max_new_tokens', 256)); do_sample = bool(mc.get('do_sample', False)); temperature = float(mc.get('temperature', 0.0)); top_p = float(mc.get('top_p', 1.0))
+    train_conf = load_train_conf_from_exp_dir(args.exp_dir)
+    
+    if train_conf is None:
+        raise ValueError("Unable to load train_conf from exp_dir")
+
+    training_args_conf, model_args_conf = train_conf
+    sr = int(model_args_conf.get('sr', 16000))
+    max_new_tokens = int(model_args_conf.get('max_new_tokens', 256))
+    do_sample = bool(model_args_conf.get('do_sample', False))
+    temperature = float(model_args_conf.get('temperature', 0.0))
+    top_p = float(model_args_conf.get('top_p', 1.0))
 
     model_path = args.exp_dir
     if args.auto_best_checkpoint:
@@ -96,10 +105,10 @@ def main():
         if ck is None:
             raise ValueError(f'No checkpoint-* found under: {model_path}')
         model_path = ck
-    dtype = resolve_dtype(str(mc.get('dtype', 'auto')), args.device)
-    if mc.get('lora_config', None):
+    dtype = resolve_dtype(str(model_args_conf.get('dtype', 'auto')), args.device)
+    if model_args_conf.get('lora_config', None):
         lora_path = model_path
-        base_path = mc['model_path']
+        base_path = model_args_conf['model_path']
         asr_wrapper = Qwen3ASRModel.from_pretrained(base_path, dtype=dtype, device_map=args.device)
         asr_wrapper.model = PeftModelForCausalLM.from_pretrained(asr_wrapper.model, lora_path)
     else:

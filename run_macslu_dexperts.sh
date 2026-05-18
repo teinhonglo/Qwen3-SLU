@@ -37,7 +37,6 @@ fi
 
 conf_tag=$(basename -s .json $train_conf)
 base_exp_dir=${exp_root}/${conf_tag}${suffix}
-dexperts_exp_root=${base_exp_dir}_dexperts
 expert_exp_root=$base_exp_dir/dexperts_experts
 
 if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
@@ -92,14 +91,14 @@ if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
 
     for test_set in $test_sets; do
         test_jsonl=${json_root}/${test_set}.jsonl
-        mkdir -p ${dexperts_exp_root}/${test_set}
+        mkdir -p ${expert_exp_root}/${test_set}
 
         CUDA_VISIBLE_DEVICES="$gpuid" \
             python finetuning/qwen3_asr_test_dexperts.py \
                 $inference_mode \
                 --exp_dir ${base_exp_dir} \
                 --input_jsonl ${test_jsonl} \
-                --output_root ${dexperts_exp_root} \
+                --output_root ${expert_exp_root} \
                 --device cuda:0 \
                 --use_dexperts \
                 --dexperts_config conf/decoding/dexperts_macslu.json \
@@ -113,7 +112,7 @@ if [ $stage -le 6 ] && [ $stop_stage -ge 6 ]; then
     echo "Stage 6: Evaluate MAC-SLU predictions (DExperts)"
 
     for test_set in $test_sets; do
-        pred_file=${dexperts_exp_root}/${test_set}/predictions.jsonl
+        pred_file=${expert_exp_root}/${test_set}/predictions.jsonl
         gt_file=${json_root}/${test_set}.jsonl
 
         if [ ! -f "$pred_file" ]; then
@@ -121,7 +120,7 @@ if [ $stage -le 6 ] && [ $stop_stage -ge 6 ]; then
             continue
         fi
 
-        python local/metrics.py --output_dir ${dexperts_exp_root}/${test_set} "$pred_file" "$gt_file" | tee ${dexperts_exp_root}/${test_set}/metrics.txt
+        python local/metrics.py --output_dir ${expert_exp_root}/${test_set} "$pred_file" "$gt_file" | tee ${expert_exp_root}/${test_set}/metrics.txt
     done
 fi
 
@@ -129,7 +128,7 @@ if [ $stage -le 7 ] && [ $stop_stage -ge 7 ]; then
     echo "Stage 7: Summary (MAC-SLU DExperts)"
 
     for test_set in $test_sets; do
-        metrics_file=${dexperts_exp_root}/${test_set}/metrics.txt
+        metrics_file=${expert_exp_root}/${test_set}/metrics.txt
         if [ ! -f "$metrics_file" ]; then
             echo "[WARNING] metrics file not found: $metrics_file"
             continue

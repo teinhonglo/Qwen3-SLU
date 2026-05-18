@@ -203,6 +203,11 @@ def main():
     trainer.train()
     model.save_pretrained(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
+    
+    if args.train_conf is not None and trainer.args.process_index == 0:
+        saved_train_conf = os.path.join(args.output_dir, "train_conf.json")
+        with open(saved_train_conf, "w", encoding="utf-8") as f:
+            json.dump(args.train_conf, f, ensure_ascii=False, indent=4)
 
 
 if __name__ == "__main__":

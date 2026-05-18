@@ -465,26 +465,6 @@ def save_resolved_decoding_conf(resolved: Dict[str, Any], output_root: str, json
     print(f"[info] saved decoding config: {out_path}")
 
 
-
-def apply_layer_lmhead_mode(model, enabled: bool, layer_index: int):
-    target = model
-    if hasattr(target, "set_layer_lmhead_index"):
-        target.set_layer_lmhead_index(layer_index if enabled else None)
-        return
-
-    if hasattr(target, "get_base_model"):
-        base = target.get_base_model()
-        if hasattr(base, "set_layer_lmhead_index"):
-            base.set_layer_lmhead_index(layer_index if enabled else None)
-            return
-
-    if hasattr(target, "base_model") and hasattr(target.base_model, "set_layer_lmhead_index"):
-        target.base_model.set_layer_lmhead_index(layer_index if enabled else None)
-        return
-
-    raise ValueError("Current model does not support set_layer_lmhead_index")
-
-
 def parse_args():
     p = argparse.ArgumentParser("Qwen3-ASR SLU test script")
 
@@ -599,9 +579,7 @@ def main():
     layer_cfg = resolved_decoding.get("layer_lmhead", {})
     if effective_mode == "layer_lmhead":
         layer_index = int(layer_cfg.get("layer_index", -1))
-        apply_layer_lmhead_mode(asr_wrapper.model, enabled=True, layer_index=layer_index)
-    else:
-        apply_layer_lmhead_mode(asr_wrapper.model, enabled=False, layer_index=-1)
+        asr_wrapper.model.set_layer_lmhead_index(layer_index if enabled else None)
 
     rows = load_jsonl(args.input_jsonl)
     rows_out = []
