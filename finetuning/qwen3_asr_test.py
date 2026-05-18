@@ -144,6 +144,10 @@ def infer_one(
     temperature: float = 0.0,
     top_p: float = 1.0,
     output_root: str = "",
+    decoding_mode: str = "basic",
+    dola_conf: Optional[Dict[str, Any]] = None,
+    top_k: int = 0,
+    repetition_penalty: float = 1.0,
 ) -> str:
     processor = asr_wrapper.processor
     model = asr_wrapper.model
@@ -167,11 +171,25 @@ def infer_one(
     gen_kwargs = {
         "max_new_tokens": max_new_tokens,
         "do_sample": do_sample,
+        "repetition_penalty": repetition_penalty,
     }
     if do_sample:
         gen_kwargs["temperature"] = temperature
         gen_kwargs["top_p"] = top_p
-    
+        if top_k > 0:
+            gen_kwargs["top_k"] = top_k
+
+    if decoding_mode == "dola":
+        dola_conf = dola_conf or {}
+        dola_layers = dola_conf.get("layers", None)
+        if not isinstance(dola_layers, list) or len(dola_layers) == 0:
+            raise ValueError("dola.layers must be a non-empty list")
+        gen_kwargs["dola_layers"] = dola_layers
+        if "relative_top" in dola_conf:
+            gen_kwargs["dola_relative_top"] = float(dola_conf["relative_top"])
+    elif decoding_mode != "basic" and decoding_mode != "layer_lmhead":
+        raise ValueError(f"Unsupported decoding mode: {decoding_mode}")
+
     model.eval()
     with torch.inference_mode():
         gen_out = model.generate(**inputs, **gen_kwargs, output_attentions=True)
@@ -194,7 +212,6 @@ def infer_one(
     #print(gen_out)
     #plot_split_attention_heatmap(gen_out, inputs, asr_wrapper, audio_path, target_layer=-1, output_root=output_root)
     #######################
-
     return decoded
 
 def plot_split_attention_heatmap(gen_out, inputs, asr_wrapper, audio_path, target_layer=-1, output_root=""):
@@ -326,6 +343,15 @@ def get_jsonl_name(input_jsonl: str) -> str:
     return name
 
 
+def build_output_subdir_name(input_jsonl: str, decoding_mode: str, decoding_conf_path: str) -> str:
+    jsonl_name = get_jsonl_name(input_jsonl)
+    if decoding_mode == "basic":
+        return jsonl_name
+
+    conf_name = os.path.splitext(os.path.basename(decoding_conf_path))[0] if decoding_conf_path else "decoding"
+    return f"{jsonl_name}_{conf_name}"
+
+
 def write_slu_prediction_jsonl(rows_out: List[Dict[str, Any]], output_root: str, jsonl_name: str):
     save_dir = os.path.join(output_root, jsonl_name)
     os.makedirs(save_dir, exist_ok=True)
@@ -388,6 +414,77 @@ def load_corrected_prompt(corrected_prompt_file: str) -> str:
         return f.read().strip()
 
 
+
+
+def load_decoding_conf(path: str) -> Dict[str, Any]:
+    if not path:
+        return {}
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"decoding config not found: {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError("decoding config must be a JSON object")
+    return cfg
+
+
+def resolve_decoding_conf(model_args_conf: Dict[str, Any], decoding_conf: Dict[str, Any]) -> Dict[str, Any]:
+    dec = (decoding_conf or {}).get("decoding", {})
+    gen = dec.get("generation", {})
+
+    return {
+        "mode": str(dec.get("mode", "basic")),
+        "strict": bool(dec.get("strict", False)),
+        "generation": {
+            "max_new_tokens": int(gen.get("max_new_tokens", model_args_conf.get("max_new_tokens", 256))),
+            "do_sample": bool(gen.get("do_sample", model_args_conf.get("do_sample", False))),
+            "temperature": float(gen.get("temperature", model_args_conf.get("temperature", 0.0))),
+            "top_p": float(gen.get("top_p", model_args_conf.get("top_p", 1.0))),
+            "top_k": int(gen.get("top_k", 0)),
+            "repetition_penalty": float(gen.get("repetition_penalty", 1.0)),
+        },
+        "dola": dec.get("dola", {}),
+        "layer_lmhead": dec.get("layer_lmhead", {}),
+    }
+
+
+def validate_decoding_mode(resolved: Dict[str, Any]) -> str:
+    mode = resolved.get("mode", "basic")
+    supported = {"basic", "dola", "layer_lmhead"}
+    if mode not in supported:
+        raise ValueError(f"Unsupported decoding mode: {mode}")
+    return mode
+
+
+def save_resolved_decoding_conf(resolved: Dict[str, Any], output_root: str, jsonl_name: str):
+    save_dir = os.path.join(output_root, jsonl_name)
+    os.makedirs(save_dir, exist_ok=True)
+    out_path = os.path.join(save_dir, "resolved_decoding_config.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(resolved, f, ensure_ascii=False, indent=2)
+    print(f"[info] saved decoding config: {out_path}")
+
+
+
+def apply_layer_lmhead_mode(model, enabled: bool, layer_index: int):
+    target = model
+    if hasattr(target, "set_layer_lmhead_index"):
+        target.set_layer_lmhead_index(layer_index if enabled else None)
+        return
+
+    if hasattr(target, "get_base_model"):
+        base = target.get_base_model()
+        if hasattr(base, "set_layer_lmhead_index"):
+            base.set_layer_lmhead_index(layer_index if enabled else None)
+            return
+
+    if hasattr(target, "base_model") and hasattr(target.base_model, "set_layer_lmhead_index"):
+        target.base_model.set_layer_lmhead_index(layer_index if enabled else None)
+        return
+
+    raise ValueError("Current model does not support set_layer_lmhead_index")
+
+
 def parse_args():
     p = argparse.ArgumentParser("Qwen3-ASR SLU test script")
 
@@ -412,6 +509,8 @@ def parse_args():
                    help="Output corrected jsonl dir. If empty, do not write corrected jsonl")
     p.add_argument("--corrected_prompt_file", type=str, default="data/macslu/corrected_prompt.txt",
                    help="Correction prompt file path for corrected jsonl")
+    p.add_argument("--decoding_conf", type=str, default="conf/decoding/basic_decoding.json",
+                   help="Hierarchical decoding config JSON path")
     return p.parse_args()
 
 
@@ -442,11 +541,18 @@ def main():
 
     training_args_conf, model_args_conf = train_conf
     sr = int(model_args_conf.get("sr", 16000))
-    max_new_tokens = int(model_args_conf.get("max_new_tokens", 256))
-    do_sample = bool(model_args_conf.get("do_sample", False))
-    temperature = float(model_args_conf.get("temperature", 0.0))
-    top_p = float(model_args_conf.get("top_p", 1.0))
     dtype_str = str(model_args_conf.get("dtype", "auto"))
+
+    decoding_conf = load_decoding_conf(args.decoding_conf)
+    resolved_decoding = resolve_decoding_conf(model_args_conf, decoding_conf)
+    effective_mode = validate_decoding_mode(resolved_decoding)
+    gen_cfg = resolved_decoding["generation"]
+    max_new_tokens = int(gen_cfg["max_new_tokens"])
+    do_sample = bool(gen_cfg["do_sample"])
+    temperature = float(gen_cfg["temperature"])
+    top_p = float(gen_cfg["top_p"])
+    top_k = int(gen_cfg.get("top_k", 0))
+    repetition_penalty = float(gen_cfg.get("repetition_penalty", 1.0))
 
     model_path = args.exp_dir
     if args.auto_best_checkpoint:
@@ -460,7 +566,9 @@ def main():
     print(f"[info] use checkpoint: {model_path}")
 
     dtype = resolve_dtype(dtype_str, args.device)
-    jsonl_name = get_jsonl_name(args.input_jsonl)
+    jsonl_name = build_output_subdir_name(args.input_jsonl, effective_mode, args.decoding_conf)
+    resolved_decoding["effective_mode"] = effective_mode
+    save_resolved_decoding_conf(resolved_decoding, args.output_root, jsonl_name)
 
     # LoRA
     lora_config = model_args_conf.get("lora_config", None)
@@ -488,6 +596,13 @@ def main():
             device_map=args.device,
         )
 
+    layer_cfg = resolved_decoding.get("layer_lmhead", {})
+    if effective_mode == "layer_lmhead":
+        layer_index = int(layer_cfg.get("layer_index", -1))
+        apply_layer_lmhead_mode(asr_wrapper.model, enabled=True, layer_index=layer_index)
+    else:
+        apply_layer_lmhead_mode(asr_wrapper.model, enabled=False, layer_index=-1)
+
     rows = load_jsonl(args.input_jsonl)
     rows_out = []
     failed = 0
@@ -514,6 +629,10 @@ def main():
             temperature=temperature,
             top_p=top_p,
             output_root=args.output_root,
+            decoding_mode=effective_mode,
+            dola_conf=resolved_decoding.get("dola", {}),
+            top_k=top_k,
+            repetition_penalty=repetition_penalty,
         )
         '''
         if "<slu>" in pred_raw:

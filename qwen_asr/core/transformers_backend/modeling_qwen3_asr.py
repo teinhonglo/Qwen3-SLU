@@ -1092,7 +1092,11 @@ class Qwen3ASRThinkerForConditionalGeneration(Qwen3ASRPreTrainedModelForConditio
             self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
         self.pad_token_id = self.config.pad_token_id if self.config.pad_token_id is not None else -1
         self.rope_deltas = None
+        self.layer_lmhead_index = None
         self.post_init()
+
+    def set_layer_lmhead_index(self, layer_index: Optional[int] = None):
+        self.layer_lmhead_index = layer_index
 
     def get_input_embeddings(self):
         return self.model.get_input_embeddings()
@@ -1231,6 +1235,10 @@ class Qwen3ASRThinkerForConditionalGeneration(Qwen3ASRPreTrainedModelForConditio
                 position_ids = position_ids.add(delta)
                 position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
 
+        model_kwargs = dict(kwargs)
+        if self.layer_lmhead_index is not None:
+            model_kwargs["output_hidden_states"] = True
+
         outputs = self.model(
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -1238,10 +1246,21 @@ class Qwen3ASRThinkerForConditionalGeneration(Qwen3ASRPreTrainedModelForConditio
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
             cache_position=cache_position,
-            **kwargs,
+            **model_kwargs,
         )
 
         hidden_states = outputs[0]
+        if self.layer_lmhead_index is not None:
+            all_hidden_states = outputs.hidden_states
+            if all_hidden_states is None:
+                raise ValueError("hidden_states is None while layer_lmhead mode is enabled")
+            n_hidden_states = len(all_hidden_states)
+            idx = self.layer_lmhead_index if self.layer_lmhead_index >= 0 else n_hidden_states + self.layer_lmhead_index
+            if idx < 0 or idx >= n_hidden_states:
+                raise ValueError(
+                    f"layer_lmhead index out of range: {self.layer_lmhead_index}, total_hidden_states={n_hidden_states}"
+                )
+            hidden_states = all_hidden_states[idx]
         logits = self.lm_head(hidden_states)
 
         loss = None
@@ -1324,6 +1343,9 @@ class Qwen3ASRForConditionalGeneration(Qwen3ASRPreTrainedModel, GenerationMixin)
     
     def get_support_languages(self):
         return self.config.support_languages
+
+    def set_layer_lmhead_index(self, layer_index: Optional[int] = None):
+        self.thinker.set_layer_lmhead_index(layer_index)
 
     @torch.no_grad()
     def generate(
