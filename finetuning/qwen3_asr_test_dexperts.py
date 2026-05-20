@@ -72,16 +72,23 @@ def main():
         prefix_len = int(inputs['attention_mask'][0].sum().item())
         inputs = move_inputs_to_device(inputs, device=device, model_dtype=model_dtype)
         gen_kwargs = {"max_new_tokens": max_new_tokens, "do_sample": do_sample}
+
+        if logits_processor is not None and hasattr(logits_processor, 'base_prefix_len'):
+            logits_processor.base_prefix_len = prefix_len
+
         if do_sample:
             gen_kwargs.update({"temperature": temperature, "top_p": top_p})
         if logits_processor is not None:
             gen_kwargs['logits_processor'] = LogitsProcessorList([logits_processor])
+
         with torch.inference_mode():
             gen_out = model.generate(**inputs, **gen_kwargs)
+
         output_ids = unwrap_generate_output(gen_out)
         if output_ids.dim() == 1:
             output_ids = output_ids.unsqueeze(0)
         gen_only_ids = output_ids[:, prefix_len:] if output_ids.size(1) > prefix_len else output_ids
+
         return batch_decode_text(processor, gen_only_ids)[0].strip()
 
     cfg = load_dexperts_config(args.dexperts_config) if args.dexperts_config else {}
@@ -127,6 +134,30 @@ def main():
     di_expert = ExpertLM(path=di_path, device=args.device) if args.use_dexperts else None
     sk_expert = ExpertLM(path=sk_path, device=args.device) if args.use_dexperts else None
     tok = asr_wrapper.processor.tokenizer if hasattr(asr_wrapper.processor, 'tokenizer') else asr_wrapper.processor
+
+    if args.use_dexperts:
+        print(f"[DExperts] domain_intent expert path: {di_path or '<empty>'}")
+        print(f"[DExperts] slot_key expert path: {sk_path or '<empty>'}")
+        print(f"[DExperts] schema path: {schema_path or '<empty>'}")
+        print(f"[DExperts] domain_intent loaded: {bool(di_expert and di_expert.model is not None)}")
+        print(f"[DExperts] slot_key loaded: {bool(sk_expert and sk_expert.model is not None)}")
+        try:
+            base_vocab = int(getattr(tok, "vocab_size", 0) or 0)
+            di_vocab = int(getattr(getattr(di_expert, "tokenizer", None), "vocab_size", 0) or 0)
+            sk_vocab = int(getattr(getattr(sk_expert, "tokenizer", None), "vocab_size", 0) or 0)
+            if di_expert and di_expert.model is not None and di_vocab != base_vocab:
+                warnings.warn(
+                    f"domain_intent vocab mismatch: base={base_vocab}, expert={di_vocab}. "
+                    "Expert logits may be skipped due to shape mismatch."
+                )
+            if sk_expert and sk_expert.model is not None and sk_vocab != base_vocab:
+                warnings.warn(
+                    f"slot_key vocab mismatch: base={base_vocab}, expert={sk_vocab}. "
+                    "Expert logits may be skipped due to shape mismatch."
+                )
+        except Exception as exc:
+            warnings.warn(f"Unable to validate tokenizer vocab alignment: {exc}")
+
     logits_processor = StateAwareDExpertsLogitsProcessor(tok, schema=schema, domain_intent_expert=di_expert, slot_key_expert=sk_expert, alpha_domain_intent=di_alpha, alpha_slot_key=sk_alpha, grounding_strength=gr, enable_schema_mask=not args.disable_schema_mask, enable_grounding=not args.disable_grounding) if args.use_dexperts else None
 
     rows = load_jsonl(args.input_jsonl)
@@ -142,6 +173,19 @@ def main():
             print(f"[WARNING] Processing failed for {row.get('text_id', f'line{i}')}: {pred_json}")
             pred_semantics = [{'FAILED': pred_json}]
         rows_out.append({'text_id': str(row.get('text_id', f'line{i}')), 'query': row.get('query', ''), 'audio': row.get('audio', ''), 'text': row.get('text', ''), 'semantics': row.get('semantics', []), 'pred_json': pred_json, 'pred_query': pred_query, 'pred_raw': pred_raw, 'pred_semantics': pred_semantics})
+
+        if args.use_dexperts and logits_processor is not None and hasattr(logits_processor, "get_debug_stats"):
+            dbg = logits_processor.get_debug_stats()
+            print("[DExperts] decode summary:")
+            print(
+                "[DExperts] steps={steps}, state_domain={state_domain}, state_intent={state_intent}, "
+                "state_slots_key={state_slots_key}, state_slots_value={state_slots_value}".format(**dbg)
+            )
+            print(
+                "[DExperts] di_applied={di_applied}, di_skipped_shape={di_skipped_shape}, "
+                "sk_applied={sk_applied}, sk_skipped_shape={sk_skipped_shape}".format(**dbg)
+            )
+
 
     write_slu_prediction_jsonl(rows_out, args.output_root, jsonl_name)
     if args.output_jsonl_dir:

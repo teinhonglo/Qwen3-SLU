@@ -558,6 +558,7 @@ def main():
             model_path,
             dtype=dtype,
             device_map=args.device,
+            attn_implementation="flash_attention_2"
         )
         if effective_mode == "layer_lmhead":
             layer_cfg = resolved_decoding.get("layer_lmhead", {})
