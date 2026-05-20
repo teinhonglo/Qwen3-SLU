@@ -181,12 +181,11 @@ def infer_one(
 
     if decoding_mode == "dola":
         dola_conf = dola_conf or {}
-        dola_layers = dola_conf.get("layers", None)
-        if not isinstance(dola_layers, list) or len(dola_layers) == 0:
-            raise ValueError("dola.layers must be a non-empty list")
+        dola_layers = dola_conf.get("layers", "high")
+        gen_kwargs["repetition_penalty"] = dola_conf["repetition_penalty"]
         gen_kwargs["dola_layers"] = dola_layers
-        if "relative_top" in dola_conf:
-            gen_kwargs["dola_relative_top"] = float(dola_conf["relative_top"])
+        gen_kwargs["trust_remote_code"] = True
+        gen_kwargs["output_hidden_states"] = True
     elif decoding_mode != "basic" and decoding_mode != "layer_lmhead":
         raise ValueError(f"Unsupported decoding mode: {decoding_mode}")
 
@@ -404,7 +403,6 @@ def write_corrected_jsonl(
 
     print(f"[info] saved corrected jsonl: {out_path}")
 
-
 def load_corrected_prompt(corrected_prompt_file: str) -> str:
     if not corrected_prompt_file:
         return ""
@@ -412,8 +410,6 @@ def load_corrected_prompt(corrected_prompt_file: str) -> str:
         raise FileNotFoundError(f"corrected prompt file not found: {corrected_prompt_file}")
     with open(corrected_prompt_file, "r", encoding="utf-8") as f:
         return f.read().strip()
-
-
 
 
 def load_decoding_conf(path: str) -> Dict[str, Any]:
@@ -554,7 +550,7 @@ def main():
     lora_config = model_args_conf.get("lora_config", None)
     if lora_config:
         lora_type = model_args_conf.get("lora_type", "default")
-        print(f"LoRA Finetuning {lora_type}")
+        print(f"LoRA Finetuning: {lora_type} and {effective_mode}")
         lora_path = model_path
         model_path = model_args_conf["model_path"]
 
@@ -563,23 +559,27 @@ def main():
             dtype=dtype,
             device_map=args.device,
         )
+        if effective_mode == "layer_lmhead":
+            layer_cfg = resolved_decoding.get("layer_lmhead", {})
+            layer_index = int(layer_cfg.get("layer_index", -1))
+            asr_wrapper.model.set_layer_lmhead_index(layer_index)
+
         asr_wrapper.model = PeftModelForCausalLM.from_pretrained(
             asr_wrapper.model,
             lora_path,
             torch_dtype=torch.bfloat16,
         )
     else:
-        print("Full Finetuning")
+        print(f"Full Finetuning: {effective_mode}")
         asr_wrapper = Qwen3ASRModel.from_pretrained(
             model_path,
             dtype=dtype,
             device_map=args.device,
         )
-
-    layer_cfg = resolved_decoding.get("layer_lmhead", {})
-    if effective_mode == "layer_lmhead":
-        layer_index = int(layer_cfg.get("layer_index", -1))
-        asr_wrapper.model.set_layer_lmhead_index(layer_index if enabled else None)
+        if effective_mode == "layer_lmhead":
+            layer_cfg = resolved_decoding.get("layer_lmhead", {})
+            layer_index = int(layer_cfg.get("layer_index", -1))
+            asr_wrapper.model.set_layer_lmhead_index(layer_index)
 
     rows = load_jsonl(args.input_jsonl)
     rows_out = []

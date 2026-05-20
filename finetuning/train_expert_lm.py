@@ -99,17 +99,21 @@ def load_rows(path):
     return rows
 
 
+def load_train_conf(train_conf_path: str):
+    if not train_conf_path:
+        return None
 
-def load_train_conf(path):
-    if not path or not os.path.isfile(path):
-        raise FileNotFoundError(f"train_conf not found: {path}")
-    with open(path, "r", encoding="utf-8") as f:
+    with open(train_conf_path, "r", encoding="utf-8") as f:
         cfg = json.load(f)
+
     if not isinstance(cfg, list) or len(cfg) != 2:
-        raise ValueError("train_conf must be [training_args, model_args]")
-    if not isinstance(cfg[0], dict) or not isinstance(cfg[1], dict):
-        raise ValueError("train_conf entries must be dicts")
-    return cfg
+        raise ValueError("train_conf must be a list in format: [training_args, model_args]")
+
+    training_args, model_args = cfg
+    if not isinstance(training_args, dict) or not isinstance(model_args, dict):
+        raise ValueError("train_conf entries must both be dictionaries")
+    return [training_args, model_args]
+
 
 def main():
     """CLI entry for expert LM training."""
@@ -126,7 +130,11 @@ def main():
     from peft import LoraConfig, TaskType, get_peft_model
     from qwen_asr import Qwen3ASRModel
 
-    training_args_conf, model_args_conf = load_train_conf(args.train_conf)
+    train_conf = load_train_conf(args.train_conf)
+    if train_conf is None:
+        raise ValueError("--train_conf is required")
+
+    training_args_conf, model_args_conf = train_conf
     training_args_conf = dict(training_args_conf)
     model_args_conf = dict(model_args_conf)
 
@@ -204,10 +212,10 @@ def main():
     model.save_pretrained(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
     
-    if args.train_conf is not None and trainer.args.process_index == 0:
+    if train_conf is not None and trainer.args.process_index == 0:
         saved_train_conf = os.path.join(args.output_dir, "train_conf.json")
         with open(saved_train_conf, "w", encoding="utf-8") as f:
-            json.dump(args.train_conf, f, ensure_ascii=False, indent=4)
+            json.dump(train_conf, f, ensure_ascii=False, indent=4)
 
 
 if __name__ == "__main__":

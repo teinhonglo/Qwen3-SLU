@@ -106,9 +106,9 @@ def main():
             raise ValueError(f'No checkpoint-* found under: {model_path}')
         model_path = ck
     dtype = resolve_dtype(str(model_args_conf.get('dtype', 'auto')), args.device)
+    base_path = model_args_conf['model_path']
     if model_args_conf.get('lora_config', None):
         lora_path = model_path
-        base_path = model_args_conf['model_path']
         asr_wrapper = Qwen3ASRModel.from_pretrained(base_path, dtype=dtype, device_map=args.device)
         asr_wrapper.model = PeftModelForCausalLM.from_pretrained(asr_wrapper.model, lora_path)
     else:
@@ -124,8 +124,8 @@ def main():
     sk_path = args.slot_key_expert_path or exp_cfg.get('slot_key', {}).get('path', '')
     di_alpha = float(exp_cfg.get('domain_intent', {}).get('alpha', 1.0)); sk_alpha = float(exp_cfg.get('slot_key', {}).get('alpha', 1.0))
     gr = float(cfg.get('grounding', {}).get('strength', 1.0)) if isinstance(cfg, dict) else 1.0
-    di_expert = ExpertLM(di_path, device=args.device) if args.use_dexperts else None
-    sk_expert = ExpertLM(sk_path, device=args.device) if args.use_dexperts else None
+    di_expert = ExpertLM(path=di_path, device=args.device) if args.use_dexperts else None
+    sk_expert = ExpertLM(path=sk_path, device=args.device) if args.use_dexperts else None
     tok = asr_wrapper.processor.tokenizer if hasattr(asr_wrapper.processor, 'tokenizer') else asr_wrapper.processor
     logits_processor = StateAwareDExpertsLogitsProcessor(tok, schema=schema, domain_intent_expert=di_expert, slot_key_expert=sk_expert, alpha_domain_intent=di_alpha, alpha_slot_key=sk_alpha, grounding_strength=gr, enable_schema_mask=not args.disable_schema_mask, enable_grounding=not args.disable_grounding) if args.use_dexperts else None
 
