@@ -75,6 +75,19 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
                 clean_up_tokenization_spaces=False,
             )[0]
         return self.tok.decode(ids[0], skip_special_tokens=True)
+    
+    def _decode_top_token_from_logits(self, input_ids, logits):
+        if logits is None:
+            return None, None
+
+        next_tid = torch.argmax(logits, dim=-1)
+        if next_tid.ndim > 0:
+            next_tid = next_tid[0]
+        next_tid = next_tid.to(input_ids.device).long()
+
+        appended = torch.cat([input_ids[0], next_tid.view(1)], dim=0).unsqueeze(0)
+        decoded = self._decode_generated_prefix(appended)
+        return next_tid.item(), decoded
 
     def __call__(self, input_ids, scores):
         #prefix = self.tok.decode(input_ids[0][self.base_prefix_len :], skip_special_tokens=True)
@@ -99,9 +112,22 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
             self.debug_stats["state_slots_key"] += 1
         elif state.state_name == STATE_SLOTS_VALUE:
             self.debug_stats["state_slots_value"] += 1
+
+        print("="*100)
+        print(
+                f"[DExperts][Ori][state={state.state_name}] decoded={prefix}",
+                flush=True,
+            )
               
         if state.state_name in (STATE_DOMAIN, STATE_INTENT) and self.di is not None:
             z = self.di.score_next_token(prefix)
+            z_tid, z_decoded = self._decode_top_token_from_logits(input_ids, z)
+            out_tid, out_decoded = self._decode_top_token_from_logits(input_ids, out)
+            if z_tid is not None:
+                print(
+                    f"[DExperts][DI][state={state.state_name}] out_top_token_id={out_tid}, z_top_token_id={z_tid},\no_decoded={out_decoded}\nz_decoded={z_decoded}",
+                    flush=True,
+                )
             if z is not None and z.shape[-1] == out.shape[-1]:
                 out = out + self.a_di * z.to(out.device)
                 self.debug_stats["di_applied"] += 1
@@ -110,6 +136,13 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
 
         if state.state_name == STATE_SLOTS_KEY and self.sk is not None:
             z = self.sk.score_next_token(prefix)
+            z_tid, z_decoded = self._decode_top_token_from_logits(input_ids, z)
+            out_tid, out_decoded = self._decode_top_token_from_logits(input_ids, out)
+            if z_tid is not None:
+                print(
+                    f"[DExperts][SK][state={state.state_name}] out_top_token_id={out_tid}, z_top_token_id={z_tid},\no_decoded={out_decoded}\nz_decoded={z_decoded}",
+                    flush=True,
+                )
             if z is not None and z.shape[-1] == out.shape[-1]:
                 out = out + self.a_sk * z.to(out.device)
                 self.debug_stats["sk_applied"] += 1
@@ -137,11 +170,18 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
                     asr_text = prefix.split('"asr_text"', 1)[1].split('"', 2)[2]
                 except Exception:
                     asr_text = ""
+            out_tid, out_decoded = self._decode_top_token_from_logits(input_ids, out)
             out = apply_copy_bias(
                 out,
                 build_copy_bias_map(self.tok, asr_text),
                 self.grounding_strength,
             )
+            z_tid, z_decoded = self._decode_top_token_from_logits(input_ids, out)
+            if z_tid is not None:
+                print(
+                    f"[DExperts][SV][state={state.state_name}] out_top_token_id={out_tid}, z_top_token_id={z_tid},\no_decoded={out_decoded}\nz_decoded={z_decoded}",
+                    flush=True,
+                )
         ch_idx = torch.argmax(out)
 
         if ch_idx != ori_idx:
