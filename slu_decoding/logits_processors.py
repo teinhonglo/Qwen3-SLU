@@ -19,9 +19,9 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
         schema=None,
         domain_intent_expert=None,
         slot_key_expert=None,
-        alpha_domain_intent=1.0,
-        alpha_slot_key=1.0,
-        grounding_strength=1.0,
+        alpha_domain_intent=0.1,
+        alpha_slot_key=0.1,
+        grounding_strength=0.1,
         enable_schema_mask=True,
         enable_grounding=True,
     ):
@@ -45,7 +45,9 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
             "di_skipped_shape": 0,
             "sk_applied": 0,
             "sk_skipped_shape": 0,
+            "changed_max": 0
         }
+        print(f"alpha_domain_intent: {self.a_di},  alpha_slot_key: {self.a_sk}, grounding_strength: {self.grounding_strength}")
 
     def _mask_allowed_strings(self, logits, allowed):
         if not allowed:
@@ -79,10 +81,15 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
         prefix = self._decode_generated_prefix(input_ids)
         #print("===== PREFIX ESCAPED START =====", flush=True)
         #print(prefix, flush=True)
-        #tate = parse_state(prefix)
-        #print(state, flush=True)
+        #print("===== PREFIX ESCAPED END =====", flush=True)
+        #print("===== PREFIX ESCAPED START =====", flush=True)
+        #print(prefix, flush=True)
+        state = parse_state(prefix)
+        #print(prefix)
+        #－－print(state, flush=True)
         #print("===== PREFIX ESCAPED END =====", flush=True)
         out = scores
+        ori_idx = torch.argmax(out)
         self.debug_stats["steps"] += 1
         if state.state_name == STATE_DOMAIN:
             self.debug_stats["state_domain"] += 1
@@ -92,7 +99,7 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
             self.debug_stats["state_slots_key"] += 1
         elif state.state_name == STATE_SLOTS_VALUE:
             self.debug_stats["state_slots_value"] += 1
-
+              
         if state.state_name in (STATE_DOMAIN, STATE_INTENT) and self.di is not None:
             z = self.di.score_next_token(prefix)
             if z is not None and z.shape[-1] == out.shape[-1]:
@@ -108,7 +115,7 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
                 self.debug_stats["sk_applied"] += 1
             elif z is not None:
                 self.debug_stats["sk_skipped_shape"] += 1
-
+        '''
         if self.enable_schema_mask and self.schema is not None:
             if state.state_name == STATE_DOMAIN:
                 out = self._mask_allowed_strings(out, self.schema.get_valid_domains())
@@ -121,6 +128,7 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
                     out,
                     self.schema.get_valid_slot_keys(state.current_domain, state.current_intent),
                 )
+        '''
 
         if self.enable_grounding and state.state_name == STATE_SLOTS_VALUE:
             asr_text = ""
@@ -134,6 +142,10 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
                 build_copy_bias_map(self.tok, asr_text),
                 self.grounding_strength,
             )
+        ch_idx = torch.argmax(out)
+
+        if ch_idx != ori_idx:
+            self.debug_stats["changed_max"] += 1
 
         return out
     

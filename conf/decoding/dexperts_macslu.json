@@ -5,7 +5,7 @@
   "experts": {
     "domain_intent": {
       "path": "exp/macslu/macslu_qwen3_asr_17b_ep10_lora_woemblmhead/dexperts_experts/domain_intent",
-      "alpha": 1.2
+      "alpha": 1.0
     },
     "slot_key": {
       "path": "exp/macslu/macslu_qwen3_asr_17b_ep10_lora_woemblmhead/dexperts_experts/slot_key",

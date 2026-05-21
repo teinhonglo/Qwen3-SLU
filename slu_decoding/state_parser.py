@@ -54,8 +54,6 @@ def parse_state(prefix_text: str) -> DecodingState:
         rf'{key_re("intent")}\s*:\s*{Q}{VAL}{Q}',
         payload,
     )
-    print(f"payload: {payload}")
-    print(f"domains: {domains} and intents: {intents}")
     cur_domain = domains[-1] if domains else ""
     cur_intent = intents[-1] if intents else ""
 

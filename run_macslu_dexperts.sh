@@ -86,8 +86,8 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
             --output_dir ${expert_exp_root}/slot_key
 fi
 
-if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
-    echo "Stage 5: DExperts inference on MAC-SLU test"
+if [ $stage -le 6 ] && [ $stop_stage -ge 6 ]; then
+    echo "Stage 6: DExperts inference on MAC-SLU test"
 
     for test_set in $test_sets; do
         test_jsonl=${json_root}/${test_set}.jsonl
@@ -108,8 +108,8 @@ if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
     done
 fi
 
-if [ $stage -le 6 ] && [ $stop_stage -ge 6 ]; then
-    echo "Stage 6: Evaluate MAC-SLU predictions (DExperts)"
+if [ $stage -le 7 ] && [ $stop_stage -ge 7 ]; then
+    echo "Stage 7: Evaluate MAC-SLU predictions (DExperts)"
 
     for test_set in $test_sets; do
         pred_file=${expert_exp_root}/${test_set}/predictions.jsonl
@@ -124,8 +124,8 @@ if [ $stage -le 6 ] && [ $stop_stage -ge 6 ]; then
     done
 fi
 
-if [ $stage -le 7 ] && [ $stop_stage -ge 7 ]; then
-    echo "Stage 7: Summary (MAC-SLU DExperts)"
+if [ $stage -le 8 ] && [ $stop_stage -ge 8 ]; then
+    echo "Stage 8: Summary (MAC-SLU DExperts)"
 
     for test_set in $test_sets; do
         metrics_file=${expert_exp_root}/${test_set}/metrics.txt

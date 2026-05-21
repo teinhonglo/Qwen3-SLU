@@ -183,7 +183,7 @@ def main():
             )
             print(
                 "[DExperts] di_applied={di_applied}, di_skipped_shape={di_skipped_shape}, "
-                "sk_applied={sk_applied}, sk_skipped_shape={sk_skipped_shape}".format(**dbg)
+                "sk_applied={sk_applied}, sk_skipped_shape={sk_skipped_shape}, changed_max={changed_max}".format(**dbg)
             )
 
 
