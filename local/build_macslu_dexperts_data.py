@@ -15,6 +15,13 @@ from slu_decoding.state_parser import (
     parse_state,
 )
 
+from slu_decoding.state_parser import (
+    STATE_DOMAIN,
+    STATE_INTENT,
+    STATE_SLOTS_KEY,
+    parse_state,
+)
+
 
 def load_jsonl(path):
     rows = []
