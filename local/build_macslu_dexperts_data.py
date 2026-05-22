@@ -4,6 +4,16 @@
 import argparse
 import json
 import os
+import re
+
+from slu_decoding.state_parser import (
+    Q,
+    STATE_DOMAIN,
+    STATE_INTENT,
+    STATE_SLOTS_KEY,
+    key_re,
+    parse_state,
+)
 
 
 def load_jsonl(path):
@@ -20,13 +30,19 @@ def load_jsonl(path):
     return rows
 
 
-def rows_to_examples(rows):
+def rows_to_examples_decode_prefix(rows):
+    """Build state-aligned examples with continuation-span targets.
+
+    For each prefix step routed to DI/SK states, target_text is the following
+    text continuation until the next schema boundary.
+    """
     domain_intent_rows = []
     slot_key_rows = []
 
     for row_id, row in enumerate(rows):
         base_id = str(row.get("text_id", f"line{row_id + 1}"))
         query = row.get("query", "")
+        full_text = row.get("text", "")
         frames = row.get("semantics", []) or []
 
         if isinstance(frames, str):
@@ -35,47 +51,86 @@ def rows_to_examples(rows):
             except Exception:
                 frames = []
 
-        for frame_id, frame in enumerate(frames):
-            if not isinstance(frame, dict):
+        # Keep frame parse for basic quality guard.
+        has_valid_frame = any(
+            isinstance(frame, dict) and frame.get("domain", "") and frame.get("intent", "")
+            for frame in frames
+        )
+        if not full_text or not has_valid_frame:
+            continue
+
+        if len(full_text) < 2:
+            continue
+
+        # state-aligned prefix examples from raw text slices (char-step)
+        t = 1
+        while t < len(full_text):
+            prefix_text = full_text[:t]
+            state = parse_state(prefix_text)
+            suffix_text = full_text[t:]
+            if not suffix_text:
+                t += 1
                 continue
 
-            domain = frame.get("domain", "")
-            intent = frame.get("intent", "")
-            if not domain or not intent:
-                continue
+            if state.state_name in (STATE_DOMAIN, STATE_INTENT):
+                # continuation until entering slots field.
+                end_idx = _find_next_key_boundary(suffix_text, "slots")
+                target_text = suffix_text if end_idx < 0 else suffix_text[:end_idx]
+                if not target_text.strip():
+                    t += 1
+                    continue
+                domain_intent_rows.append(
+                    {
+                        "id": f"{base_id}#di_t{t}",
+                        "text_id": base_id,
+                        "query": query,
+                        "state": state.state_name,
+                        "step": t,
+                        "input_text": prefix_text,
+                        "target_text": target_text,
+                    }
+                )
+                # Skip highly similar near-duplicate prefixes.
+                if end_idx > 0:
+                    t += end_idx
+                    continue
 
-            example_id = f"{base_id}#{frame_id}"
-            domain_intent_rows.append(
-                {
-                    "id": example_id,
-                    "query": query,
-                    "domain": domain,
-                    "intent": intent,
-                    "input_text": f"query: {query}",
-                    "target_text": json.dumps(
-                        {"domain": domain, "intent": intent},
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                }
-            )
+            elif state.state_name == STATE_SLOTS_KEY:
+                # continuation until key->value delimiter.
+                end_idx = _find_key_value_delimiter(suffix_text)
+                target_text = suffix_text if end_idx < 0 else suffix_text[:end_idx + 1]
+                if not target_text.strip():
+                    t += 1
+                    continue
+                slot_key_rows.append(
+                    {
+                        "id": f"{base_id}#sk_t{t}",
+                        "text_id": base_id,
+                        "query": query,
+                        "state": state.state_name,
+                        "step": t,
+                        "input_text": prefix_text,
+                        "target_text": target_text,
+                    }
+                )
+                # Skip highly similar near-duplicate prefixes.
+                if end_idx > 0:
+                    t += end_idx
+                    continue
 
-            slot_keys = {k: "" for k in (frame.get("slots", {}) or {}).keys()}
-            slot_key_rows.append(
-                {
-                    "id": example_id,
-                    "query": query,
-                    "domain": domain,
-                    "intent": intent,
-                    "slot_keys": list(slot_keys.keys()),
-                    "input_text": f"query: {query}\ndomain: {domain}\nintent: {intent}",
-                    "target_text": json.dumps(
-                        {"slots": slot_keys}, ensure_ascii=False, separators=(",", ":")
-                    ),
-                }
-            )
+            t += 1
 
     return domain_intent_rows, slot_key_rows
+
+
+def _find_next_key_boundary(text, key_name):
+    m = re.search(rf"{key_re(key_name)}", text)
+    return m.start() if m else -1
+
+
+def _find_key_value_delimiter(text):
+    m = re.search(rf"{Q}\s*:\s*{Q}?", text)
+    return m.start() if m else -1
 
 
 def dump_jsonl(path, rows):
@@ -93,8 +148,8 @@ def main():
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
-    train_di, train_sk = rows_to_examples(load_jsonl(args.train_jsonl))
-    dev_di, dev_sk = rows_to_examples(load_jsonl(args.dev_jsonl))
+    train_di, train_sk = rows_to_examples_decode_prefix(load_jsonl(args.train_jsonl))
+    dev_di, dev_sk = rows_to_examples_decode_prefix(load_jsonl(args.dev_jsonl))
 
     dump_jsonl(os.path.join(args.output_dir, "domain_intent_train.jsonl"), train_di)
     dump_jsonl(os.path.join(args.output_dir, "domain_intent_dev.jsonl"), dev_di)
