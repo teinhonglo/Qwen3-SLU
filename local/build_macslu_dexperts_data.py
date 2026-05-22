@@ -15,13 +15,6 @@ from slu_decoding.state_parser import (
     parse_state,
 )
 
-from slu_decoding.state_parser import (
-    STATE_DOMAIN,
-    STATE_INTENT,
-    STATE_SLOTS_KEY,
-    parse_state,
-)
-
 
 def load_jsonl(path):
     rows = []
@@ -70,11 +63,13 @@ def rows_to_examples_decode_prefix(rows):
             continue
 
         # state-aligned prefix examples from raw text slices (char-step)
-        for t in range(1, len(full_text)):
+        t = 1
+        while t < len(full_text):
             prefix_text = full_text[:t]
             state = parse_state(prefix_text)
             suffix_text = full_text[t:]
             if not suffix_text:
+                t += 1
                 continue
 
             if state.state_name in (STATE_DOMAIN, STATE_INTENT):
@@ -82,6 +77,7 @@ def rows_to_examples_decode_prefix(rows):
                 end_idx = _find_next_key_boundary(suffix_text, "slots")
                 target_text = suffix_text if end_idx < 0 else suffix_text[:end_idx]
                 if not target_text.strip():
+                    t += 1
                     continue
                 domain_intent_rows.append(
                     {
@@ -94,12 +90,17 @@ def rows_to_examples_decode_prefix(rows):
                         "target_text": target_text,
                     }
                 )
+                # Skip highly similar near-duplicate prefixes.
+                if end_idx > 0:
+                    t += end_idx
+                    continue
 
             elif state.state_name == STATE_SLOTS_KEY:
                 # continuation until key->value delimiter.
                 end_idx = _find_key_value_delimiter(suffix_text)
                 target_text = suffix_text if end_idx < 0 else suffix_text[:end_idx + 1]
                 if not target_text.strip():
+                    t += 1
                     continue
                 slot_key_rows.append(
                     {
@@ -112,6 +113,12 @@ def rows_to_examples_decode_prefix(rows):
                         "target_text": target_text,
                     }
                 )
+                # Skip highly similar near-duplicate prefixes.
+                if end_idx > 0:
+                    t += end_idx
+                    continue
+
+            t += 1
 
     return domain_intent_rows, slot_key_rows
 
