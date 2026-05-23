@@ -15,7 +15,7 @@
     },
     "layer_lmhead": {
       "enabled": true,
-      "layer_index": -1
+      "layer_index": -2
     }
   }
 }

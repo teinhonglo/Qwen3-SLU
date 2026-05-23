@@ -10,6 +10,7 @@ from .state_parser import (
     parse_state,
 )
 
+import re
 
 class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
     def __init__(
@@ -167,7 +168,9 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
             asr_text = ""
             if '"asr_text"' in prefix:
                 try:
-                    asr_text = prefix.split('"asr_text"', 1)[1].split('"', 2)[2]
+                    pattern = r'<asr_text>\{\s*"asr_text"\s*:\s*"(?P<asr_text>(?:\\.|[^"\\])*)"'
+                    m = re.search(pattern, prefix)
+                    asr_text = m.group("asr_text")
                 except Exception:
                     asr_text = ""
             out_tid, out_decoded = self._decode_top_token_from_logits(input_ids, out)
@@ -179,7 +182,7 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
             z_tid, z_decoded = self._decode_top_token_from_logits(input_ids, out)
             if z_tid is not None:
                 print(
-                    f"[DExperts][SV][state={state.state_name}] out_top_token_id={out_tid}, z_top_token_id={z_tid},\no_decoded={out_decoded}\nz_decoded={z_decoded}",
+                    f"[DExperts][SV][state={state.state_name}] asr_text={asr_text}, out_top_token_id={out_tid}, z_top_token_id={z_tid},\no_decoded={out_decoded}\nz_decoded={z_decoded}",
                     flush=True,
                 )
         ch_idx = torch.argmax(out)

@@ -12,6 +12,7 @@
     },
     "dola": {
       "enabled": true,
+      "do_sample": true,
       "layers": "low",
       "repetition_penalty": 1.2
     },

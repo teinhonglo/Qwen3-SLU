@@ -6,6 +6,12 @@ import json
 import os
 import re
 
+import sys
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_THIS_DIR)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 from slu_decoding.state_parser import (
     Q,
     STATE_DOMAIN,
@@ -14,7 +20,6 @@ from slu_decoding.state_parser import (
     key_re,
     parse_state,
 )
-
 
 def load_jsonl(path):
     rows = []
