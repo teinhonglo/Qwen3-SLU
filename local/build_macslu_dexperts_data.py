@@ -103,8 +103,12 @@ def rows_to_examples_decode_prefix(rows):
             elif state.state_name == STATE_SLOTS_KEY:
                 # continuation until key->value delimiter.
                 end_idx = _find_key_value_delimiter(suffix_text)
-                target_text = suffix_text if end_idx < 0 else suffix_text[:end_idx + 1]
-                if not target_text.strip():
+                target_text = suffix_text if end_idx < 0 else suffix_text[:end_idx]
+
+                if "implicit_slots" in target_text:
+                    break
+
+                if not target_text.strip() or "implicit_slots" in target_text:
                     t += 1
                     continue
                 slot_key_rows.append(
@@ -134,8 +138,13 @@ def _find_next_key_boundary(text, key_name):
 
 
 def _find_key_value_delimiter(text):
-    m = re.search(rf"{Q}\s*:\s*{Q}?", text)
-    return m.start() if m else -1
+    """Return end offset of a complete key->value delimiter segment.
+
+    We cut at the *end* of `"key": ` instead of the first quote char,
+    so escaped quotes like `\"` are not split into tiny fragments.
+    """
+    m = re.search(rf"{Q}\s*:\s*", text)
+    return m.end() if m else -1
 
 
 def dump_jsonl(path, rows):
