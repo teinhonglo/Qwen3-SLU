@@ -3,7 +3,6 @@
 import argparse
 import json
 import os
-import inspect
 
 
 import torch
@@ -38,7 +37,6 @@ class TextOnlyExpertModel(PreTrainedModel, GenerationMixin):
 
     def set_input_embeddings(self, value):
         self.model.set_input_embeddings(value)
-
 
     def get_output_embeddings(self):
         return self.lm_head
@@ -115,6 +113,66 @@ def load_train_conf(train_conf_path: str):
     return [training_args, model_args]
 
 
+def build_single_step_examples(rows, tokenizer, max_length):
+    """Expand each row into multiple samples, each supervising one next token.
+
+    For each row, we tokenize step-wise contexts that simulate autoregressive
+    decoding: prefix + target[:k].
+
+    Each constructed sample supervises exactly one next token (the last token
+    in the step-wise context), and all other label positions are set to -100.
+    """
+    examples = []
+    for row in rows:
+        prefix = str(row.get("input_text", ""))
+        target = str(row.get("target_text", ""))
+        if not target:
+            continue
+
+        prefix_ids = tokenizer(
+            prefix,
+            truncation=True,
+            max_length=max_length,
+            padding=False,
+            add_special_tokens=True,
+        )["input_ids"]
+
+        # Build true single-step contexts: prefix + partial_target.
+        # For step t, the context includes target tokens up to t, and we only
+        # supervise the token at the last non-padding position.
+        for step_end in range(1, len(target) + 1):
+            merged = f"{prefix}{target[:step_end]}"
+            encoded = tokenizer(
+                merged,
+                truncation=True,
+                max_length=max_length,
+                padding="max_length",
+            )
+
+            input_ids = encoded["input_ids"]
+            attention_mask = encoded["attention_mask"]
+            seq_len = int(sum(attention_mask))
+            if seq_len <= 0:
+                continue
+
+            prefix_len = min(len(prefix_ids), seq_len)
+            label_pos = seq_len - 1
+            if label_pos < prefix_len:
+                continue
+
+            labels = [-100] * len(input_ids)
+            labels[label_pos] = input_ids[label_pos]
+            examples.append(
+                {
+                    "input_ids": input_ids,
+                    "attention_mask": attention_mask,
+                    "labels": labels,
+                }
+            )
+
+    return examples
+
+
 def main():
     """CLI entry for expert LM training."""
     ap = argparse.ArgumentParser("Train lightweight expert causal LM")
@@ -175,27 +233,25 @@ def main():
             task_type=TaskType.CAUSAL_LM,
             **lora_config,
         )
-        # Ensure adapter_config.json records a valid base model path.
-        # For wrapped/custom models, PEFT may otherwise persist an empty string.
         peft_config.base_model_name_or_path = model_name_or_path
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()
 
-    def to_dataset(rows):
-        return Dataset.from_list(
-            [{"text": f"{r.get('input_text', '')}\n{r.get('target_text', '')}"} for r in rows]
-        )
+    max_length = int(model_args_conf.get("max_length", 256))
+    train_rows = load_rows(args.train_jsonl)
+    dev_rows = load_rows(args.dev_jsonl)
+    train_examples = build_single_step_examples(train_rows, tokenizer, max_length)
+    dev_examples = build_single_step_examples(dev_rows, tokenizer, max_length)
+    if not train_examples:
+        raise ValueError("No train examples created for single-step next-token training")
+    if not dev_examples:
+        raise ValueError("No dev examples created for single-step next-token training")
 
-    train_ds = to_dataset(load_rows(args.train_jsonl))
-    dev_ds = to_dataset(load_rows(args.dev_jsonl))
+    print(f"[info] single-step train examples: {len(train_examples)} from {len(train_rows)} rows")
+    print(f"[info] single-step dev examples: {len(dev_examples)} from {len(dev_rows)} rows")
 
-    def preprocess(batch):
-        out = tokenizer(batch["text"], truncation=True, max_length=int(model_args_conf.get("max_length", 256)), padding="max_length")
-        out["labels"] = out["input_ids"].copy()
-        return out
-
-    train_ds = train_ds.map(preprocess, batched=True, remove_columns=["text"])
-    dev_ds = dev_ds.map(preprocess, batched=True, remove_columns=["text"])
+    train_ds = Dataset.from_list(train_examples)
+    dev_ds = Dataset.from_list(dev_examples)
 
     has_cuda = torch.cuda.is_available()
     use_bf16 = has_cuda and torch.cuda.get_device_capability(0)[0] >= 8
@@ -211,7 +267,7 @@ def main():
     trainer.train()
     model.save_pretrained(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
-    
+
     if train_conf is not None and trainer.args.process_index == 0:
         saved_train_conf = os.path.join(args.output_dir, "train_conf.json")
         with open(saved_train_conf, "w", encoding="utf-8") as f:
