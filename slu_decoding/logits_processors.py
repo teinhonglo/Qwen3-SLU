@@ -1,7 +1,11 @@
 import torch
 from transformers import LogitsProcessor
 
-from .grounding import apply_copy_bias, build_copy_bias_map
+from .grounding import (
+    apply_copy_bias,
+    build_copy_bias_map,
+    trim_asr_text_left_of_decoded_value,
+)
 from .state_parser import (
     STATE_DOMAIN,
     STATE_INTENT,
@@ -173,6 +177,7 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
                     asr_text = m.group("asr_text")
                 except Exception:
                     asr_text = ""
+            asr_text = trim_asr_text_left_of_decoded_value(asr_text, prefix)
             out_tid, out_decoded = self._decode_top_token_from_logits(input_ids, out)
             out = apply_copy_bias(
                 out,
