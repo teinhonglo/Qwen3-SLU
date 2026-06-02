@@ -94,14 +94,12 @@ def unwrap_generate_output(gen_out):
         return gen_out[0]
     return gen_out
 
-
-
 def extract_payload_text(raw_text: str) -> str:
     """
     Example:
-        language English<asr_text>{"content": 8, "vocabulary":4,"pronunciation":2}
+        language English<asr_text>{"content": 8, "vocabulary":4, "pronunciation":2}
     -> returns:
-        {"content": 8, "vocabulary":4,"pronunciation":2}
+        {"content": 8, "vocabulary":4, "pronunciation":2}
     """
     raw_text = (raw_text or "").strip()
     m = re.match(r"^language\s+.+?<asr_text>(.*)$", raw_text, flags=re.DOTALL)
@@ -632,9 +630,15 @@ def main():
         pred_query = pred_json.get("asr_text", "FAILED")
         
         try:
-            pred_semantics = json.loads(pred_json["semantics"])
-        except:
-            print(f"[WARNING] Processing failed for {text_id}: {pred_json}")
+            if isinstance(pred_json["semantics"], list):
+                # For v2 in local/prepare_macslu_jsonl.py, which is NOT "\\\"
+                pred_semantics = pred_json["semantics"]
+            else:
+                # For v1 in local/prepare_macslu_jsonl.py \\\
+                pred_semantics = json.loads(pred_json["semantics"])
+            
+        except Exception as e:
+            print(f"[WARNING]: Processing failed for {text_id}: {pred_json} and ")
             pred_semantics = [{"FAILED": pred_json}]
 
         rows_out.append({
