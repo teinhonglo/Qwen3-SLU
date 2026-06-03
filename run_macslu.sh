@@ -124,7 +124,34 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
 fi
 
 if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
-    echo "Stage 4: Summary (MAC-SLU)"
+    echo "Stage 4: Plot MAC-SLU confusion matrices"
+
+    for test_set in $test_sets; do
+        pred_file=${exp_root}/${test_set}/predictions.jsonl
+        gt_file=${json_root}/${test_set}.jsonl
+        output_dir=${exp_root}/${test_set}
+
+        if [ ! -f "$pred_file" ]; then
+            echo "[WARNING] prediction file not found: $pred_file"
+            continue
+        fi
+
+        if [ ! -f "$gt_file" ]; then
+            echo "[WARNING] ground truth file not found: $gt_file"
+            continue
+        fi
+
+        python local/plot_macslu_confusion.py \
+            --pred_file "$pred_file" \
+            --gt_file "$gt_file" \
+            --labels_file "${data_root}/labels.txt" \
+            --label_mapping_file "${data_root}/labels_zh_en.txt" \
+            --output_dir "$output_dir"
+    done
+fi
+
+if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
+    echo "Stage 5: Summary (MAC-SLU)"
 
     for test_set in $test_sets; do
         metrics_file=${exp_root}/${test_set}/metrics.txt

@@ -1,0 +1,73 @@
+车载控制	In-Vehicle Control
+车机控制	Infotainment Control
+车身控制	Vehicle Body Control
+提供信息	Provide Information
+地图	Map
+导航	Navigation
+提供地址	Provide Address
+查询路况	Query Traffic Conditions
+查询定位	Query Location
+查询路程	Query Distance
+查询前方路线	Query Route Ahead
+导航路线规划	Route Planning
+设置常用地址	Set Frequent Address
+导航到常用地址	Navigate to Frequent Address
+沿途搜索	Search Along Route
+周边搜索	Nearby Search
+增加途经点	Add Waypoint
+删除途经点	Delete Waypoint
+地图操作	Map Operation
+上报事件	Report Event
+sys.确认	System Confirm
+sys.取消	System Cancel
+sys.用户选择	System User Selection
+限速查询	Query Speed Limit
+设置目的地	Set Destination
+查询目的地	Query Destination
+修改途经点	Modify Waypoint
+收藏	Favorite
+取消收藏	Unfavorite
+音乐	Music
+播放音乐	Play Music
+播放控制	Playback Control
+查询音乐信息	Query Music Information
+播放收藏	Play Favorites
+播放列表	Playlist
+播放历史	Playback History
+新手引导	Beginner Guide
+打电话	Phone Call
+拨打电话	Dial Phone
+电话控制	Phone Control
+接听电话	Answer Call
+挂断电话	Hang Up Call
+查询信息	Query Information
+sys.电话选择	System Phone Selection
+拨打黄页号码	Dial Yellow Pages Number
+收音机	Radio
+播放电台	Play Radio Station
+播放收藏	Play Favorites
+收音机控制	Radio Control
+天气	Weather
+查询天气	Query Weather
+查询气象	Query Meteorology
+查询温度	Query Temperature
+查询湿度	Query Humidity
+查询风力	Query Wind Force
+查询风向	Query Wind Direction
+查询空气质量	Query Air Quality
+查询紫外线	Query UV Index
+查询日出日落	Query Sunrise and Sunset
+查询活动	Query Activities
+查询装备	Query Equipment
+穿衣推荐	Clothing Recommendation
+查询日期	Query Date
+查询城市	Query City
+查询场景	Query Scenario
+查询护肤品	Query Skincare Products
+查询能见度	Query Visibility
+查询指数	Query Index
+查询降水量	Query Precipitation
+查询降雪量	Query Snowfall
+影视	Video
+播放影视	Play Video
+查询影视信息	Query Video Information
