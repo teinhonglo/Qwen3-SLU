@@ -200,6 +200,19 @@ def embed_instance_examples(examples, embedder, split: str, max_examples_per_lab
     return rows
 
 
+def sample_embedded_examples(rows: Iterable[Dict[str, Any]], max_examples_per_label: int = 0) -> List[Dict[str, Any]]:
+    if max_examples_per_label <= 0:
+        return list(rows)
+    counts: Dict[str, int] = defaultdict(int)
+    sampled = []
+    for row in rows:
+        key = f"{row.get('kind', '')}::{row.get('key', '')}"
+        if counts[key] >= max_examples_per_label:
+            continue
+        sampled.append(row)
+        counts[key] += 1
+    return sampled
+
 def aggregate(embedded_examples, max_examples_per_label: int):
     sums: Dict[str, Dict[str, List[float]]] = {"domain": {}, "intent": {}, "slot_key": {}}
     counts: Dict[str, Dict[str, int]] = {"domain": defaultdict(int), "intent": defaultdict(int), "slot_key": defaultdict(int)}
@@ -252,7 +265,8 @@ def parse_args():
     p.add_argument("--auto_best_checkpoint", action="store_true")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--prototype_source", choices=["text_prefix", "audio_prefix"], default="text_prefix")
-    p.add_argument("--max_examples_per_label", type=int, default=50, help="Max train examples per label used to aggregate prototypes")
+    p.add_argument("--prototype_pooling", choices=["mean_pooling", "last_hidden_state"], default="mean_pooling")
+    p.add_argument("--max_examples_per_label", type=int, default=0, help="Deprecated compatibility option; prototypes are aggregated from all train examples")
     p.add_argument("--max_instance_examples_per_label", type=int, default=200, help="Max train/test instance embeddings per label saved for visualization")
     return p.parse_args()
 
@@ -267,7 +281,16 @@ def main():
     _, model_args_conf = load_train_conf_from_exp_dir(args.exp_dir)
     wrapper = resolve_model(args)
     tok = wrapper.processor.tokenizer if hasattr(wrapper.processor, "tokenizer") else wrapper.processor
-    text_embedder = TokenEmbeddingPrefixEmbedder(tok, wrapper.model, device=args.device)
+    
+    text_embedder = TokenEmbeddingPrefixEmbedder(
+        tok,
+        wrapper.model,
+        processor=wrapper.processor,
+        device=args.device,
+        pooling=args.prototype_pooling,
+        sample_rate=int(model_args_conf.get("sr", 16000)),
+    )
+
     embedder = text_embedder
     if args.prototype_source == "audio_prefix":
         embedder = AudioStatsPrefixEmbedder(text_embedder, sample_rate=int(model_args_conf.get("sr", 16000)))
@@ -276,14 +299,16 @@ def main():
     print(f"[info] collected {len(examples)} train prefix examples")
     if test_rows:
         print(f"[info] collected {len(test_examples)} test prefix examples")
-    train_instance_rows = embed_instance_examples(examples, embedder, "train", args.max_instance_examples_per_label)
-    test_instance_rows = embed_instance_examples(test_examples, embedder, "test", args.max_instance_examples_per_label) if test_examples else []
-    sections = aggregate(train_instance_rows, args.max_examples_per_label)
-    write_jsonl(args.train_examples_jsonl, train_instance_rows)
-    write_jsonl(args.test_examples_jsonl, test_instance_rows)
+    
+    train_instance_rows = embed_instance_examples(examples, embedder, "train", 0)
+    test_instance_rows = embed_instance_examples(test_examples, embedder, "test", 0) if test_examples else []
+    sections = aggregate(train_instance_rows, 0)
+    write_jsonl(args.train_examples_jsonl, sample_embedded_examples(train_instance_rows, args.max_instance_examples_per_label))
+    write_jsonl(args.test_examples_jsonl, sample_embedded_examples(test_instance_rows, args.max_instance_examples_per_label))
     obj = {
         "prototype_source": args.prototype_source,
-        "embedding_backend": "token_embedding_mean" if args.prototype_source == "text_prefix" else "token_embedding_mean_plus_audio_stats",
+        "prototype_pooling": args.prototype_pooling,
+        "embedding_backend": "hidden_state",
         "label_schema": label_schema.to_dict(),
         **sections,
     }

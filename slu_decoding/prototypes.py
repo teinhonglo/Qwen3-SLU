@@ -194,50 +194,157 @@ class MACSLULabelSchema:
         }
 
 
-class TokenEmbeddingPrefixEmbedder:
-    """Mean-pool Qwen token embeddings for a text prefix."""
+class HiddenStatePrefixEmbedder:
+    """Embed prefixes with contextual hidden states from the Qwen3-ASR thinker.
 
-    def __init__(self, tokenizer, model, device: str = "cpu"):
+    Pooling modes:
+    - ``mean_pooling``: attention-mask mean over the last hidden layer.
+    - ``last_hidden_state``: last non-padding token from the last hidden layer.
+
+    For ``audio_prefix`` usage, pass a processor and prompt/audio_path; the embedder
+    will build the same chat/audio prefix used by inference and append the decoded
+    target prefix before forwarding through the thinker.
+    """
+
+    def __init__(
+        self,
+        tokenizer,
+        model,
+        processor=None,
+        device: str = "cpu",
+        pooling: str = "mean_pooling",
+        sample_rate: int = 16000,
+    ):
         self.tokenizer = tokenizer
         self.model = model
+        self.processor = processor
         self.device = device
-        self.embedding = self._get_embedding_module(model)
-        self.dim = int(getattr(self.embedding, "embedding_dim", 0) or 0)
+        self.pooling = pooling
+        self.sample_rate = int(sample_rate)
+        if self.pooling not in {"mean_pooling", "last_hidden_state"}:
+            raise ValueError(f"Unsupported prototype pooling: {self.pooling}")
+        self.thinker = self._get_thinker(model)
+        self.dim = int(getattr(getattr(self.thinker, "config", None), "hidden_size", 0) or 0)
 
     @staticmethod
-    def _get_embedding_module(model):
-        getter = getattr(model, "get_input_embeddings", None)
+    def _unwrap_model(model):
+        getter = getattr(model, "get_base_model", None)
         if callable(getter):
-            emb = getter()
-            if emb is not None:
-                return emb
-        base = getattr(model, "base_model", None)
-        if base is not None:
-            getter = getattr(base, "get_input_embeddings", None)
-            if callable(getter):
-                emb = getter()
-                if emb is not None:
-                    return emb
-        inner = getattr(model, "model", None)
-        if inner is not None:
-            getter = getattr(inner, "get_input_embeddings", None)
-            if callable(getter):
-                emb = getter()
-                if emb is not None:
-                    return emb
-        raise ValueError("Unable to locate model input embeddings")
+            try:
+                base = getter()
+                if base is not None:
+                    return base
+            except Exception:
+                pass
+        base_model = getattr(model, "base_model", None)
+        inner = getattr(base_model, "model", None) if base_model is not None else None
+        return inner or base_model or model
+
+    @classmethod
+    def _get_thinker(cls, model):
+        base = cls._unwrap_model(model)
+        if hasattr(base, "thinker"):
+            return base.thinker
+        inner = getattr(base, "model", None)
+        if inner is not None and hasattr(inner, "thinker"):
+            return inner.thinker
+        if hasattr(model, "thinker"):
+            return model.thinker
+        raise ValueError("Unable to locate Qwen3-ASR thinker for hidden-state prototype embedding")
+
+    @staticmethod
+    def _build_prefix_text(processor, prompt: str) -> str:
+        txt = processor.apply_chat_template(
+            [[{"role": "system", "content": prompt or ""}, {"role": "user", "content": [{"type": "audio", "audio": None}]}]],
+            add_generation_prompt=True,
+            tokenize=False,
+        )
+        return txt[0] if isinstance(txt, list) else txt
+
+    def _tokenize_text(self, text: str) -> Dict[str, torch.Tensor]:
+        encoded = self.tokenizer(text or "", return_tensors="pt", add_special_tokens=False)
+        if encoded.input_ids.numel() == 0:
+            eos = getattr(self.tokenizer, "eos_token_id", 0) or 0
+            encoded = {"input_ids": torch.tensor([[eos]], dtype=torch.long), "attention_mask": torch.ones((1, 1), dtype=torch.long)}
+        return dict(encoded)
+
+    def _tokenize_audio_prefix(self, text: str, audio_path: str, prompt: str) -> Dict[str, torch.Tensor]:
+        if self.processor is None or not audio_path or not os.path.isfile(audio_path):
+            return self._tokenize_text(text)
+        import librosa
+        try:
+            wav, _ = librosa.load(audio_path, sr=self.sample_rate, mono=True)
+            prefix_text = self._build_prefix_text(self.processor, prompt) + (text or "")
+            return dict(self.processor(text=[prefix_text], audio=[wav], return_tensors="pt", padding=True, truncation=False))
+        except Exception:
+            return self._tokenize_text(text)
+
+    def _move_inputs(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        dtype = getattr(self.model, "dtype", None)
+        if dtype is None:
+            try:
+                dtype = next(self.model.parameters()).dtype
+            except Exception:
+                dtype = torch.float32
+        out = {}
+        for key, val in inputs.items():
+            if torch.is_tensor(val):
+                val = val.to(self.device)
+                if val.is_floating_point():
+                    val = val.to(dtype)
+            out[key] = val
+        return out
+
+    def _pool(self, hidden: torch.Tensor, attention_mask: Optional[torch.Tensor]) -> torch.Tensor:
+        if attention_mask is None:
+            attention_mask = torch.ones(hidden.shape[:2], dtype=torch.long, device=hidden.device)
+        mask = attention_mask.to(hidden.device).bool()
+        if self.pooling == "last_hidden_state":
+            lengths = mask.long().sum(dim=1).clamp(min=1) - 1
+            return hidden[torch.arange(hidden.size(0), device=hidden.device), lengths][0]
+        mask_f = mask.unsqueeze(-1).to(hidden.dtype)
+        denom = mask_f.sum(dim=1).clamp(min=1.0)
+        return (hidden * mask_f).sum(dim=1)[0] / denom[0]
 
     def __call__(self, text: str, audio_path: str = "", prompt: str = "") -> List[float]:
-        ids = self.tokenizer(text or "", return_tensors="pt", add_special_tokens=False).input_ids
-        if ids.numel() == 0:
-            ids = torch.tensor([[getattr(self.tokenizer, "eos_token_id", 0) or 0]], dtype=torch.long)
-        ids = ids.to(next(self.embedding.parameters()).device)
+        if audio_path:
+            inputs = self._tokenize_audio_prefix(text, audio_path=audio_path, prompt=prompt)
+        else:
+            inputs = self._tokenize_text(text)
+        inputs = self._move_inputs(inputs)
+        allowed = {
+            "input_ids",
+            "attention_mask",
+            "input_features",
+            "feature_attention_mask",
+            "audio_feature_lengths",
+        }
+        kwargs = {k: v for k, v in inputs.items() if k in allowed}
         with torch.inference_mode():
-            vec = self.embedding(ids).float().mean(dim=1)[0]
+            out = self.thinker(**kwargs, output_hidden_states=True, use_cache=False)
+            hidden_states = getattr(out, "hidden_states", None)
+            if hidden_states is None:
+                raise ValueError("Qwen3-ASR thinker did not return hidden_states")
+            vec = self._pool(hidden_states[-1].float(), kwargs.get("attention_mask"))
             vec = F.normalize(vec, dim=0)
         return vec.detach().cpu().tolist()
 
+# Backward-compatible names used by the v2 scripts. These now use contextual
+# hidden states rather than raw embedding-table averages.
+TokenEmbeddingPrefixEmbedder = HiddenStatePrefixEmbedder
 
+
+class AudioStatsPrefixEmbedder:
+    """Audio+prefix hidden-state embedder kept as a compatibility wrapper."""
+
+    def __init__(self, text_embedder: HiddenStatePrefixEmbedder, sample_rate: int = 16000):
+        self.text_embedder = text_embedder
+        self.sample_rate = int(sample_rate)
+        self.dim = text_embedder.dim
+
+    def __call__(self, text: str, audio_path: str = "", prompt: str = "") -> List[float]:
+        return self.text_embedder(text, audio_path=audio_path, prompt=prompt)
+=======
 
 
 class AudioStatsPrefixEmbedder:

@@ -95,10 +95,8 @@ def run_tsne(rows: List[Dict[str, Any]], perplexity: float, random_state: int) -
     vectors = np.asarray([row["vector"] for row in rows], dtype=np.float32)
     if vectors.ndim != 2 or vectors.shape[0] < 3:
         raise ValueError("Need at least 3 vectors for t-SNE")
-    try:
-        from sklearn.manifold import TSNE
-    except ImportError as exc:
-        raise ImportError("plot_macslu_prototype_tsne.py requires scikit-learn for t-SNE") from exc
+        
+    from sklearn.manifold import TSNE
 
     tsne = TSNE(
         n_components=2,
@@ -110,7 +108,7 @@ def run_tsne(rows: List[Dict[str, Any]], perplexity: float, random_state: int) -
     return tsne.fit_transform(vectors)
 
 
-def color_map(labels: List[str]):
+def color_map(labels: List[str], plt):
     unique = sorted(set(labels))
     cmap_name = "tab20" if len(unique) <= 20 else "hsv"
     cmap = plt.get_cmap(cmap_name, max(len(unique), 1))
@@ -127,15 +125,14 @@ def plot_rows(
 ) -> Dict[str, Any]:
     if len(rows) < 3:
         return {"path": out_base, "status": "skipped", "reason": "fewer_than_3_points", "n_points": len(rows)}
-    try:
-        import matplotlib.pyplot as plt
-        from matplotlib.lines import Line2D
-    except ImportError as exc:
-        raise ImportError("plot_macslu_prototype_tsne.py requires matplotlib to save figures") from exc
+      
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
 
     coords = run_tsne(rows, perplexity=perplexity, random_state=random_state)
     labels = [str(row.get("label", "")) for row in rows]
-    colors = color_map(labels)
+    colors = color_map(labels, plt)
+    
     markers = {"train": "o", "test": "^", "prototype": "*"}
     sizes = {"train": 26, "test": 42, "prototype": 260}
     alphas = {"train": 0.35, "test": 0.62, "prototype": 1.0}

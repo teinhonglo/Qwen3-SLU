@@ -16,7 +16,9 @@ suffix=
 train_conf=conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead.json
 decoding_conf=conf/decoding/basic_decoding.json
 prototype_source=text_prefix
-max_examples_per_label=50
+
+prototype_pooling=mean_pooling # mean_pooling | last_hidden_state
+max_examples_per_label=0 # prototypes use all train examples by default
 baseline_mode=reuse  # reuse | run | skip
 
 # replacement config: conservative defaults
@@ -58,9 +60,11 @@ conf_tag=$(basename -s .json "$train_conf")
 base_exp_dir=${exp_root}/${conf_tag}${suffix}
 v2_exp_root=${base_exp_dir}/dexperts_v2
 schema_path=${prototype_root}/schema.json
-prototype_json=${prototype_root}/prototypes_${prototype_source}.json
-prototype_train_examples_jsonl=${prototype_root}/prototype_train_examples_${prototype_source}.jsonl
-prototype_test_examples_jsonl=${prototype_root}/prototype_${tsne_test_set}_examples_${prototype_source}.jsonl
+
+prototype_json=${prototype_root}/prototypes_${prototype_source}_${prototype_pooling}.json
+prototype_train_examples_jsonl=${prototype_root}/prototype_train_examples_${prototype_source}_${prototype_pooling}.jsonl
+prototype_test_examples_jsonl=${prototype_root}/prototype_${tsne_test_set}_examples_${prototype_source}_${prototype_pooling}.jsonl
+
 prototype_fig_dir=${v2_exp_root}/figs
 
 prediction_subdir() {
@@ -129,6 +133,7 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
             --test_examples_jsonl "$prototype_test_examples_jsonl" \
             --device cuda:0 \
             --prototype_source "$prototype_source" \
+            --prototype_pooling "$prototype_pooling" \
             --max_examples_per_label "$max_examples_per_label" \
             --max_instance_examples_per_label "$tsne_max_train_examples_per_label"
 fi

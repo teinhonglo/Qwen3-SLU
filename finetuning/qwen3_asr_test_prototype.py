@@ -216,11 +216,18 @@ def main():
             for slot in slots or []:
                 label_schema.add_slot_key(parts[0], parts[1], str(slot))
 
-    text_embedder = TokenEmbeddingPrefixEmbedder(tok, model, device=args.device)
-    current_audio = {"path": ""}
+    text_embedder = TokenEmbeddingPrefixEmbedder(
+        tok,
+        model,
+        processor=processor,
+        device=args.device,
+        pooling=prototype_index.data.get("prototype_pooling", "mean_pooling"),
+        sample_rate=sr,
+    )
+    current_audio = {"path": "", "prompt": ""}
     if prototype_index.prototype_source == "audio_prefix":
         embedder = AudioStatsPrefixEmbedder(text_embedder, sample_rate=sr)
-        embed_fn = lambda text: embedder(text, audio_path=current_audio["path"])
+        embed_fn = lambda text: embedder(text, audio_path=current_audio["path"], prompt=current_audio["prompt"])
     else:
         embedder = text_embedder
         embed_fn = lambda text: embedder(text)
@@ -238,6 +245,7 @@ def main():
 
     def infer_one(row):
         current_audio["path"] = row.get("audio", "")
+        current_audio["prompt"] = row.get("prompt", "")
         wav = load_audio(row.get("audio", ""))
         prefix_text = build_prefix_text(processor, row.get("prompt", ""))
         inputs = processor(text=[prefix_text], audio=[wav], return_tensors="pt", padding=True, truncation=False)
