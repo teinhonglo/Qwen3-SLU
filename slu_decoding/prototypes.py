@@ -329,7 +329,6 @@ class HiddenStatePrefixEmbedder:
             vec = F.normalize(vec, dim=0)
         return vec.detach().cpu().tolist()
 
-
 # Backward-compatible names used by the v2 scripts. These now use contextual
 # hidden states rather than raw embedding-table averages.
 TokenEmbeddingPrefixEmbedder = HiddenStatePrefixEmbedder
@@ -345,6 +344,47 @@ class AudioStatsPrefixEmbedder:
 
     def __call__(self, text: str, audio_path: str = "", prompt: str = "") -> List[float]:
         return self.text_embedder(text, audio_path=audio_path, prompt=prompt)
+=======
+
+
+class AudioStatsPrefixEmbedder:
+    """Concatenate token-prefix embeddings with lightweight audio statistics.
+
+    This keeps the v2 audio+prefix path switchable without training any expert LM.
+    It intentionally avoids nested model forwards inside logits processors.
+    """
+
+    def __init__(self, text_embedder: TokenEmbeddingPrefixEmbedder, sample_rate: int = 16000):
+        self.text_embedder = text_embedder
+        self.sample_rate = int(sample_rate)
+        self.dim = text_embedder.dim + 8
+
+    @staticmethod
+    def _audio_stats(audio_path: str, sample_rate: int) -> List[float]:
+        if not audio_path or not os.path.isfile(audio_path):
+            return [0.0] * 8
+        try:
+            import librosa
+            wav, _ = librosa.load(audio_path, sr=sample_rate, mono=True)
+        except Exception:
+            return [0.0] * 8
+        if wav is None or len(wav) == 0:
+            return [0.0] * 8
+        t = torch.tensor(wav, dtype=torch.float32)
+        duration = float(t.numel()) / float(sample_rate)
+        mean = float(t.mean())
+        std = float(t.std(unbiased=False))
+        rms = float(torch.sqrt(torch.mean(t * t)))
+        max_abs = float(torch.max(torch.abs(t)))
+        zcr = float(((t[1:] * t[:-1]) < 0).float().mean()) if t.numel() > 1 else 0.0
+        q25 = float(torch.quantile(torch.abs(t), 0.25))
+        q75 = float(torch.quantile(torch.abs(t), 0.75))
+        return [duration, mean, std, rms, max_abs, zcr, q25, q75]
+
+    def __call__(self, text: str, audio_path: str = "", prompt: str = "") -> List[float]:
+        text_vec = self.text_embedder(text, audio_path=audio_path, prompt=prompt)
+        audio_vec = self._audio_stats(audio_path, self.sample_rate)
+        return l2_normalize(list(text_vec) + audio_vec)
 
 
 class PrototypeIndex:

@@ -200,7 +200,6 @@ def embed_instance_examples(examples, embedder, split: str, max_examples_per_lab
     return rows
 
 
-
 def sample_embedded_examples(rows: Iterable[Dict[str, Any]], max_examples_per_label: int = 0) -> List[Dict[str, Any]]:
     if max_examples_per_label <= 0:
         return list(rows)
@@ -282,6 +281,7 @@ def main():
     _, model_args_conf = load_train_conf_from_exp_dir(args.exp_dir)
     wrapper = resolve_model(args)
     tok = wrapper.processor.tokenizer if hasattr(wrapper.processor, "tokenizer") else wrapper.processor
+    
     text_embedder = TokenEmbeddingPrefixEmbedder(
         tok,
         wrapper.model,
@@ -290,6 +290,7 @@ def main():
         pooling=args.prototype_pooling,
         sample_rate=int(model_args_conf.get("sr", 16000)),
     )
+
     embedder = text_embedder
     if args.prototype_source == "audio_prefix":
         embedder = AudioStatsPrefixEmbedder(text_embedder, sample_rate=int(model_args_conf.get("sr", 16000)))
@@ -298,6 +299,7 @@ def main():
     print(f"[info] collected {len(examples)} train prefix examples")
     if test_rows:
         print(f"[info] collected {len(test_examples)} test prefix examples")
+    
     train_instance_rows = embed_instance_examples(examples, embedder, "train", 0)
     test_instance_rows = embed_instance_examples(test_examples, embedder, "test", 0) if test_examples else []
     sections = aggregate(train_instance_rows, 0)
