@@ -199,3 +199,140 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
     
     def get_debug_stats(self):
         return dict(self.debug_stats)
+
+
+class StateAwarePrototypeTrackerLogitsProcessor(LogitsProcessor):
+    """Track prototype label decisions at semantic decoding states.
+
+    This processor intentionally leaves logits unchanged by default. It mirrors the
+    DExperts state-tracking path, but records nearest prototype labels so the final
+    structured semantics can be repaired after generation.
+    """
+
+    def __init__(
+        self,
+        tokenizer,
+        prototype_index,
+        embed_text_fn,
+        label_schema=None,
+        base_prefix_len=0,
+        top_k=5,
+        min_step_gap=2,
+        log_prefix="Prototype",
+    ):
+        self.tok = tokenizer
+        self.prototype_index = prototype_index
+        self.embed_text_fn = embed_text_fn
+        self.label_schema = label_schema
+        self.base_prefix_len = base_prefix_len
+        self.top_k = int(top_k)
+        self.min_step_gap = int(min_step_gap)
+        self.log_prefix = log_prefix
+        self.records = []
+        self.debug_stats = {
+            "steps": 0,
+            "state_domain": 0,
+            "state_intent": 0,
+            "state_slots_key": 0,
+            "state_slots_value": 0,
+            "prototype_domain": 0,
+            "prototype_intent": 0,
+            "prototype_slot_key": 0,
+        }
+        self._last_record_step = {}
+
+    def reset(self):
+        self.records = []
+        self._last_record_step = {}
+        for key in self.debug_stats:
+            self.debug_stats[key] = 0
+
+    def _decode_generated_prefix(self, input_ids):
+        ids = input_ids[0][self.base_prefix_len :]
+        ids = ids.unsqueeze(0)
+        if hasattr(self.tok, "batch_decode"):
+            return self.tok.batch_decode(
+                ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )[0]
+        if hasattr(self.tok, "tokenizer") and hasattr(self.tok.tokenizer, "batch_decode"):
+            return self.tok.tokenizer.batch_decode(
+                ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )[0]
+        return self.tok.decode(ids[0], skip_special_tokens=True)
+
+    def _maybe_record(self, kind, state, prefix):
+        step = self.debug_stats["steps"]
+        last = self._last_record_step.get(kind, -10**9)
+        if step - last < self.min_step_gap:
+            return
+        self._last_record_step[kind] = step
+
+        try:
+            qvec = self.embed_text_fn(prefix)
+        except Exception as exc:
+            self.records.append({"kind": kind, "state": state.state_name, "error": str(exc), "step": step})
+            return
+
+        allowed = None
+        domain = state.current_domain or ""
+        intent = state.current_intent or ""
+        if self.label_schema is not None:
+            if kind == "domain":
+                allowed = self.label_schema.valid_domains()
+            elif kind == "intent":
+                allowed = self.label_schema.valid_intents(domain)
+            elif kind == "slot_key":
+                allowed = self.label_schema.valid_slot_keys(domain, intent)
+
+        hits = self.prototype_index.search(
+            kind,
+            qvec,
+            top_k=self.top_k,
+            allowed=allowed,
+            domain=domain,
+            intent=intent,
+        )
+        self.records.append(
+            {
+                "kind": kind,
+                "state": state.state_name,
+                "step": step,
+                "current_domain": domain,
+                "current_intent": intent,
+                "top": [h.to_dict() for h in hits],
+                "prefix_tail": prefix[-300:],
+            }
+        )
+        self.debug_stats[f"prototype_{kind}"] += 1
+        if hits:
+            print(
+                f"[{self.log_prefix}][{kind}] state={state.state_name} top={hits[0].label} score={hits[0].score:.4f}",
+                flush=True,
+            )
+
+    def __call__(self, input_ids, scores):
+        prefix = self._decode_generated_prefix(input_ids)
+        state = parse_state(prefix)
+        self.debug_stats["steps"] += 1
+        if state.state_name == STATE_DOMAIN:
+            self.debug_stats["state_domain"] += 1
+            self._maybe_record("domain", state, prefix)
+        elif state.state_name == STATE_INTENT:
+            self.debug_stats["state_intent"] += 1
+            self._maybe_record("intent", state, prefix)
+        elif state.state_name == STATE_SLOTS_KEY:
+            self.debug_stats["state_slots_key"] += 1
+            self._maybe_record("slot_key", state, prefix)
+        elif state.state_name == STATE_SLOTS_VALUE:
+            self.debug_stats["state_slots_value"] += 1
+        return scores
+
+    def get_debug_stats(self):
+        return dict(self.debug_stats)
+
+    def get_records(self):
+        return list(self.records)
