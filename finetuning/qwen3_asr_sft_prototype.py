@@ -164,6 +164,15 @@ def _prototype_labels(index: Optional[PrototypeIndex], kind: str) -> List[str]:
     return labels
 
 
+def maybe_add_empty_label(labels: List[str], prototype_conf: Dict[str, Any]) -> List[str]:
+    if not bool(prototype_conf.get("add_empty_prototype", True)):
+        return labels
+    empty_label = str(prototype_conf.get("empty_label", "__empty__"))
+    if empty_label and empty_label not in labels:
+        return [empty_label] + labels
+    return labels
+
+
 def build_prototype_label_maps(
     prototype_conf: Dict[str, Any],
     prototype_index: Optional[PrototypeIndex] = None,
@@ -172,8 +181,14 @@ def build_prototype_label_maps(
     schema_path = prototype_conf.get("schema_path", "")
     schema = MACSLULabelSchema(labels_path=labels_path, schema_path=schema_path)
     _merge_prototype_schema(schema, prototype_index)
-    domains = list(prototype_conf.get("domain_labels", []) or _prototype_labels(prototype_index, "domain") or schema.valid_domains())
-    intents = list(prototype_conf.get("intent_labels", []) or _prototype_labels(prototype_index, "intent") or _schema_intent_labels(schema))
+    domains = maybe_add_empty_label(
+        list(prototype_conf.get("domain_labels", []) or _prototype_labels(prototype_index, "domain") or schema.valid_domains()),
+        prototype_conf,
+    )
+    intents = maybe_add_empty_label(
+        list(prototype_conf.get("intent_labels", []) or _prototype_labels(prototype_index, "intent") or _schema_intent_labels(schema)),
+        prototype_conf,
+    )
     if not domains:
         raise ValueError("No domain labels found. Set prototype.labels_path, prototype.domain_labels, or prototype.prototype_json.")
     if not intents:
@@ -233,6 +248,18 @@ def initialize_prototype_embeddings(
         head.intent_prototypes.weight.requires_grad = False
 
 
+def label_ids(labels: List[str], label2id: Dict[str, int]) -> List[int]:
+    return [int(label2id[x]) for x in labels if x in label2id]
+
+
+def multi_hot(label_ids: List[int], size: int) -> List[float]:
+    vec = [0.0] * int(size)
+    for idx in label_ids:
+        if 0 <= int(idx) < size:
+            vec[int(idx)] = 1.0
+    return vec
+
+
 def make_preprocess_fn_prototype(processor, schema, domain2id, intent2id, prototype_conf, seed: int):
     k = int(prototype_conf.get("k", 5))
     template = get_prompt_template(prototype_conf)
@@ -241,9 +268,22 @@ def make_preprocess_fn_prototype(processor, schema, domain2id, intent2id, protot
     def _preprocess(ex: Dict[str, Any], idx: int) -> Dict[str, Any]:
         rng = random.Random(seed + int(idx))
         prompt = ex.get("prompt", "")
-        domains, intents, gold_domain, gold_intent = build_training_candidate_labels(
+        domains, intents, gold_domains, gold_intents = build_training_candidate_labels(
             ex, schema=schema, k=k, rng=rng, domain_aware_intents=domain_aware
         )
+        domain_label_ids = label_ids(gold_domains, domain2id)
+        intent_label_ids = label_ids(gold_intents, intent2id)
+        empty_label = str(prototype_conf.get("empty_label", "__empty__"))
+        if bool(prototype_conf.get("add_empty_prototype", True)):
+            if not domain_label_ids and empty_label in domain2id:
+                domain_label_ids = [domain2id[empty_label]]
+                if empty_label not in domains:
+                    domains = [empty_label] + domains
+            if not intent_label_ids and empty_label in intent2id:
+                intent_label_ids = [intent2id[empty_label]]
+                if empty_label not in intents:
+                    intents = [empty_label] + intents
+
         augmented_prompt = format_domain_intent_candidates(prompt, domains, intents, **template)
         prefix_msgs = build_prefix_messages(augmented_prompt, None)
         prefix_text = processor.apply_chat_template([prefix_msgs], add_generation_prompt=True, tokenize=False)[0]
@@ -252,8 +292,8 @@ def make_preprocess_fn_prototype(processor, schema, domain2id, intent2id, protot
             "audio": ex["audio"],
             "target": ex["text"],
             "prefix_text": prefix_text,
-            "domain_label": int(domain2id.get(gold_domain, -1)),
-            "intent_label": int(intent2id.get(gold_intent, -1)),
+            "domain_label_ids": domain_label_ids,
+            "intent_label_ids": intent_label_ids,
         }
 
     return _preprocess
@@ -263,6 +303,8 @@ def make_preprocess_fn_prototype(processor, schema, domain2id, intent2id, protot
 class DataCollatorForQwen3ASRPrototypeFinetuning:
     processor: Any
     sampling_rate: int = 16000
+    num_domains: int = 0
+    num_intents: int = 0
 
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         audio_paths = [f["audio"] for f in features]
@@ -281,8 +323,15 @@ class DataCollatorForQwen3ASRPrototypeFinetuning:
         if pad_id is not None:
             labels[labels == pad_id] = -100
         full_inputs["labels"] = labels
-        full_inputs["domain_labels"] = torch.tensor([int(f.get("domain_label", -1)) for f in features], dtype=torch.long)
-        full_inputs["intent_labels"] = torch.tensor([int(f.get("intent_label", -1)) for f in features], dtype=torch.long)
+        full_inputs["domain_labels"] = torch.tensor(
+            [multi_hot([int(x) for x in f.get("domain_label_ids", [])], self.num_domains) for f in features],
+            dtype=torch.float32,
+        )
+        full_inputs["intent_labels"] = torch.tensor(
+            [multi_hot([int(x) for x in f.get("intent_label_ids", [])], self.num_intents) for f in features],
+            dtype=torch.float32,
+        )
+    
         full_inputs["prototype_prefix_lengths"] = torch.tensor(prefix_lens, dtype=torch.long)
         return full_inputs
 
@@ -401,14 +450,21 @@ def main():
 
     raw_ds = load_dataset("json", data_files={"train": args_cli.train_file, "validation": args_cli.eval_file})
     ds = raw_ds.map(make_preprocess_fn_prototype(processor, schema, domain2id, intent2id, prototype_conf, seed), with_indices=True, num_proc=1)
-    keep = {"prompt", "audio", "target", "prefix_text", "domain_label", "intent_label"}
+    keep = {"prompt", "audio", "target", "prefix_text", "domain_label_ids", "intent_label_ids"}
     for split in ds.keys():
         drop = [c for c in ds[split].column_names if c not in keep]
         if drop:
             ds[split] = ds[split].remove_columns(drop)
 
     default_prompt = ds["train"][0]["prompt"] if len(ds["train"]) else ""
-    collator = DataCollatorForQwen3ASRPrototypeFinetuning(processor=processor, sampling_rate=sr)
+    
+    collator = DataCollatorForQwen3ASRPrototypeFinetuning(
+        processor=processor,
+        sampling_rate=sr,
+        num_domains=len(domain_labels),
+        num_intents=len(intent_labels),
+    )
+
     training_args_conf["run_name"] = os.path.basename(args_cli.output_dir)
     if model_args_conf.get("wandb_project"):
         os.environ["WANDB_PROJECT"] = model_args_conf["wandb_project"]

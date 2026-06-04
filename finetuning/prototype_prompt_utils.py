@@ -66,17 +66,21 @@ def pad_candidates(
     k: int,
     rng: random.Random,
 ) -> List[str]:
-    """Keep gold labels, randomly pad to k from pool, and shuffle order."""
+    """Keep *all* gold labels, then randomly pad to at least k candidates.
+
+    Multi-domain / multi-intent examples may contain more than k gold labels.
+    In that case we keep every gold label instead of truncating positives out of
+    the prompt.
+    """
     k = int(k)
     candidates = unique_keep_order(gold)
+    target_len = max(k, len(candidates)) if k > 0 else len(candidates)
     pool_values = [x for x in unique_keep_order(pool) if x not in candidates]
     rng.shuffle(pool_values)
     for value in pool_values:
-        if len(candidates) >= k:
+        if len(candidates) >= target_len:
             break
         candidates.append(value)
-    if k > 0:
-        candidates = candidates[:k]
     rng.shuffle(candidates)
     return candidates
 
@@ -87,8 +91,8 @@ def build_training_candidate_labels(
     k: int,
     rng: random.Random,
     domain_aware_intents: bool = True,
-) -> Tuple[List[str], List[str], str, str]:
-    """Build train-time candidates that include gold labels and random labels up to k."""
+) -> Tuple[List[str], List[str], List[str], List[str]]:
+    """Build train-time candidates and return all gold domain/intent labels."""
     gold_domains, gold_intents = extract_gold_domain_intents(example)
     all_domains = schema.valid_domains()
     if domain_aware_intents and gold_domains:
@@ -102,9 +106,7 @@ def build_training_candidate_labels(
 
     domains = pad_candidates(gold_domains, all_domains, k, rng)
     intents = pad_candidates(gold_intents, intent_pool, k, rng)
-    gold_domain = gold_domains[0] if gold_domains else ""
-    gold_intent = gold_intents[0] if gold_intents else ""
-    return domains, intents, gold_domain, gold_intent
+    return domains, intents, gold_domains, gold_intents
 
 
 def get_prompt_template(prototype_conf: Dict[str, Any]) -> Dict[str, str]:

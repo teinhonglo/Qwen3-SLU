@@ -119,18 +119,24 @@ class Qwen3ASRPrototypeThinkerForConditionalGeneration(Qwen3ASRThinkerForConditi
 
         losses = []
         if domain_labels is not None:
-            valid = domain_labels >= 0
+            domain_targets = domain_labels.to(domain_logits.device, dtype=domain_logits.dtype)
+            if domain_targets.dim() != 2:
+                raise ValueError("domain_labels must be a multi-hot tensor with shape (batch, num_domains)")
+            valid = domain_targets.sum(dim=-1) > 0
             if valid.any():
                 losses.append(
                     float(self.prototype_config.get("domain_loss_weight", 1.0))
-                    * F.cross_entropy(domain_logits[valid], domain_labels.to(domain_logits.device)[valid])
+                    * F.binary_cross_entropy_with_logits(domain_logits[valid], domain_targets[valid])
                 )
         if intent_labels is not None:
-            valid = intent_labels >= 0
+            intent_targets = intent_labels.to(intent_logits.device, dtype=intent_logits.dtype)
+            if intent_targets.dim() != 2:
+                raise ValueError("intent_labels must be a multi-hot tensor with shape (batch, num_intents)")
+            valid = intent_targets.sum(dim=-1) > 0
             if valid.any():
                 losses.append(
                     float(self.prototype_config.get("intent_loss_weight", 1.0))
-                    * F.cross_entropy(intent_logits[valid], intent_labels.to(intent_logits.device)[valid])
+                    * F.binary_cross_entropy_with_logits(intent_logits[valid], intent_targets[valid])
                 )
         if losses:
             proto_loss = sum(losses)

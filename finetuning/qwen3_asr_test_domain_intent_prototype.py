@@ -18,7 +18,7 @@ _REPO_ROOT = os.path.dirname(_THIS_DIR)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from finetuning.prototype_prompt_utils import format_domain_intent_candidates, get_prompt_template  # noqa: E402
+from finetuning.prototype_prompt_utils import extract_gold_domain_intents, format_domain_intent_candidates, get_prompt_template  # noqa: E402
 
 _CKPT_RE = __import__("re").compile(r"^checkpoint-(\d+)$")
 
@@ -150,6 +150,15 @@ def write_slu_prediction_jsonl(rows_out: List[Dict[str, Any]], output_root: str,
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
     print(f"[info] saved: {out_path}")
 
+
+def write_prototype_prediction_jsonl(rows_out: List[Dict[str, Any]], output_root: str, jsonl_name: str):
+    save_dir = os.path.join(output_root, jsonl_name)
+    os.makedirs(save_dir, exist_ok=True)
+    out_path = os.path.join(save_dir, "prototype_predictions.jsonl")
+    with open(out_path, "w", encoding="utf-8") as f:
+        for row in rows_out:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    print(f"[info] saved prototype predictions: {out_path}")
 
 def build_corrected_prompt(corrected_prompt: str, pred_json: Dict[str, Any]) -> str:
     return f"""{corrected_prompt}\n\npred_json:\n{json.dumps(pred_json, ensure_ascii=False)}\n"""
@@ -437,6 +446,8 @@ def main():
     rows = load_jsonl(args.input_jsonl)
     rows_out: List[Dict[str, Any]] = []
     trace_rows: List[Dict[str, Any]] = []
+    prototype_pred_rows: List[Dict[str, Any]] = []
+    
     for i, row in enumerate(rows, start=1):
         text_id = str(row.get("text_id", f"line{i}")).strip()
         audio_path = row.get("audio", "")
@@ -476,9 +487,22 @@ def main():
         }
         rows_out.append(out)
         trace_rows.append({"text_id": text_id, **trace, "pred_raw": pred_raw, "pred_json": pred_json})
+        
+        gold_domains, gold_intents = extract_gold_domain_intents(row)
+        prototype_pred_rows.append(
+            {
+                "id": text_id,
+                "pred_domains": [x.get("label", "") for x in trace.get("prototype_domains", [])],
+                "pred_intents": [x.get("label", "") for x in trace.get("prototype_intents", [])],
+                "gold_domains": gold_domains,
+                "gold_intents": gold_intents,
+            }
+        )
         print(f"[{i}/{len(rows)}] done: {text_id}")
 
     write_slu_prediction_jsonl(rows_out=rows_out, output_root=args.output_root, jsonl_name=jsonl_name)
+    write_prototype_prediction_jsonl(prototype_pred_rows, args.output_root, jsonl_name)
+    
     save_dir = os.path.join(args.output_root, jsonl_name)
     os.makedirs(save_dir, exist_ok=True)
     trace_path = os.path.join(save_dir, "domain_intent_prototype_trace.jsonl")
