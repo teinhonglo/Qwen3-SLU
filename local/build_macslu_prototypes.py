@@ -1,4 +1,22 @@
 #!/usr/bin/env python3
+# Build MAC-SLU domain/intent/slot-key prototypes without training expert LMs.
+#
+# Prototype source modes (--prototype_source):
+#   audio_only   : default. Use the utterance audio only. The audio still goes
+#                  through the Qwen3-ASR processor/audio tower/thinker; no row
+#                  prompt and no decoded semantic prefix are appended.
+#   audio_prompt : use utterance audio plus the row prompt. No decoded semantic
+#                  prefix is appended.
+#   audio_prefix : use utterance audio plus the row prompt plus the decoded
+#                  semantic prefix before the current domain/intent/slot label.
+#                  This is closest to state-aware generation-time prototype
+#                  lookup.
+#   text_prefix  : legacy text-only mode. Use only the decoded semantic prefix;
+#                  no audio and no row prompt are used.
+#
+# All audio modes produce hidden-state prototypes from the Qwen3-ASR thinker
+# after audio features are merged; they do not store raw waveform or raw audio
+# tower outputs as prototype vectors.
 """Build MAC-SLU domain/intent/slot-key prototypes without training expert LMs."""
 
 import argparse
@@ -183,6 +201,32 @@ def write_jsonl(path: str, rows: Iterable[Dict[str, Any]]) -> None:
     print(f"[info] saved {count} prototype instance examples: {path}")
 
 
+class PrototypeSourceEmbedder:
+    """Route prototype examples to the hidden-state embedder by source mode.
+
+    Source modes:
+    - audio_only: audio chat prefix only; ignores row prompt and decoded prefix.
+    - audio_prompt: audio chat prefix with the row prompt; ignores decoded prefix.
+    - audio_prefix: audio chat prefix with row prompt plus decoded semantic prefix.
+    - text_prefix: legacy text-only decoded semantic prefix.
+    """
+
+    def __init__(self, embedder, source: str):
+        self.embedder = embedder
+        self.source = source
+
+    def __call__(self, text: str, audio_path: str = "", prompt: str = ""):
+        if self.source == "audio_only":
+            return self.embedder("", audio_path=audio_path, prompt="")
+        if self.source == "audio_prompt":
+            return self.embedder("", audio_path=audio_path, prompt=prompt)
+        if self.source == "audio_prefix":
+            return self.embedder(text, audio_path=audio_path, prompt=prompt)
+        if self.source == "text_prefix":
+            return self.embedder(text)
+        raise ValueError(f"Unsupported prototype_source: {self.source}")
+
+
 def embed_instance_examples(examples, embedder, split: str, max_examples_per_label: int = 0):
     counts: Dict[str, int] = defaultdict(int)
     rows = []
@@ -264,7 +308,12 @@ def parse_args():
     p.add_argument("--auto_latest_checkpoint", action="store_true")
     p.add_argument("--auto_best_checkpoint", action="store_true")
     p.add_argument("--device", default="cuda:0")
-    p.add_argument("--prototype_source", choices=["text_prefix", "audio_prefix"], default="text_prefix")
+    p.add_argument(
+        "--prototype_source",
+        choices=["audio_only", "audio_prompt", "audio_prefix", "text_prefix"],
+        default="audio_only",
+        help="Prototype input source. Default audio_only uses only audio; audio_prompt adds the row prompt; audio_prefix adds prompt plus decoded prefix; text_prefix is legacy text-only.",
+    )
     p.add_argument("--prototype_pooling", choices=["mean_pooling", "last_hidden_state"], default="mean_pooling")
     p.add_argument("--max_examples_per_label", type=int, default=0, help="Deprecated compatibility option; prototypes are aggregated from all train examples")
     p.add_argument("--max_instance_examples_per_label", type=int, default=200, help="Max train/test instance embeddings per label saved for visualization")
@@ -291,9 +340,11 @@ def main():
         sample_rate=int(model_args_conf.get("sr", 16000)),
     )
 
-    embedder = text_embedder
-    if args.prototype_source == "audio_prefix":
-        embedder = AudioStatsPrefixEmbedder(text_embedder, sample_rate=int(model_args_conf.get("sr", 16000)))
+    audio_embedder = AudioStatsPrefixEmbedder(text_embedder, sample_rate=int(model_args_conf.get("sr", 16000)))
+    embedder = PrototypeSourceEmbedder(
+        audio_embedder if args.prototype_source in {"audio_only", "audio_prompt", "audio_prefix"} else text_embedder,
+        args.prototype_source,
+    )
     examples = list(iter_prefix_examples(rows, label_schema))
     test_examples = list(iter_prefix_examples(test_rows, label_schema)) if test_rows else []
     print(f"[info] collected {len(examples)} train prefix examples")

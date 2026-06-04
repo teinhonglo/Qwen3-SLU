@@ -44,7 +44,7 @@ base_checkpoint=
 # Prototype artifact config.  prototype_json is the exact file used to initialize
 # qwen3_asr_sft_prototype.py and is compatible with qwen3_asr_test_prototype.py.
 prototype_root=data-json/macslu_prototype
-prototype_source=text_prefix       # text_prefix | audio_prefix
+prototype_source=audio_only       # audio_only | audio_prompt | audio_prefix | text_prefix
 prototype_pooling=mean_pooling     # mean_pooling | last_hidden_state
 prototype_json=""
 prototype_train_examples_jsonl=""
