@@ -160,7 +160,6 @@ def write_prototype_prediction_jsonl(rows_out: List[Dict[str, Any]], output_root
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     print(f"[info] saved prototype predictions: {out_path}")
 
-
 def build_corrected_prompt(corrected_prompt: str, pred_json: Dict[str, Any]) -> str:
     return f"""{corrected_prompt}\n\npred_json:\n{json.dumps(pred_json, ensure_ascii=False)}\n"""
 
@@ -448,6 +447,7 @@ def main():
     rows_out: List[Dict[str, Any]] = []
     trace_rows: List[Dict[str, Any]] = []
     prototype_pred_rows: List[Dict[str, Any]] = []
+    
     for i, row in enumerate(rows, start=1):
         text_id = str(row.get("text_id", f"line{i}")).strip()
         audio_path = row.get("audio", "")
@@ -487,6 +487,7 @@ def main():
         }
         rows_out.append(out)
         trace_rows.append({"text_id": text_id, **trace, "pred_raw": pred_raw, "pred_json": pred_json})
+        
         gold_domains, gold_intents = extract_gold_domain_intents(row)
         prototype_pred_rows.append(
             {
@@ -501,6 +502,7 @@ def main():
 
     write_slu_prediction_jsonl(rows_out=rows_out, output_root=args.output_root, jsonl_name=jsonl_name)
     write_prototype_prediction_jsonl(prototype_pred_rows, args.output_root, jsonl_name)
+    
     save_dir = os.path.join(args.output_root, jsonl_name)
     os.makedirs(save_dir, exist_ok=True)
     trace_path = os.path.join(save_dir, "domain_intent_prototype_trace.jsonl")

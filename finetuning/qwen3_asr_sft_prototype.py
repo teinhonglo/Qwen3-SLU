@@ -283,6 +283,7 @@ def make_preprocess_fn_prototype(processor, schema, domain2id, intent2id, protot
                 intent_label_ids = [intent2id[empty_label]]
                 if empty_label not in intents:
                     intents = [empty_label] + intents
+
         augmented_prompt = format_domain_intent_candidates(prompt, domains, intents, **template)
         prefix_msgs = build_prefix_messages(augmented_prompt, None)
         prefix_text = processor.apply_chat_template([prefix_msgs], add_generation_prompt=True, tokenize=False)[0]
@@ -330,6 +331,7 @@ class DataCollatorForQwen3ASRPrototypeFinetuning:
             [multi_hot([int(x) for x in f.get("intent_label_ids", [])], self.num_intents) for f in features],
             dtype=torch.float32,
         )
+    
         full_inputs["prototype_prefix_lengths"] = torch.tensor(prefix_lens, dtype=torch.long)
         return full_inputs
 
@@ -455,12 +457,14 @@ def main():
             ds[split] = ds[split].remove_columns(drop)
 
     default_prompt = ds["train"][0]["prompt"] if len(ds["train"]) else ""
+    
     collator = DataCollatorForQwen3ASRPrototypeFinetuning(
         processor=processor,
         sampling_rate=sr,
         num_domains=len(domain_labels),
         num_intents=len(intent_labels),
     )
+
     training_args_conf["run_name"] = os.path.basename(args_cli.output_dir)
     if model_args_conf.get("wandb_project"):
         os.environ["WANDB_PROJECT"] = model_args_conf["wandb_project"]
