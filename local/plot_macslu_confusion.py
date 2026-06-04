@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 NONE_LABEL = "None"
 EMPTY_LABEL = "Empty"
 MISSING_MAPPING_FILENAME = "missing_label_mapping.txt"
+OTHER_DOMAIN_LABEL = "Other domain"
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,12 @@ def clean_label(value: Any) -> str:
     if not isinstance(value, str):
         value = str(value)
     return value.strip()
+
+
+def safe_filename(text: str) -> str:
+    text = str(text or "unknown")
+    text = re.sub(r"[\\/:*?\"<>|\s]+", "_", text)
+    return text[:120] or "unknown"
 
 
 def parse_label_schema(labels_file: str) -> LabelSchema:
@@ -330,67 +337,291 @@ def normalize_matrix(count_df):
     return pd.DataFrame(normalized, index=count_df.index, columns=count_df.columns)
 
 
-def configure_fonts() -> None:
+def configure_fonts():
+    """
+    Configure Matplotlib fonts for Chinese labels on Linux.
+
+    Recommended installation on Ubuntu/Debian:
+        sudo apt-get update
+        sudo apt-get install -y fonts-noto-cjk
+
+    If the font was installed after Matplotlib was first used, clear cache:
+        rm -rf ~/.cache/matplotlib
+    """
+    import os
     import matplotlib.font_manager as fm
     import matplotlib.pyplot as plt
 
-    preferred_fonts = [
-        "Noto Sans CJK SC",
-        "Noto Sans CJK TC",
-        "Noto Sans CJK JP",
-        "SimHei",
-        "Microsoft YaHei",
-        "Arial Unicode MS",
-        "DejaVu Sans",
+    possible_font_paths = [
+        # Ubuntu / Debian Noto CJK package
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+
+        # Sometimes installed with region-specific names
+        "/usr/share/fonts/opentype/noto/NotoSansCJKtc-Regular.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansTC-Regular.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansSC-Regular.otf",
+
+        # AR PL fonts on some Linux systems
+        "/usr/share/fonts/truetype/arphic/uming.ttc",
+        "/usr/share/fonts/truetype/arphic/ukai.ttc",
     ]
-    available = {font.name for font in fm.fontManager.ttflist}
-    for font in preferred_fonts:
-        if font in available:
-            plt.rcParams["font.sans-serif"] = [font]
-            break
-    plt.rcParams["axes.unicode_minus"] = False
+
+    for font_path in possible_font_paths:
+        if os.path.exists(font_path):
+            # Critical: register the exact font file, not only the font name.
+            fm.fontManager.addfont(font_path)
+            font_prop = fm.FontProperties(fname=font_path)
+            font_name = font_prop.get_name()
+
+            plt.rcParams["font.family"] = "sans-serif"
+            plt.rcParams["font.sans-serif"] = [font_name]
+            plt.rcParams["axes.unicode_minus"] = False
+
+            # Better font embedding for vector outputs if PDF/PS are added later.
+            plt.rcParams["pdf.fonttype"] = 42
+            plt.rcParams["ps.fonttype"] = 42
+
+            print(f"[info] 使用中文字體: {font_name} ({font_path})")
+            return font_prop
+
+    raise FileNotFoundError(
+        "找不到 Linux 中文字體。請先安裝：\n"
+        "    sudo apt-get update\n"
+        "    sudo apt-get install -y fonts-noto-cjk\n"
+        "若安裝後仍無法顯示中文，請清除 Matplotlib cache：\n"
+        "    rm -rf ~/.cache/matplotlib"
+    )
 
 
-def plot_heatmap(count_df, png_path: str, title: str, is_intent: bool) -> None:
+def apply_font_to_heatmap_axis(ax, font_prop, tick_size: int) -> None:
+    """Apply Chinese font to labels, tick labels, and heatmap annotations."""
+    ax.title.set_fontproperties(font_prop)
+    ax.xaxis.label.set_fontproperties(font_prop)
+    ax.yaxis.label.set_fontproperties(font_prop)
+
+    for tick_label in ax.get_xticklabels():
+        tick_label.set_fontproperties(font_prop)
+        tick_label.set_fontsize(tick_size)
+
+    for tick_label in ax.get_yticklabels():
+        tick_label.set_fontproperties(font_prop)
+        tick_label.set_fontsize(tick_size)
+
+    # Seaborn heatmap annotations are stored as ax.texts.
+    for text in ax.texts:
+        text.set_fontproperties(font_prop)
+
+
+def choose_heatmap_layout(n_rows: int, n_cols: int, is_intent: bool) -> Tuple[float, float, int, int, int, int]:
+    """
+    Return width, height, tick_size, annotation_size, rotation, dpi.
+
+    The key idea is to scale by the number of rows/columns instead of
+    compressing all labels into a fixed-size canvas. For very large matrices,
+    the PNG dpi is reduced to keep the pixel dimensions reasonable, while a PDF
+    is always saved for zoomable/vector inspection.
+    """
+    n_max = max(n_rows, n_cols)
+
+    if is_intent:
+        width = max(24.0, min(140.0, n_cols * 0.78))
+        height = max(20.0, min(140.0, n_rows * 0.62))
+        rotation = 70
+        if n_max <= 45:
+            tick_size, annot_size, dpi = 10, 8, 250
+        elif n_max <= 90:
+            tick_size, annot_size, dpi = 9, 7, 220
+        elif n_max <= 140:
+            tick_size, annot_size, dpi = 8, 6, 180
+        else:
+            tick_size, annot_size, dpi = 7, 5, 140
+    else:
+        width = max(10.0, min(80.0, n_cols * 0.95))
+        height = max(8.0, min(80.0, n_rows * 0.78))
+        rotation = 40
+        tick_size, annot_size, dpi = 11, 10, 250
+
+    return width, height, tick_size, annot_size, rotation, dpi
+
+
+def plot_heatmap(
+    count_df,
+    png_path: str,
+    title: str,
+    is_intent: bool,
+    annotate: Optional[bool] = None,
+) -> None:
     import matplotlib.pyplot as plt
     import seaborn as sns
 
+    font_prop = configure_fonts()
     norm_df = normalize_matrix(count_df)
-    n_labels = len(count_df.index)
-    if is_intent:
-        width = max(18.0, min(48.0, n_labels * 0.48))
-        height = max(16.0, min(48.0, n_labels * 0.42))
-        tick_size = 9 if n_labels <= 60 else 8
-        annot_size = 8 if n_labels <= 45 else 6
-        rotation = 60
-    else:
-        width = max(10.0, n_labels * 0.85)
-        height = max(8.0, n_labels * 0.72)
-        tick_size = 11
-        annot_size = 10
-        rotation = 35
+    n_rows, n_cols = count_df.shape
+    n_max = max(n_rows, n_cols)
 
-    plt.figure(figsize=(width, height))
-    ax = sns.heatmap(
+    width, height, tick_size, annot_size, rotation, dpi = choose_heatmap_layout(
+        n_rows=n_rows,
+        n_cols=n_cols,
+        is_intent=is_intent,
+    )
+
+    # Full matrices with too many labels become visually noisy if every cell is annotated.
+    # The corresponding CSV files still contain the exact counts. Smaller per-domain plots
+    # remain annotated by default.
+    if annotate is None:
+        annotate = n_max <= 90
+
+    fig, ax = plt.subplots(figsize=(width, height))
+    sns.heatmap(
         data=norm_df,
-        annot=count_df,
+        annot=count_df if annotate else False,
         fmt="g",
         cbar=False,
         cmap="Blues",
         linewidths=0.25,
         linecolor="white",
-        annot_kws={"size": annot_size},
+        annot_kws={"size": annot_size, "fontproperties": font_prop},
         vmin=0.0,
         vmax=1.0,
+        ax=ax,
     )
-    ax.set_xlabel("Predictions", fontsize=14)
-    ax.set_ylabel("Annotations", fontsize=14)
-    ax.set_title(title, fontsize=16, pad=14)
-    ax.set_xticklabels(ax.get_xticklabels(), rotation=rotation, ha="right", fontsize=tick_size)
-    ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=tick_size)
-    plt.tight_layout()
-    plt.savefig(png_path, dpi=250, bbox_inches="tight", pad_inches=0.1)
-    plt.close()
+
+    ax.set_xlabel("Predictions", fontsize=max(14, tick_size + 4), fontproperties=font_prop)
+    ax.set_ylabel("Annotations", fontsize=max(14, tick_size + 4), fontproperties=font_prop)
+    ax.set_title(title, fontsize=max(16, tick_size + 6), pad=14, fontproperties=font_prop)
+
+    ax.set_xticklabels(
+        ax.get_xticklabels(),
+        rotation=rotation,
+        ha="right",
+        rotation_mode="anchor",
+        fontsize=tick_size,
+        fontproperties=font_prop,
+    )
+    ax.set_yticklabels(
+        ax.get_yticklabels(),
+        rotation=0,
+        fontsize=tick_size,
+        fontproperties=font_prop,
+    )
+
+    apply_font_to_heatmap_axis(ax, font_prop, tick_size)
+
+    # Avoid tight_layout squeezing the heatmap itself when labels are long.
+    # bbox_inches="tight" below still keeps all labels in the output image.
+    fig.subplots_adjust(left=0.22, bottom=0.28, right=0.98, top=0.94)
+
+    fig.savefig(png_path, dpi=dpi, bbox_inches="tight", pad_inches=0.15)
+    pdf_path = os.path.splitext(png_path)[0] + ".pdf"
+    fig.savefig(pdf_path, bbox_inches="tight", pad_inches=0.15)
+    plt.close(fig)
+
+
+def drop_empty_rows_and_columns(count_df, keep_rows: Optional[Sequence[str]] = None, keep_cols: Optional[Sequence[str]] = None):
+    """Remove all-zero rows/columns, but keep requested labels even if they are all zero."""
+    keep_rows = set(keep_rows or [])
+    keep_cols = set(keep_cols or [])
+
+    row_mask = (count_df.sum(axis=1) > 0) | count_df.index.to_series().isin(keep_rows).to_numpy()
+    col_mask = (count_df.sum(axis=0) > 0) | count_df.columns.to_series().isin(keep_cols).to_numpy()
+
+    if row_mask.any():
+        count_df = count_df.loc[row_mask]
+    if col_mask.any():
+        count_df = count_df.loc[:, col_mask]
+    return count_df
+
+
+def build_domain_intent_matrix(full_count_df, domain: str, intents: Sequence[str], drop_empty: bool = True):
+    import pandas as pd
+
+    domain_labels = [intent_display_label(domain, intent) for intent in intents]
+    explicit_lookup_cols = domain_labels + [NONE_LABEL, EMPTY_LABEL]
+    # Keep Empty as the final displayed class, and always keep Other domain visible.
+    output_cols = domain_labels + [NONE_LABEL, OTHER_DOMAIN_LABEL, EMPTY_LABEL]
+
+    rows = []
+    for row_label in domain_labels:
+        if row_label not in full_count_df.index:
+            continue
+
+        row_values = {}
+        for col_label in domain_labels + [NONE_LABEL, EMPTY_LABEL]:
+            row_values[col_label] = int(full_count_df.loc[row_label, col_label]) if col_label in full_count_df.columns else 0
+
+        other_sum = 0
+        for col_label in full_count_df.columns:
+            if col_label not in explicit_lookup_cols:
+                other_sum += int(full_count_df.loc[row_label, col_label])
+        row_values[OTHER_DOMAIN_LABEL] = other_sum
+        rows.append((row_label, row_values))
+
+    if not rows:
+        return pd.DataFrame(columns=output_cols)
+
+    out_df = pd.DataFrame([values for _, values in rows], index=[label for label, _ in rows], columns=output_cols)
+    if drop_empty:
+        out_df = drop_empty_rows_and_columns(
+            out_df,
+            keep_cols=[NONE_LABEL, OTHER_DOMAIN_LABEL, EMPTY_LABEL],
+        )
+    return out_df
+
+
+def relabel_rectangular_dataframe(df, row_labels: Sequence[str], col_labels: Sequence[str]):
+    relabeled = df.copy()
+    relabeled.index = row_labels
+    relabeled.columns = col_labels
+    return relabeled
+
+
+def relabel_domain_intent_dataframe(df, mapping: Dict[str, str]):
+    row_labels = [translate_intent_display(label, mapping) for label in df.index]
+    col_labels = [
+        OTHER_DOMAIN_LABEL if label == OTHER_DOMAIN_LABEL else translate_intent_display(label, mapping)
+        for label in df.columns
+    ]
+    return relabel_rectangular_dataframe(df, row_labels, col_labels)
+
+
+def save_domain_intent_plots(
+    full_count_df,
+    schema: LabelSchema,
+    mapping: Dict[str, str],
+    output_dir: str,
+    english: bool,
+    drop_empty: bool,
+) -> None:
+    subdir = "intent_by_domain_en" if english else "intent_by_domain"
+    plot_dir = os.path.join(output_dir, subdir)
+    os.makedirs(plot_dir, exist_ok=True)
+
+    for domain in schema.domains:
+        domain_df = build_domain_intent_matrix(
+            full_count_df,
+            domain=domain,
+            intents=schema.intents_by_domain.get(domain, []),
+            drop_empty=drop_empty,
+        )
+        if domain_df.empty or int(domain_df.to_numpy().sum()) == 0:
+            continue
+
+        display_domain = translate_label(domain, mapping) if english else domain
+        if english:
+            domain_df = relabel_domain_intent_dataframe(domain_df, mapping)
+
+        stem = safe_filename(display_domain)
+        save_count_and_normalized_csv(domain_df, plot_dir, stem)
+        plot_heatmap(
+            domain_df,
+            os.path.join(plot_dir, f"{stem}.png"),
+            f"Intent Confusion Matrix - {display_domain}",
+            is_intent=True,
+            annotate=True,
+        )
 
 
 def save_count_and_normalized_csv(count_df, output_dir: str, stem: str) -> None:
@@ -533,6 +764,16 @@ def main() -> None:
     parser.add_argument("--label_mapping_file", required=True, help="Tab-separated Chinese-to-English label mapping file.")
     parser.add_argument("--output_dir", required=True, help="Directory for PNG, CSV, and hallucination outputs.")
     parser.add_argument("--skip_plots", action="store_true", help="Write CSV/report outputs without rendering PNG files.")
+    parser.add_argument(
+        "--no_intent_by_domain_plots",
+        action="store_true",
+        help="Do not render additional per-domain intent confusion matrices.",
+    )
+    parser.add_argument(
+        "--keep_empty_domain_intents",
+        action="store_true",
+        help="Keep all intent labels in per-domain plots, including labels with zero counts.",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -556,7 +797,22 @@ def main() -> None:
     if not args.skip_plots:
         configure_fonts()
         plot_heatmap(domain_count_df, os.path.join(args.output_dir, "domain_confusion_matrix.png"), "Domain Confusion Matrix", False)
-        plot_heatmap(intent_count_df, os.path.join(args.output_dir, "intent_confusion_matrix.png"), "Intent Confusion Matrix", True)
+        plot_heatmap(
+            intent_count_df,
+            os.path.join(args.output_dir, "intent_confusion_matrix.png"),
+            "Intent Confusion Matrix",
+            True,
+            annotate=None,
+        )
+        if not args.no_intent_by_domain_plots:
+            save_domain_intent_plots(
+                intent_count_df,
+                schema=schema,
+                mapping=mapping,
+                output_dir=args.output_dir,
+                english=False,
+                drop_empty=not args.keep_empty_domain_intents,
+            )
 
     domain_labels_en = make_english_labels(domain_labels, mapping, intent=False)
     intent_labels_en = make_english_labels(intent_labels, mapping, intent=True)
@@ -567,7 +823,22 @@ def main() -> None:
     save_count_and_normalized_csv(intent_count_en_df, args.output_dir, "intent_confusion_matrix_en")
     if not args.skip_plots:
         plot_heatmap(domain_count_en_df, os.path.join(args.output_dir, "domain_confusion_matrix_en.png"), "Domain Confusion Matrix", False)
-        plot_heatmap(intent_count_en_df, os.path.join(args.output_dir, "intent_confusion_matrix_en.png"), "Intent Confusion Matrix", True)
+        plot_heatmap(
+            intent_count_en_df,
+            os.path.join(args.output_dir, "intent_confusion_matrix_en.png"),
+            "Intent Confusion Matrix",
+            True,
+            annotate=None,
+        )
+        if not args.no_intent_by_domain_plots:
+            save_domain_intent_plots(
+                intent_count_df,
+                schema=schema,
+                mapping=mapping,
+                output_dir=args.output_dir,
+                english=True,
+                drop_empty=not args.keep_empty_domain_intents,
+            )
 
     save_hallucination_report(
         args.output_dir,
@@ -584,6 +855,8 @@ def main() -> None:
     else:
         print(f"Saved domain confusion matrix to {os.path.join(args.output_dir, 'domain_confusion_matrix.png')}")
         print(f"Saved intent confusion matrix to {os.path.join(args.output_dir, 'intent_confusion_matrix.png')}")
+        if not args.no_intent_by_domain_plots:
+            print(f"Saved per-domain intent matrices to {os.path.join(args.output_dir, 'intent_by_domain')}")
     print(f"Saved hallucination report to {os.path.join(args.output_dir, 'hallucination.txt')}")
 
 
