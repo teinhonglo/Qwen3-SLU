@@ -225,9 +225,14 @@ def main():
         sample_rate=sr,
     )
     current_audio = {"path": "", "prompt": ""}
-    if prototype_index.prototype_source == "audio_prefix":
+    if prototype_index.prototype_source in {"audio_only", "audio_prompt", "audio_prefix"}:
         embedder = AudioStatsPrefixEmbedder(text_embedder, sample_rate=sr)
-        embed_fn = lambda text: embedder(text, audio_path=current_audio["path"], prompt=current_audio["prompt"])
+        if prototype_index.prototype_source == "audio_only":
+            embed_fn = lambda text: embedder("", audio_path=current_audio["path"], prompt="")
+        elif prototype_index.prototype_source == "audio_prompt":
+            embed_fn = lambda text: embedder("", audio_path=current_audio["path"], prompt=current_audio["prompt"])
+        else:
+            embed_fn = lambda text: embedder(text, audio_path=current_audio["path"], prompt=current_audio["prompt"])
     else:
         embedder = text_embedder
         embed_fn = lambda text: embedder(text)
