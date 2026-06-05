@@ -8,7 +8,9 @@
       "temperature": 0.0,
       "top_p": 1.0,
       "top_k": 0,
-      "repetition_penalty": 1.0
+      "repetition_penalty": 1.0,
+      "num_return_sequences": 1,
+      "beam_size": 1
     },
     "dola": {
       "enabled": true,
