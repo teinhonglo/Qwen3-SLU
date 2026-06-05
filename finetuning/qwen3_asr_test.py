@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import argparse
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import librosa
 import torch
@@ -146,7 +146,9 @@ def infer_one(
     dola_conf: Optional[Dict[str, Any]] = None,
     top_k: int = 0,
     repetition_penalty: float = 1.0,
-) -> str:
+    num_return_sequences: int = 1,
+    beam_size: int = 1,
+) -> Union[str, List[str]]:
     processor = asr_wrapper.processor
     model = asr_wrapper.model
     device = next(model.parameters()).device
@@ -170,12 +172,15 @@ def infer_one(
         "max_new_tokens": max_new_tokens,
         "do_sample": do_sample,
         "repetition_penalty": repetition_penalty,
+        "num_return_sequences": num_return_sequences,
     }
     if do_sample:
         gen_kwargs["temperature"] = temperature
         gen_kwargs["top_p"] = top_p
         if top_k > 0:
             gen_kwargs["top_k"] = top_k
+    if beam_size > 1:
+        gen_kwargs["num_beams"] = max(beam_size, num_return_sequences)
 
     if decoding_mode == "dola":
         dola_conf = dola_conf or {}
@@ -204,12 +209,14 @@ def infer_one(
     else:
         gen_only_ids = output_ids
 
-    decoded = batch_decode_text(processor, gen_only_ids)[0].strip()
+    decoded = [x.strip() for x in batch_decode_text(processor, gen_only_ids)]
     ########### Attention Heat map ############
     #print(gen_out)
     #plot_split_attention_heatmap(gen_out, inputs, asr_wrapper, audio_path, target_layer=-1, output_root=output_root)
     #######################
-    return decoded
+    if num_return_sequences > 1:
+        return decoded
+    return decoded[0] if decoded else ""
 
 def plot_split_attention_heatmap(gen_out, inputs, asr_wrapper, audio_path, target_layer=-1, output_root=""):
     """
@@ -377,6 +384,26 @@ pred_json:
 """
 
 
+def write_nbest_jsonl(rows_out: List[Dict[str, Any]], output_nbest_jsonl_dir: str, jsonl_name: str):
+    os.makedirs(output_nbest_jsonl_dir, exist_ok=True)
+    out_path = os.path.join(output_nbest_jsonl_dir, f"{jsonl_name}.jsonl")
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        for row in rows_out:
+            item = {
+                "text_id": row["text_id"],
+                "query": row.get("query", ""),
+                "audio": row.get("audio", ""),
+                "prompt": row.get("prompt", ""),
+                "text": row.get("text", ""),
+                "semantics": row.get("semantics", []),
+                "nbest": row.get("nbest", []),
+            }
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+    print(f"[info] saved nbest jsonl: {out_path}")
+
+
 def write_corrected_jsonl(
     rows_out: List[Dict[str, Any]],
     output_jsonl_dir: str,
@@ -426,6 +453,10 @@ def resolve_decoding_conf(model_args_conf: Dict[str, Any], decoding_conf: Dict[s
     dec = (decoding_conf or {}).get("decoding", {})
     gen = dec.get("generation", {})
 
+    num_return_sequences = int(gen.get("num_return_sequences", model_args_conf.get("num_return_sequences", 1)))
+    beam_size = int(gen.get("beam_size", gen.get("num_beams", model_args_conf.get("beam_size", num_return_sequences))))
+    beam_size = max(beam_size, num_return_sequences)
+
     return {
         "mode": str(dec.get("mode", "basic")),
         "strict": bool(dec.get("strict", False)),
@@ -436,6 +467,8 @@ def resolve_decoding_conf(model_args_conf: Dict[str, Any], decoding_conf: Dict[s
             "top_p": float(gen.get("top_p", model_args_conf.get("top_p", 1.0))),
             "top_k": int(gen.get("top_k", 0)),
             "repetition_penalty": float(gen.get("repetition_penalty", 1.0)),
+            "num_return_sequences": num_return_sequences,
+            "beam_size": beam_size,
         },
         "dola": dec.get("dola", {}),
         "layer_lmhead": dec.get("layer_lmhead", {}),
@@ -481,6 +514,12 @@ def parse_args():
                    help='e.g. "cuda:0", "cuda:1", "cpu"')
     p.add_argument("--output_jsonl_dir", type=str, default="",
                    help="Output corrected jsonl dir. If empty, do not write corrected jsonl")
+    p.add_argument("--output_nbest_jsonl_dir", type=str, default="",
+                   help="Output JSONL dir containing an nbest field for discriminative training")
+    p.add_argument("--num_return_sequences", type=int, default=None,
+                   help="Optional override for decoding.generation.num_return_sequences")
+    p.add_argument("--beam_size", type=int, default=None,
+                   help="Optional override for decoding.generation.beam_size")
     p.add_argument("--corrected_prompt_file", type=str, default="data/macslu/corrected_prompt.txt",
                    help="Correction prompt file path for corrected jsonl")
     p.add_argument("--decoding_conf", type=str, default="conf/decoding/basic_decoding.json",
@@ -521,12 +560,20 @@ def main():
     resolved_decoding = resolve_decoding_conf(model_args_conf, decoding_conf)
     effective_mode = validate_decoding_mode(resolved_decoding)
     gen_cfg = resolved_decoding["generation"]
+    if args.num_return_sequences is not None:
+        gen_cfg["num_return_sequences"] = max(1, int(args.num_return_sequences))
+    if args.beam_size is not None:
+        gen_cfg["beam_size"] = max(1, int(args.beam_size))
+    gen_cfg["beam_size"] = max(int(gen_cfg.get("beam_size", 1)), int(gen_cfg.get("num_return_sequences", 1)))
+
     max_new_tokens = int(gen_cfg["max_new_tokens"])
     do_sample = bool(gen_cfg["do_sample"])
     temperature = float(gen_cfg["temperature"])
     top_p = float(gen_cfg["top_p"])
     top_k = int(gen_cfg.get("top_k", 0))
     repetition_penalty = float(gen_cfg.get("repetition_penalty", 1.0))
+    num_return_sequences = int(gen_cfg.get("num_return_sequences", 1))
+    beam_size = int(gen_cfg.get("beam_size", num_return_sequences))
 
     model_path = args.exp_dir
     if args.auto_best_checkpoint:
@@ -610,6 +657,8 @@ def main():
             dola_conf=resolved_decoding.get("dola", {}),
             top_k=top_k,
             repetition_penalty=repetition_penalty,
+            num_return_sequences=num_return_sequences,
+            beam_size=beam_size,
         )
         '''
         if "<slu>" in pred_raw:
@@ -626,6 +675,8 @@ def main():
             "pred_semantics": try_parse_semantics_list(pred_raw),
         })
         '''
+        nbest = pred_raw if isinstance(pred_raw, list) else [pred_raw]
+        pred_raw = nbest[0] if nbest else ""
         pred_json = try_parse_score_dict(pred_raw)
         pred_query = pred_json.get("asr_text", "FAILED")
         
@@ -645,17 +696,25 @@ def main():
             "text_id": text_id,
             "query": query,
             "audio": audio_path,
+            "prompt": prompt,
             "text": row.get("text", ""),
             "semantics": semantics,
             "pred_json": pred_json,
             "pred_query": pred_query,
             "pred_raw": pred_raw,
-            "pred_semantics": pred_semantics
+            "pred_semantics": pred_semantics,
+            "nbest": nbest,
         })
 
         print(f"[{i}/{len(rows)}] done: {text_id}")
 
     write_slu_prediction_jsonl(rows_out=rows_out, output_root=args.output_root, jsonl_name=jsonl_name)
+    if args.output_nbest_jsonl_dir:
+        write_nbest_jsonl(
+            rows_out=rows_out,
+            output_nbest_jsonl_dir=args.output_nbest_jsonl_dir,
+            jsonl_name=get_jsonl_name(args.input_jsonl),
+        )
     if args.output_jsonl_dir:
         corrected_prompt = load_corrected_prompt(args.corrected_prompt_file)
         write_corrected_jsonl(
