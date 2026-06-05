@@ -122,27 +122,30 @@ class Qwen3ASRPrototypeThinkerForConditionalGeneration(Qwen3ASRThinkerForConditi
             domain_targets = domain_labels.to(domain_logits.device, dtype=domain_logits.dtype)
             if domain_targets.dim() != 2:
                 raise ValueError("domain_labels must be a multi-hot tensor with shape (batch, num_domains)")
-            valid = domain_targets.sum(dim=-1) > 0
-            if valid.any():
-                losses.append(
-                    float(self.prototype_config.get("domain_loss_weight", 1.0))
-                    * F.binary_cross_entropy_with_logits(domain_logits[valid], domain_targets[valid])
-                )
+            losses.append(
+                float(self.prototype_config.get("domain_loss_weight", 1.0))
+                * F.binary_cross_entropy_with_logits(domain_logits, domain_targets)
+            )
         if intent_labels is not None:
             intent_targets = intent_labels.to(intent_logits.device, dtype=intent_logits.dtype)
             if intent_targets.dim() != 2:
                 raise ValueError("intent_labels must be a multi-hot tensor with shape (batch, num_intents)")
-            valid = intent_targets.sum(dim=-1) > 0
-            if valid.any():
-                losses.append(
-                    float(self.prototype_config.get("intent_loss_weight", 1.0))
-                    * F.binary_cross_entropy_with_logits(intent_logits[valid], intent_targets[valid])
-                )
-        if losses:
-            proto_loss = sum(losses)
-            total_weight = float(self.prototype_config.get("loss_weight", 1.0))
-            outputs.loss = proto_loss * total_weight if outputs.loss is None else outputs.loss + proto_loss * total_weight
-        return outputs
+            losses.append(
+                float(self.prototype_config.get("intent_loss_weight", 1.0))
+                * F.binary_cross_entropy_with_logits(intent_logits, intent_targets)
+            )
+        proto_loss = sum(losses) * float(self.prototype_config.get("loss_weight", 1.0))
+        total_loss = proto_loss if outputs.loss is None else outputs.loss + proto_loss
+        return outputs.__class__(
+            loss=total_loss,
+            aux_loss=getattr(outputs, "aux_loss", None),
+            logits=outputs.logits,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+            router_logits=getattr(outputs, "router_logits", None),
+            rope_deltas=getattr(outputs, "rope_deltas", None),
+        )
 
     def prototype_logits(
         self,

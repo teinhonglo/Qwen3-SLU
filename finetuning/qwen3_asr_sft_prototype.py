@@ -1,5 +1,10 @@
-# coding=utf-8
-"""Qwen3-ASR SFT with auxiliary domain/intent prototype prediction."""
+#!/usr/bin/env python3
+"""Prototype-only Qwen3-ASR full finetuning for MAC-SLU domain/intent labels.
+
+The training target is the auxiliary prototype loss only: the collator does not
+provide autoregressive ``labels``. When the train config contains LoRA options
+they are removed, so the prototype objective is optimized with full finetuning.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +16,7 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import librosa
 import numpy as np
@@ -28,6 +33,13 @@ from finetuning.prototype_prompt_utils import (  # noqa: E402
     format_domain_intent_candidates,
     get_prompt_template,
 )
+from qwen_asr.core.transformers_backend.configuration_qwen3_asr import Qwen3ASRConfig  # noqa: E402
+from qwen_asr.core.transformers_backend.modeling_qwen3_asr_prototype import (  # noqa: E402
+    Qwen3ASRPrototypeForConditionalGeneration,
+)
+from slu_decoding.prototypes import MACSLULabelSchema, PrototypeIndex  # noqa: E402
+
+
 _CKPT_RE = re.compile(r"^checkpoint-(\d+)$")
 
 
@@ -48,13 +60,13 @@ def find_latest_checkpoint(output_dir: str) -> Optional[str]:
     return best_path
 
 
-def save_prompt_txt(save_dir: str, prompt: str):
+def save_prompt_txt(save_dir: str, prompt: str) -> None:
     os.makedirs(save_dir, exist_ok=True)
     with open(os.path.join(save_dir, "prompt.txt"), "w", encoding="utf-8") as f:
         f.write(prompt or "")
 
 
-def save_best_checkpoint(best_src: str, output_dir: str, processor=None, model=None, default_prompt: str = "", best_ckpt_name: str = "checkpoint-best"):
+def save_best_checkpoint(best_src: str, output_dir: str, processor=None, model=None, default_prompt: str = "", best_ckpt_name: str = "checkpoint-best") -> None:
     if not best_src or not os.path.isdir(best_src):
         print("[best] checkpoint-best not created: no best_model_checkpoint was selected.")
         return
@@ -72,35 +84,21 @@ def save_best_checkpoint(best_src: str, output_dir: str, processor=None, model=N
     print(f"[best] Saved best checkpoint from {best_src} to {best_ckpt_dir}")
 
 
-from qwen_asr.core.transformers_backend.configuration_qwen3_asr import Qwen3ASRConfig  # noqa: E402
-from qwen_asr.core.transformers_backend.modeling_qwen3_asr_prototype import (  # noqa: E402
-    Qwen3ASRPrototypeForConditionalGeneration,
-)
-from slu_decoding.prototypes import MACSLULabelSchema, PrototypeIndex  # noqa: E402
-
-
 def load_audio(path: str, sr: int = 16000):
     wav, _ = librosa.load(path, sr=sr, mono=True)
     return wav
 
 
-def build_prefix_messages(prompt: str, audio_array):
+def build_prefix_messages(prompt: str, audio_array=None):
     return [
         {"role": "system", "content": prompt or ""},
         {"role": "user", "content": [{"type": "audio", "audio": audio_array}]},
     ]
 
 
-def parse_args():
-    p = argparse.ArgumentParser("Qwen3-ASR prototype finetuning")
-    p.add_argument("--train_conf", type=str, required=True)
-    p.add_argument("--seed", type=int, default=66)
-    p.add_argument("--train_file", type=str, default="train.jsonl")
-    p.add_argument("--eval_file", type=str, default="dev.jsonl")
-    p.add_argument("--output_dir", type=str, default="./qwen3-asr-prototype-finetuning-out")
-    p.add_argument("--resume_from", type=str, default="")
-    p.add_argument("--resume", type=int, default=0)
-    return p.parse_args()
+def build_prefix_text(processor, prompt: str) -> str:
+    prefix_text = processor.apply_chat_template([build_prefix_messages(prompt, None)], add_generation_prompt=True, tokenize=False)
+    return prefix_text[0] if isinstance(prefix_text, list) else prefix_text
 
 
 def load_train_conf(train_conf_path: str) -> List[Dict[str, Any]]:
@@ -123,12 +121,6 @@ def _schema_intent_labels(schema: MACSLULabelSchema) -> List[str]:
 
 
 def resolve_prototype_json_path(prototype_conf: Dict[str, Any]) -> str:
-    """Return the prototype JSON path shared with qwen3_asr_test_prototype.py.
-
-    ``prototype_json`` is the preferred key because it is the same artifact passed
-    to ``finetuning/qwen3_asr_test_prototype.py --prototype_json``.  ``init_path``
-    is kept as a backward-compatible alias for the previous draft config.
-    """
     return str(prototype_conf.get("prototype_json") or prototype_conf.get("init_path") or "")
 
 
@@ -227,7 +219,7 @@ def initialize_prototype_embeddings(
     domain_vecs = _prototype_vectors_by_label(index, "domain")
     intent_vecs = _prototype_vectors_by_label(index, "intent")
 
-    def copy_vectors(weight: torch.Tensor, labels: List[str], vecs: Dict[str, List[float]], kind: str):
+    def copy_vectors(weight: torch.Tensor, labels: List[str], vecs: Dict[str, List[float]], kind: str) -> None:
         dim = weight.size(1)
         copied = 0
         with torch.no_grad():
@@ -260,10 +252,26 @@ def multi_hot(label_ids: List[int], size: int) -> List[float]:
     return vec
 
 
+def prototype_feature_prompt(base_prompt: str, augmented_prompt: str, prototype_source: str) -> str:
+    """Match the original prototype feature source defaults from build_macslu_prototypes.py."""
+    if prototype_source == "audio_only":
+        return ""
+    if prototype_source == "audio_prompt":
+        return base_prompt or ""
+    if prototype_source == "audio_prefix":
+        return augmented_prompt or base_prompt or ""
+    if prototype_source == "text_prefix":
+        # The prototype-only trainer remains audio-capable; this keeps the decoded-prefix
+        # style prompt closest to the legacy mode while preserving the audio batch path.
+        return augmented_prompt or base_prompt or ""
+    raise ValueError(f"Unsupported prototype_source: {prototype_source}")
+
+
 def make_preprocess_fn_prototype(processor, schema, domain2id, intent2id, prototype_conf, seed: int):
     k = int(prototype_conf.get("k", 5))
     template = get_prompt_template(prototype_conf)
     domain_aware = bool(prototype_conf.get("domain_aware_intents", True))
+    prototype_source = str(prototype_conf.get("prototype_source", "audio_only"))
 
     def _preprocess(ex: Dict[str, Any], idx: int) -> Dict[str, Any]:
         rng = random.Random(seed + int(idx))
@@ -285,12 +293,11 @@ def make_preprocess_fn_prototype(processor, schema, domain2id, intent2id, protot
                     intents = [empty_label] + intents
 
         augmented_prompt = format_domain_intent_candidates(prompt, domains, intents, **template)
-        prefix_msgs = build_prefix_messages(augmented_prompt, None)
-        prefix_text = processor.apply_chat_template([prefix_msgs], add_generation_prompt=True, tokenize=False)[0]
+        feature_prompt = prototype_feature_prompt(prompt, augmented_prompt, prototype_source)
+        prefix_text = build_prefix_text(processor, feature_prompt)
         return {
             "prompt": augmented_prompt,
             "audio": ex["audio"],
-            "target": ex["text"],
             "prefix_text": prefix_text,
             "domain_label_ids": domain_label_ids,
             "intent_label_ids": intent_label_ids,
@@ -299,51 +306,14 @@ def make_preprocess_fn_prototype(processor, schema, domain2id, intent2id, protot
     return _preprocess
 
 
-@dataclass
-class DataCollatorForQwen3ASRPrototypeFinetuning:
-    processor: Any
-    sampling_rate: int = 16000
-    num_domains: int = 0
-    num_intents: int = 0
-
-    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-        audio_paths = [f["audio"] for f in features]
-        prefix_texts = [f["prefix_text"] for f in features]
-        targets = [f["target"] for f in features]
-        eos = self.processor.tokenizer.eos_token or ""
-        full_texts = [pfx + tgt + eos for pfx, tgt in zip(prefix_texts, targets)]
-        audios = [load_audio(p, sr=self.sampling_rate) for p in audio_paths]
-        full_inputs = self.processor(text=full_texts, audio=audios, return_tensors="pt", padding=True, truncation=False)
-        prefix_inputs = self.processor(text=prefix_texts, audio=audios, return_tensors="pt", padding=True, truncation=False)
-        prefix_lens = prefix_inputs["attention_mask"].sum(dim=1).tolist()
-        labels = full_inputs["input_ids"].clone()
-        for i, pl in enumerate(prefix_lens):
-            labels[i, :pl] = -100
-        pad_id = self.processor.tokenizer.pad_token_id
-        if pad_id is not None:
-            labels[labels == pad_id] = -100
-        full_inputs["labels"] = labels
-        full_inputs["domain_labels"] = torch.tensor(
-            [multi_hot([int(x) for x in f.get("domain_label_ids", [])], self.num_domains) for f in features],
-            dtype=torch.float32,
-        )
-        full_inputs["intent_labels"] = torch.tensor(
-            [multi_hot([int(x) for x in f.get("intent_label_ids", [])], self.num_intents) for f in features],
-            dtype=torch.float32,
-        )
-    
-        full_inputs["prototype_prefix_lengths"] = torch.tensor(prefix_lens, dtype=torch.long)
-        return full_inputs
-
-
 class CastFloatInputsTrainer(Trainer):
     def _prepare_inputs(self, inputs):
         inputs = super()._prepare_inputs(inputs)
         model_dtype = getattr(self.model, "dtype", None)
         if model_dtype is not None:
-            for k, v in list(inputs.items()):
-                if torch.is_tensor(v) and v.is_floating_point():
-                    inputs[k] = v.to(dtype=model_dtype)
+            for key, value in list(inputs.items()):
+                if torch.is_tensor(value) and value.is_floating_point():
+                    inputs[key] = value.to(dtype=model_dtype)
         return inputs
 
 
@@ -368,9 +338,62 @@ class MakeEveryCheckpointInferableCallback(TrainerCallback):
         return control
 
 
-def main():
-    args_cli = parse_args()
-    seed = args_cli.seed
+
+def resolve_dtype(dtype_str: str, device: str) -> torch.dtype:
+    if dtype_str == "bfloat16":
+        return torch.bfloat16
+    if dtype_str == "float16":
+        return torch.float16
+    if dtype_str == "float32":
+        return torch.float32
+    if device.startswith("cuda") and torch.cuda.is_available():
+        try:
+            major = torch.cuda.get_device_capability(device=device)[0]
+        except Exception:
+            major = torch.cuda.get_device_capability()[0]
+        return torch.bfloat16 if major >= 8 else torch.float16
+    return torch.float32
+
+@dataclass
+class DataCollatorForPrototypeOnlyFinetuning:
+    """Batch audio/prompt inputs and provide only prototype classification labels."""
+
+    processor: Any
+    sampling_rate: int = 16000
+    num_domains: int = 0
+    num_intents: int = 0
+
+    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        audio_paths = [f["audio"] for f in features]
+        prefix_texts = [f["prefix_text"] for f in features]
+        audios = [load_audio(p, sr=self.sampling_rate) for p in audio_paths]
+        inputs = self.processor(text=prefix_texts, audio=audios, return_tensors="pt", padding=True, truncation=False)
+        prefix_lens = inputs["attention_mask"].sum(dim=1).tolist()
+        inputs["domain_labels"] = torch.tensor(
+            [multi_hot([int(x) for x in f.get("domain_label_ids", [])], self.num_domains) for f in features],
+            dtype=torch.float32,
+        )
+        inputs["intent_labels"] = torch.tensor(
+            [multi_hot([int(x) for x in f.get("intent_label_ids", [])], self.num_intents) for f in features],
+            dtype=torch.float32,
+        )
+        inputs["prototype_prefix_lengths"] = torch.tensor(prefix_lens, dtype=torch.long)
+        return inputs
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser("Qwen3-ASR MAC-SLU prototype-only full finetuning")
+    p.add_argument("--train_conf", type=str, required=True)
+    p.add_argument("--seed", type=int, default=66)
+    p.add_argument("--train_file", type=str, required=True)
+    p.add_argument("--eval_file", type=str, required=True)
+    p.add_argument("--output_dir", type=str, required=True)
+    p.add_argument("--device", type=str, default="cuda:0")
+    p.add_argument("--resume_from", type=str, default="")
+    p.add_argument("--resume", type=int, default=0)
+    return p.parse_args()
+
+def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -381,10 +404,10 @@ def main():
     torch.backends.cudnn.deterministic = True
     os.environ["PYTHONHASHSEED"] = str(seed)
 
-    train_conf = load_train_conf(args_cli.train_conf)
-    training_args_conf, model_args_conf = train_conf
-    training_args_conf = dict(training_args_conf)
-    model_args_conf = dict(model_args_conf)
+
+def prepare_full_finetune_conf(train_conf_path: str) -> Tuple[List[Dict[str, Any]], PrototypeIndex | None, List[str], List[str]]:
+    train_conf = load_train_conf(train_conf_path)
+    training_args_conf, model_args_conf = dict(train_conf[0]), dict(train_conf[1])
     prototype_conf = dict(model_args_conf.get("prototype", {}) or {})
     prototype_conf["enabled"] = True
 
@@ -393,7 +416,7 @@ def main():
     if prototype_json:
         prototype_conf["prototype_json"] = prototype_json
         prototype_conf.pop("init_path", None)
-    schema, domain_labels, intent_labels, domain2id, intent2id = build_prototype_label_maps(prototype_conf, prototype_index)
+    schema, domain_labels, intent_labels, _, _ = build_prototype_label_maps(prototype_conf, prototype_index)
     if prototype_index is not None:
         prototype_conf.setdefault("pooling", prototype_index.data.get("prototype_pooling", prototype_conf.get("pooling", "mean_pooling")))
         prototype_conf.setdefault("prototype_source", prototype_index.prototype_source)
@@ -402,20 +425,30 @@ def main():
     prototype_conf["intent_labels"] = intent_labels
     prototype_conf["num_domains"] = len(domain_labels)
     prototype_conf["num_intents"] = len(intent_labels)
+
+    # Force full finetuning for the prototype-only objective.
+    model_args_conf.pop("lora_config", None)
+    model_args_conf["lora_type"] = "full"
     model_args_conf["prototype"] = prototype_conf
-    train_conf = [training_args_conf, model_args_conf]
+    return [training_args_conf, model_args_conf], prototype_index, domain_labels, intent_labels
+
+
+def train_prototype_only(args: argparse.Namespace) -> None:
+    set_seed(args.seed)
+    train_conf, prototype_index, domain_labels, intent_labels = prepare_full_finetune_conf(args.train_conf)
+    training_args_conf, model_args_conf = train_conf
+    prototype_conf = dict(model_args_conf.get("prototype", {}) or {})
 
     model_path = model_args_conf.get("model_path")
     if not model_path:
         raise KeyError("model_args.model_path is required in train_conf")
     sr = int(model_args_conf.get("sr", 16000))
-    use_bf16 = torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8
-    dtype = torch.bfloat16 if use_bf16 else torch.float16
+    dtype = resolve_dtype(str(model_args_conf.get("dtype", "auto")), args.device)
+    use_bf16 = dtype == torch.bfloat16
 
     config = Qwen3ASRConfig.from_pretrained(model_path)
     config.thinker_config.prototype_config = prototype_conf
-    lora_type = model_args_conf.get("lora_type", "default")
-    if lora_type == "qlora":
+    if str(model_args_conf.get("lora_type", "")).lower() == "qlora":
         bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16)
         model = Qwen3ASRPrototypeForConditionalGeneration.from_pretrained(model_path, config=config, dtype=dtype, quantization_config=bnb_config, device_map=None)
     else:
@@ -423,24 +456,7 @@ def main():
     processor = AutoProcessor.from_pretrained(model_path, fix_mistral_regex=True)
     initialize_prototype_embeddings(model, prototype_conf, domain_labels, intent_labels, prototype_index)
     model.generation_config = GenerationConfig.from_model_config(model.config)
-
-    lora_config = model_args_conf.get("lora_config", None)
-    if lora_config:
-        if lora_type not in ["default", "qlora"]:
-            raise ValueError(f"lora_type: {lora_type} is NOT implemented yet.")
-        lora_config = dict(lora_config)
-        modules_to_save = list(lora_config.get("modules_to_save", []) or [])
-        if "prototype_head" not in modules_to_save:
-            modules_to_save.append("prototype_head")
-        lora_config["modules_to_save"] = modules_to_save
-        model_args_conf["lora_config"] = lora_config
-        train_conf[1]["lora_config"] = lora_config
-        from peft import LoraConfig, TaskType, get_peft_model
-
-        model = get_peft_model(model, LoraConfig(task_type=TaskType.CAUSAL_LM, **lora_config))
-        model.print_trainable_parameters()
-    else:
-        print("Full Finetuning")
+    print("Full Finetuning (prototype-only objective)")
 
     if training_args_conf.get("gradient_checkpointing", False):
         model.config.use_cache = False
@@ -448,28 +464,29 @@ def main():
 
     from datasets import load_dataset
 
-    raw_ds = load_dataset("json", data_files={"train": args_cli.train_file, "validation": args_cli.eval_file})
-    ds = raw_ds.map(make_preprocess_fn_prototype(processor, schema, domain2id, intent2id, prototype_conf, seed), with_indices=True, num_proc=1)
-    keep = {"prompt", "audio", "target", "prefix_text", "domain_label_ids", "intent_label_ids"}
+    schema, _, _, domain2id, intent2id = build_prototype_label_maps(prototype_conf, prototype_index)
+    raw_ds = load_dataset("json", data_files={"train": args.train_file, "validation": args.eval_file})
+    ds = raw_ds.map(make_preprocess_fn_prototype(processor, schema, domain2id, intent2id, prototype_conf, args.seed), with_indices=True, num_proc=1)
+    keep = {"prompt", "audio", "prefix_text", "domain_label_ids", "intent_label_ids"}
     for split in ds.keys():
         drop = [c for c in ds[split].column_names if c not in keep]
         if drop:
             ds[split] = ds[split].remove_columns(drop)
 
     default_prompt = ds["train"][0]["prompt"] if len(ds["train"]) else ""
-    
-    collator = DataCollatorForQwen3ASRPrototypeFinetuning(
+    collator = DataCollatorForPrototypeOnlyFinetuning(
         processor=processor,
         sampling_rate=sr,
         num_domains=len(domain_labels),
         num_intents=len(intent_labels),
     )
 
-    training_args_conf["run_name"] = os.path.basename(args_cli.output_dir)
+    training_args_conf = dict(training_args_conf)
+    training_args_conf["run_name"] = os.path.basename(args.output_dir)
     if model_args_conf.get("wandb_project"):
         os.environ["WANDB_PROJECT"] = model_args_conf["wandb_project"]
     os.environ["WANDB_LOG_MODEL"] = str(model_args_conf.get("wandb_log_model", "false")).lower()
-    training_args = TrainingArguments(output_dir=args_cli.output_dir, do_eval=True, bf16=use_bf16, fp16=not use_bf16, **training_args_conf)
+    training_args = TrainingArguments(output_dir=args.output_dir, do_eval=True, bf16=use_bf16, fp16=not use_bf16, **training_args_conf)
     trainer = CastFloatInputsTrainer(
         model=model,
         args=training_args,
@@ -489,13 +506,20 @@ def main():
     if getattr(model, "generation_config", None) is not None:
         model.generation_config.save_pretrained(training_args.output_dir)
 
-    resume_from = (args_cli.resume_from or "").strip()
-    if not resume_from and args_cli.resume == 1:
+    resume_from = (args.resume_from or "").strip()
+    if not resume_from and args.resume == 1:
         resume_from = find_latest_checkpoint(training_args.output_dir) or ""
     trainer.train(resume_from_checkpoint=resume_from if resume_from else None)
     if trainer.args.process_index == 0:
+        trainer.save_model(training_args.output_dir)
         save_best_checkpoint(getattr(trainer.state, "best_model_checkpoint", None), training_args.output_dir, processor=processor, model=model, default_prompt=default_prompt)
         save_prompt_txt(training_args.output_dir, default_prompt)
+
+
+
+def main() -> None:
+    args = parse_args()
+    train_prototype_only(args)
 
 
 if __name__ == "__main__":
