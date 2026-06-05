@@ -102,7 +102,6 @@ def load_prototype_model(args, model_args_conf: Dict[str, Any], dtype: torch.dty
     model.eval()
     return model, processor, ckpt_path
 
-
 def get_predict_model(model):
     if hasattr(model, "predict_prototypes"):
         return model
@@ -118,6 +117,8 @@ def get_predict_model(model):
     raise RuntimeError("Unable to locate prototype-aware base model for predict_prototypes")
 
 
+def strip_empty(labels: Sequence[str]) -> List[str]:
+    return [str(x) for x in labels if str(x) and str(x) != "__empty__"]
 
 def prototype_feature_prompt(base_prompt: str, augmented_prompt: str, prototype_source: str) -> str:
     if prototype_source == "audio_only":
@@ -199,7 +200,6 @@ def score_one_kind(rows: Sequence[Dict[str, Any]], pred_key: str, gold_key: str)
         "macro_f1": sum(macro_f1s) / len(macro_f1s) if macro_f1s else 0.0,
     }
 
-
 def format_metrics(split: str, rows: Sequence[Dict[str, Any]]) -> str:
     domain = score_one_kind(rows, "pred_domains", "gold_domains")
     intent = score_one_kind(rows, "pred_intents", "gold_intents")
@@ -213,7 +213,6 @@ def format_metrics(split: str, rows: Sequence[Dict[str, Any]]) -> str:
         for key in ["exact_match", "micro_precision", "micro_recall", "micro_f1", "macro_f1"]:
             lines.append(f"{key}: {metrics[key]:.6f}")
     return "\n".join(lines) + "\n"
-
 
 def infer_split(
     model: Any,
@@ -272,7 +271,7 @@ def infer_split(
     print(f"[info] saved prototype metrics: {metrics_path}")
     return out_rows
 
-
+  
 def build_augmented_data(input_jsonl: str, pred_rows: Sequence[Dict[str, Any]], output_jsonl: str, prompt_template: Dict[str, str]) -> None:
     rows = read_jsonl(input_jsonl)
     by_id = {str(r.get("text_id", "")): r for r in pred_rows}
