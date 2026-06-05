@@ -23,6 +23,8 @@ prompt_file=""   # Empty uses prepare_macslu_jsonl.py built-in prompt.
 # prototype-only full-finetune config
 prototype_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead_prototype.json"
 prototype_top_k=5
+prototype_source="audio_only"       # Match local/build_macslu_prototypes.py default: audio_only | audio_prompt | audio_prefix | text_prefix
+prototype_pooling="mean_pooling"     # Match original prototype extraction default: mean_pooling | last_hidden_state
 checkpoint_mode="best"  # best | latest | exp_dir
 skip_prototype_train=0
 
@@ -87,10 +89,10 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
         --input_jsonls "${json_root}/train.jsonl" "${json_root}/dev.jsonl" \
         --output_json "$prototype_schema_path"
 
-    python - "$prototype_train_conf" "$prototype_runtime_conf" "$labels_path" "$prototype_schema_path" "$prototype_top_k" <<'PY'
+    python - "$prototype_train_conf" "$prototype_runtime_conf" "$labels_path" "$prototype_schema_path" "$prototype_top_k" "$prototype_source" "$prototype_pooling" <<'PY'
 import json
 import sys
-src, dst, labels_path, schema_path, top_k = sys.argv[1:]
+src, dst, labels_path, schema_path, top_k, prototype_source, prototype_pooling = sys.argv[1:]
 with open(src, "r", encoding="utf-8") as f:
     cfg = json.load(f)
 if not isinstance(cfg, list) or len(cfg) != 2:
@@ -105,6 +107,8 @@ proto["schema_path"] = schema_path
 proto["prototype_json"] = ""
 proto.pop("init_path", None)
 proto["k"] = int(top_k)
+proto["prototype_source"] = prototype_source
+proto["pooling"] = prototype_pooling
 model_args["prototype"] = proto
 with open(dst, "w", encoding="utf-8") as f:
     json.dump(cfg, f, ensure_ascii=False, indent=4)

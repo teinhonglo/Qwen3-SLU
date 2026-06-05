@@ -252,10 +252,26 @@ def multi_hot(label_ids: List[int], size: int) -> List[float]:
     return vec
 
 
+def prototype_feature_prompt(base_prompt: str, augmented_prompt: str, prototype_source: str) -> str:
+    """Match the original prototype feature source defaults from build_macslu_prototypes.py."""
+    if prototype_source == "audio_only":
+        return ""
+    if prototype_source == "audio_prompt":
+        return base_prompt or ""
+    if prototype_source == "audio_prefix":
+        return augmented_prompt or base_prompt or ""
+    if prototype_source == "text_prefix":
+        # The prototype-only trainer remains audio-capable; this keeps the decoded-prefix
+        # style prompt closest to the legacy mode while preserving the audio batch path.
+        return augmented_prompt or base_prompt or ""
+    raise ValueError(f"Unsupported prototype_source: {prototype_source}")
+
+
 def make_preprocess_fn_prototype(processor, schema, domain2id, intent2id, prototype_conf, seed: int):
     k = int(prototype_conf.get("k", 5))
     template = get_prompt_template(prototype_conf)
     domain_aware = bool(prototype_conf.get("domain_aware_intents", True))
+    prototype_source = str(prototype_conf.get("prototype_source", "audio_only"))
 
     def _preprocess(ex: Dict[str, Any], idx: int) -> Dict[str, Any]:
         rng = random.Random(seed + int(idx))
@@ -277,7 +293,8 @@ def make_preprocess_fn_prototype(processor, schema, domain2id, intent2id, protot
                     intents = [empty_label] + intents
 
         augmented_prompt = format_domain_intent_candidates(prompt, domains, intents, **template)
-        prefix_text = build_prefix_text(processor, augmented_prompt)
+        feature_prompt = prototype_feature_prompt(prompt, augmented_prompt, prototype_source)
+        prefix_text = build_prefix_text(processor, feature_prompt)
         return {
             "prompt": augmented_prompt,
             "audio": ex["audio"],

@@ -118,6 +118,19 @@ def get_predict_model(model):
     raise RuntimeError("Unable to locate prototype-aware base model for predict_prototypes")
 
 
+
+def prototype_feature_prompt(base_prompt: str, augmented_prompt: str, prototype_source: str) -> str:
+    if prototype_source == "audio_only":
+        return ""
+    if prototype_source == "audio_prompt":
+        return base_prompt or ""
+    if prototype_source == "audio_prefix":
+        return augmented_prompt or base_prompt or ""
+    if prototype_source == "text_prefix":
+        return augmented_prompt or base_prompt or ""
+    raise ValueError(f"Unsupported prototype_source: {prototype_source}")
+
+
 def read_jsonl(path: str) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     with open(path, "r", encoding="utf-8") as f:
@@ -211,6 +224,7 @@ def infer_split(
     split: str,
     sr: int,
     prototype_top_k: int,
+    prototype_source: str,
 ) -> List[Dict[str, Any]]:
     rows = read_jsonl(input_jsonl)
     device = next(model.parameters()).device
@@ -220,7 +234,11 @@ def infer_split(
     for idx, row in enumerate(rows, start=1):
         text_id = str(row.get("text_id", f"line{idx}")).strip()
         wav = load_audio(row.get("audio", ""), sr=sr)
-        prefix_text = build_prefix_text(processor, row.get("prompt", ""))
+        base_prompt = row.get("prompt", "")
+        # During prototype lookup there is no decoded semantic prefix yet; keep
+        # audio_only/audio_prompt defaults aligned with local/build_macslu_prototypes.py.
+        feature_prompt = prototype_feature_prompt(base_prompt, base_prompt, prototype_source)
+        prefix_text = build_prefix_text(processor, feature_prompt)
         inputs = processor(text=[prefix_text], audio=[wav], return_tensors="pt", padding=True, truncation=False)
         prefix_len = int(inputs["attention_mask"][0].sum().item())
         inputs["prototype_prefix_lengths"] = torch.tensor([prefix_len], dtype=torch.long)
@@ -292,6 +310,7 @@ def run_inference_and_build_data(args: argparse.Namespace) -> None:
     model, processor, _ = load_prototype_model(checkpoint_args, model_args_conf, dtype)
     prototype_top_k = int(args.prototype_top_k or prototype_conf.get("k", 5))
     prompt_template = get_prompt_template(prototype_conf)
+    prototype_source = str(prototype_conf.get("prototype_source", "audio_only"))
     split_to_file = {"train": args.train_file, "dev": args.eval_file, "test": args.test_file}
     prediction_root = args.prediction_root or args.exp_dir
     for split in args.splits:
@@ -308,6 +327,7 @@ def run_inference_and_build_data(args: argparse.Namespace) -> None:
             split=split,
             sr=sr,
             prototype_top_k=prototype_top_k,
+            prototype_source=prototype_source,
         )
         build_augmented_data(input_jsonl, pred_rows, os.path.join(args.output_jsonl_dir, f"{split}.jsonl"), prompt_template)
 
