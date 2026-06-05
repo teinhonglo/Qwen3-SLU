@@ -11,25 +11,26 @@
 set -euo pipefail
 
 # data / experiment config
-repo_id="Gatsby1984/MAC_SLU"
+
 data_root="data/macslu"
 exp_root="exp/macslu_fixed"
-download_dir=${data_root}/raw
-extract_root=${data_root}/audio
 json_root="data-json/macslu_fixed"
 labels_path=${data_root}/labels.txt
 prompt_file=""   # Empty uses prepare_macslu_jsonl.py built-in prompt.
 
 # prototype-only full-finetune config
 prototype_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead_prototype.json"
+
 prototype_top_k=5
 prototype_source="audio_only"       # Match local/build_macslu_prototypes.py default: audio_only | audio_prompt | audio_prefix | text_prefix
 prototype_pooling="mean_pooling"     # Match original prototype extraction default: mean_pooling | last_hidden_state
+
 checkpoint_mode="best"  # best | latest | exp_dir
 skip_prototype_train=0
 
 # downstream MAC-SLU config; run_macslu.sh appends the train-conf tag under this root.
-downstream_train_conf="conf/macslu_qwen3_asr_06b.json"
+downstream_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead.json"
+downstream_exp_root="exp/macslu_prototype"
 downstream_extra_opts=""
 
 # model/runtime config
@@ -64,21 +65,6 @@ if [ "$checkpoint" != "" ]; then
     prototype_resume_opts="--resume_from $checkpoint --resume 1"
 else
     prototype_resume_opts=""
-fi
-if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
-    echo "Stage 0: Download MAC-SLU and prepare original jsonl"
-    prep_cmd=(
-        python local/prepare_macslu_jsonl.py
-        --repo-id "$repo_id"
-        --download-dir "$download_dir"
-        --extract-root "$extract_root"
-        --jsonl-root "$json_root"
-        --splits train dev test
-    )
-    if [ -n "$prompt_file" ]; then
-        prep_cmd+=(--prompt-file "$prompt_file")
-    fi
-    "${prep_cmd[@]}"
 fi
 
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
