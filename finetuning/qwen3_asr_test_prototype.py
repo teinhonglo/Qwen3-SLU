@@ -102,7 +102,6 @@ def load_prototype_model(args, model_args_conf: Dict[str, Any], dtype: torch.dty
     model.eval()
     return model, processor, ckpt_path
 
-
 def get_predict_model(model):
     if hasattr(model, "predict_prototypes"):
         return model
@@ -116,6 +115,21 @@ def get_predict_model(model):
     if inner is not None and hasattr(inner, "predict_prototypes"):
         return inner
     raise RuntimeError("Unable to locate prototype-aware base model for predict_prototypes")
+
+
+def strip_empty(labels: Sequence[str]) -> List[str]:
+    return [str(x) for x in labels if str(x) and str(x) != "__empty__"]
+
+def prototype_feature_prompt(base_prompt: str, augmented_prompt: str, prototype_source: str) -> str:
+    if prototype_source == "audio_only":
+        return ""
+    if prototype_source == "audio_prompt":
+        return base_prompt or ""
+    if prototype_source == "audio_prefix":
+        return augmented_prompt or base_prompt or ""
+    if prototype_source == "text_prefix":
+        return augmented_prompt or base_prompt or ""
+    raise ValueError(f"Unsupported prototype_source: {prototype_source}")
 
 
 def read_jsonl(path: str) -> List[Dict[str, Any]]:
@@ -186,7 +200,6 @@ def score_one_kind(rows: Sequence[Dict[str, Any]], pred_key: str, gold_key: str)
         "macro_f1": sum(macro_f1s) / len(macro_f1s) if macro_f1s else 0.0,
     }
 
-
 def format_metrics(split: str, rows: Sequence[Dict[str, Any]]) -> str:
     domain = score_one_kind(rows, "pred_domains", "gold_domains")
     intent = score_one_kind(rows, "pred_intents", "gold_intents")
@@ -201,7 +214,6 @@ def format_metrics(split: str, rows: Sequence[Dict[str, Any]]) -> str:
             lines.append(f"{key}: {metrics[key]:.6f}")
     return "\n".join(lines) + "\n"
 
-
 def infer_split(
     model: Any,
     processor: Any,
@@ -211,6 +223,7 @@ def infer_split(
     split: str,
     sr: int,
     prototype_top_k: int,
+    prototype_source: str,
 ) -> List[Dict[str, Any]]:
     rows = read_jsonl(input_jsonl)
     device = next(model.parameters()).device
@@ -220,7 +233,11 @@ def infer_split(
     for idx, row in enumerate(rows, start=1):
         text_id = str(row.get("text_id", f"line{idx}")).strip()
         wav = load_audio(row.get("audio", ""), sr=sr)
-        prefix_text = build_prefix_text(processor, row.get("prompt", ""))
+        base_prompt = row.get("prompt", "")
+        # During prototype lookup there is no decoded semantic prefix yet; keep
+        # audio_only/audio_prompt defaults aligned with local/build_macslu_prototypes.py.
+        feature_prompt = prototype_feature_prompt(base_prompt, base_prompt, prototype_source)
+        prefix_text = build_prefix_text(processor, feature_prompt)
         inputs = processor(text=[prefix_text], audio=[wav], return_tensors="pt", padding=True, truncation=False)
         prefix_len = int(inputs["attention_mask"][0].sum().item())
         inputs["prototype_prefix_lengths"] = torch.tensor([prefix_len], dtype=torch.long)
@@ -254,7 +271,7 @@ def infer_split(
     print(f"[info] saved prototype metrics: {metrics_path}")
     return out_rows
 
-
+  
 def build_augmented_data(input_jsonl: str, pred_rows: Sequence[Dict[str, Any]], output_jsonl: str, prompt_template: Dict[str, str]) -> None:
     rows = read_jsonl(input_jsonl)
     by_id = {str(r.get("text_id", "")): r for r in pred_rows}
@@ -292,6 +309,7 @@ def run_inference_and_build_data(args: argparse.Namespace) -> None:
     model, processor, _ = load_prototype_model(checkpoint_args, model_args_conf, dtype)
     prototype_top_k = int(args.prototype_top_k or prototype_conf.get("k", 5))
     prompt_template = get_prompt_template(prototype_conf)
+    prototype_source = str(prototype_conf.get("prototype_source", "audio_only"))
     split_to_file = {"train": args.train_file, "dev": args.eval_file, "test": args.test_file}
     prediction_root = args.prediction_root or args.exp_dir
     for split in args.splits:
@@ -308,6 +326,7 @@ def run_inference_and_build_data(args: argparse.Namespace) -> None:
             split=split,
             sr=sr,
             prototype_top_k=prototype_top_k,
+            prototype_source=prototype_source,
         )
         build_augmented_data(input_jsonl, pred_rows, os.path.join(args.output_jsonl_dir, f"{split}.jsonl"), prompt_template)
 
