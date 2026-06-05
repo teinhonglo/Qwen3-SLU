@@ -11,6 +11,7 @@
 set -euo pipefail
 
 # data / experiment config
+
 data_root="data/macslu"
 exp_root="exp/macslu_fixed"
 json_root="data-json/macslu_fixed"
@@ -94,7 +95,6 @@ proto.pop("init_path", None)
 proto["k"] = int(top_k)
 proto["prototype_source"] = prototype_source
 proto["pooling"] = prototype_pooling
-
 model_args["prototype"] = proto
 with open(dst, "w", encoding="utf-8") as f:
     json.dump(cfg, f, ensure_ascii=False, indent=4)

@@ -295,7 +295,6 @@ def make_preprocess_fn_prototype(processor, schema, domain2id, intent2id, protot
         augmented_prompt = format_domain_intent_candidates(prompt, domains, intents, **template)
         feature_prompt = prototype_feature_prompt(prompt, augmented_prompt, prototype_source)
         prefix_text = build_prefix_text(processor, feature_prompt)
-
         return {
             "prompt": augmented_prompt,
             "audio": ex["audio"],
