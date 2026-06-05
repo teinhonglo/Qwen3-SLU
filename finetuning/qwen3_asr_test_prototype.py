@@ -1,304 +1,320 @@
 #!/usr/bin/env python3
-"""Prototype-guided second-pass inference for MAC-SLU."""
+"""Prototype-domain/intent inference and JSONL generation for MAC-SLU."""
+
+from __future__ import annotations
 
 import argparse
-import copy
 import json
 import os
 import sys
-from typing import Any, Dict, List
+from types import SimpleNamespace
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
+
+import torch
+from transformers import AutoProcessor
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_THIS_DIR)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+from finetuning.prototype_prompt_utils import (  # noqa: E402
+    extract_gold_domain_intents,
+    format_domain_intent_candidates,
+    get_prompt_template,
+)
+from finetuning.qwen3_asr_sft_prototype import (  # noqa: E402
+    build_prefix_text,
+    find_latest_checkpoint,
+    load_audio,
+    load_train_conf,
+    resolve_dtype,
+)
+from qwen_asr.core.transformers_backend.configuration_qwen3_asr import Qwen3ASRConfig  # noqa: E402
+from qwen_asr.core.transformers_backend.modeling_qwen3_asr_prototype import (  # noqa: E402
+    Qwen3ASRPrototypeForConditionalGeneration,
+)
 
-def parse_args():
-    p = argparse.ArgumentParser("Qwen3-ASR SLU test + prototype tracker")
-    p.add_argument("--exp_dir", required=True)
-    p.add_argument("--auto_latest_checkpoint", action="store_true")
-    p.add_argument("--auto_best_checkpoint", action="store_true")
-    p.add_argument("--input_jsonl", required=True)
-    p.add_argument("--output_root", default="checkpoints")
-    p.add_argument("--device", default="cuda:0")
-    p.add_argument("--decoding_conf", default="conf/decoding/basic_decoding.json")
-    p.add_argument("--prototype_json", required=True)
-    p.add_argument("--labels_path", default="data/macslu/labels.txt")
-    p.add_argument("--schema_path", default="")
-    p.add_argument("--prototype_top_k", type=int, default=5)
-    p.add_argument("--domain_threshold", type=float, default=0.35)
-    p.add_argument("--intent_threshold", type=float, default=0.35)
-    p.add_argument("--slot_key_threshold", type=float, default=0.35)
-    p.add_argument("--replacement_margin", type=float, default=0.05)
-    p.add_argument("--disable_replacement", action="store_true")
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser("Qwen3-ASR MAC-SLU prototype domain/intent inference")
+    p.add_argument("--exp_dir", type=str, required=True)
+    p.add_argument("--train_file", type=str, required=True)
+    p.add_argument("--eval_file", type=str, required=True)
+    p.add_argument("--test_file", type=str, required=True)
+    p.add_argument("--output_jsonl_dir", type=str, default="data-json/macslu_prototype")
+    p.add_argument("--prediction_root", type=str, default="")
+    p.add_argument("--splits", nargs="+", default=["train", "dev", "test"], choices=["train", "dev", "test"])
+    p.add_argument("--device", type=str, default="cuda:0")
+    p.add_argument("--prototype_top_k", type=int, default=0)
+    p.add_argument("--checkpoint_mode", choices=["best", "latest", "exp_dir"], default="best")
     return p.parse_args()
 
 
-def _load_asr(args, model_args_conf, dtype):
-    import torch
-    from peft.peft_model import PeftModelForCausalLM
-    from qwen_asr import Qwen3ASRModel
-    from qwen3_asr_test import find_latest_checkpoint
+def move_inputs_to_device(inputs: Dict[str, Any], device: str, model_dtype: torch.dtype) -> Dict[str, Any]:
+    out = {}
+    for key, value in inputs.items():
+        if torch.is_tensor(value):
+            value = value.to(device)
+            if value.is_floating_point():
+                value = value.to(model_dtype)
+        out[key] = value
+    return out
 
+
+def resolve_checkpoint_path(args) -> str:
     model_path = args.exp_dir
     if args.auto_best_checkpoint:
-        model_path = os.path.join(model_path, "checkpoint-best")
-    elif args.auto_latest_checkpoint:
-        ck = find_latest_checkpoint(model_path)
-        if ck is None:
+        return os.path.join(model_path, "checkpoint-best")
+    if args.auto_latest_checkpoint:
+        latest = find_latest_checkpoint(model_path)
+        if latest is None:
             raise ValueError(f"No checkpoint-* found under: {model_path}")
-        model_path = ck
-    print(f"[info] use checkpoint: {model_path}")
+        return latest
+    return model_path
+
+
+def load_prototype_model(args, model_args_conf: Dict[str, Any], dtype: torch.dtype):
+    ckpt_path = resolve_checkpoint_path(args)
+    print(f"[info] use checkpoint: {ckpt_path}")
+    prototype_conf = dict(model_args_conf.get("prototype", {}) or {})
+    if not prototype_conf.get("enabled", False):
+        raise ValueError("train_conf model_args.prototype.enabled must be true for prototype testing")
+
     if model_args_conf.get("lora_config", None):
-        wrapper = Qwen3ASRModel.from_pretrained(
-            model_args_conf["model_path"], dtype=dtype, device_map=args.device, attn_implementation="flash_attention_2"
+        from peft.peft_model import PeftModelForCausalLM
+
+        base_path = model_args_conf["model_path"]
+        config = Qwen3ASRConfig.from_pretrained(base_path)
+        config.thinker_config.prototype_config = prototype_conf
+        model = Qwen3ASRPrototypeForConditionalGeneration.from_pretrained(
+            base_path,
+            config=config,
+            dtype=dtype,
+            device_map=args.device,
+            attn_implementation="flash_attention_2",
         )
-        wrapper.model = PeftModelForCausalLM.from_pretrained(wrapper.model, model_path, torch_dtype=torch.bfloat16)
+        model = PeftModelForCausalLM.from_pretrained(model, ckpt_path, torch_dtype=torch.bfloat16)
+        processor = AutoProcessor.from_pretrained(base_path, fix_mistral_regex=True)
     else:
-        wrapper = Qwen3ASRModel.from_pretrained(model_path, dtype=dtype, device_map=args.device)
-    wrapper.model.eval()
-    return wrapper
+        model = Qwen3ASRPrototypeForConditionalGeneration.from_pretrained(ckpt_path, dtype=dtype, device_map=args.device)
+        processor = AutoProcessor.from_pretrained(ckpt_path, fix_mistral_regex=True)
+    model.eval()
+    return model, processor, ckpt_path
 
 
-def _compress_records(records: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
-    grouped = {"domain": [], "intent": [], "slot_key": []}
-    last_kind = None
-    current = None
-    for rec in records:
-        kind = rec.get("kind")
-        if kind not in grouped:
+def get_predict_model(model):
+    if hasattr(model, "predict_prototypes"):
+        return model
+    getter = getattr(model, "get_base_model", None)
+    if callable(getter):
+        base = getter()
+        if hasattr(base, "predict_prototypes"):
+            return base
+    base_model = getattr(model, "base_model", None)
+    inner = getattr(base_model, "model", None) if base_model is not None else None
+    if inner is not None and hasattr(inner, "predict_prototypes"):
+        return inner
+    raise RuntimeError("Unable to locate prototype-aware base model for predict_prototypes")
+
+
+def read_jsonl(path: str) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
+def write_jsonl(path: str, rows: Iterable[Dict[str, Any]]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def strip_empty(labels: Sequence[str]) -> List[str]:
+    return [str(x) for x in labels if str(x) and str(x) != "__empty__"]
+
+
+def pack_hit_labels_and_confs(hits: Sequence[Dict[str, Any]]) -> Tuple[List[str], List[float]]:
+    labels: List[str] = []
+    confs: List[float] = []
+    for hit in hits:
+        label = str(hit.get("label", ""))
+        if not label or label == "__empty__":
             continue
-        top = rec.get("top") or []
-        if not top:
-            continue
-        if kind != last_kind:
-            current = copy.deepcopy(rec)
-            grouped[kind].append(current)
-            last_kind = kind
-            continue
-        # Keep the strongest record from a consecutive state span.
-        if current is not None and top[0].get("score", -999) > (current.get("top") or [{}])[0].get("score", -999):
-            current.update(copy.deepcopy(rec))
-    return grouped
+        labels.append(label)
+        confs.append(float(hit.get("score", 0.0)))
+    return labels, confs
 
 
-def _hits_from_record(rec: Dict[str, Any]):
-    from slu_decoding.prototypes import PrototypeHit
+def score_one_kind(rows: Sequence[Dict[str, Any]], pred_key: str, gold_key: str) -> Dict[str, float]:
+    tp = fp = fn = exact = 0
+    per_label: Dict[str, List[int]] = {}
+    for row in rows:
+        pred = set(strip_empty(row.get(pred_key, [])))
+        gold = set(strip_empty(row.get(gold_key, [])))
+        exact += int(pred == gold)
+        for label in pred | gold:
+            stat = per_label.setdefault(label, [0, 0, 0])
+            if label in pred and label in gold:
+                stat[0] += 1
+            elif label in pred:
+                stat[1] += 1
+            else:
+                stat[2] += 1
+        tp += len(pred & gold)
+        fp += len(pred - gold)
+        fn += len(gold - pred)
 
-    hits = []
-    for item in rec.get("top", []) or []:
-        hits.append(PrototypeHit(label=item.get("label", ""), score=float(item.get("score", 0.0)), count=int(item.get("count", 0) or 0), meta=item.get("meta", {}) or {}))
-    return hits
-
-
-def apply_replacements(pred_semantics, records, label_schema, thresholds):
-    from slu_decoding.prototypes import choose_replacement
-
-    frames = copy.deepcopy(pred_semantics) if isinstance(pred_semantics, list) else []
-    grouped = _compress_records(records)
-    trace = {"events": grouped, "changes": []}
-    slot_event_idx = 0
-    for frame_idx, frame in enumerate(frames):
-        if not isinstance(frame, dict):
-            continue
-        domain_rec = grouped["domain"][frame_idx] if frame_idx < len(grouped["domain"]) else None
-        if domain_rec:
-            old = str(frame.get("domain", "") or "")
-            new, reason = choose_replacement(
-                old,
-                _hits_from_record(domain_rec),
-                thresholds["domain"],
-                thresholds["margin"],
-                label_schema.is_valid_domain(old),
-            )
-            if new != old:
-                frame["domain"] = new
-            trace["changes"].append({"frame": frame_idx, "field": "domain", "old": old, "new": new, "reason": reason})
-
-        intent_rec = grouped["intent"][frame_idx] if frame_idx < len(grouped["intent"]) else None
-        if intent_rec:
-            domain = str(frame.get("domain", "") or "")
-            old = str(frame.get("intent", "") or "")
-            new, reason = choose_replacement(
-                old,
-                _hits_from_record(intent_rec),
-                thresholds["intent"],
-                thresholds["margin"],
-                label_schema.is_valid_intent(domain, old),
-            )
-            if new != old:
-                frame["intent"] = new
-            trace["changes"].append({"frame": frame_idx, "field": "intent", "old": old, "new": new, "reason": reason})
-
-        slots = frame.get("slots", {}) or {}
-        if isinstance(slots, dict):
-            new_slots = {}
-            for old_key, value in slots.items():
-                slot_rec = grouped["slot_key"][slot_event_idx] if slot_event_idx < len(grouped["slot_key"]) else None
-                slot_event_idx += 1
-                new_key = old_key
-                reason = "no_record"
-                if slot_rec:
-                    domain = str(frame.get("domain", "") or "")
-                    intent = str(frame.get("intent", "") or "")
-                    new_key, reason = choose_replacement(
-                        str(old_key),
-                        _hits_from_record(slot_rec),
-                        thresholds["slot_key"],
-                        thresholds["margin"],
-                        label_schema.is_valid_slot_key(domain, intent, str(old_key)),
-                    )
-                new_slots[new_key] = value
-                trace["changes"].append({"frame": frame_idx, "field": "slot_key", "old": old_key, "new": new_key, "reason": reason})
-            frame["slots"] = new_slots
-    return frames, trace
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    macro_f1s = []
+    for l_tp, l_fp, l_fn in per_label.values():
+        l_p = l_tp / (l_tp + l_fp) if l_tp + l_fp else 0.0
+        l_r = l_tp / (l_tp + l_fn) if l_tp + l_fn else 0.0
+        macro_f1s.append(2 * l_p * l_r / (l_p + l_r) if l_p + l_r else 0.0)
+    return {
+        "exact_match": exact / len(rows) if rows else 0.0,
+        "micro_precision": precision,
+        "micro_recall": recall,
+        "micro_f1": f1,
+        "macro_f1": sum(macro_f1s) / len(macro_f1s) if macro_f1s else 0.0,
+    }
 
 
-def main():
-    args = parse_args()
-
-    import librosa
-    import torch
-    from transformers import LogitsProcessorList
-    from qwen3_asr_test import (
-        batch_decode_text,
-        build_output_subdir_name,
-        build_prefix_text,
-        load_decoding_conf,
-        load_jsonl,
-        load_train_conf_from_exp_dir,
-        move_inputs_to_device,
-        resolve_decoding_conf,
-        resolve_dtype,
-        try_parse_score_dict,
-        unwrap_generate_output,
-        validate_decoding_mode,
-        write_slu_prediction_jsonl,
-        save_resolved_decoding_conf,
+def format_metrics(split: str, rows: Sequence[Dict[str, Any]]) -> str:
+    domain = score_one_kind(rows, "pred_domains", "gold_domains")
+    intent = score_one_kind(rows, "pred_intents", "gold_intents")
+    both_exact = sum(
+        int(set(strip_empty(r.get("pred_domains", []))) == set(strip_empty(r.get("gold_domains", []))) and set(strip_empty(r.get("pred_intents", []))) == set(strip_empty(r.get("gold_intents", []))))
+        for r in rows
     )
-    from slu_decoding.logits_processors import StateAwarePrototypeTrackerLogitsProcessor
-    from slu_decoding.prototypes import MACSLULabelSchema, PrototypeIndex, AudioStatsPrefixEmbedder, TokenEmbeddingPrefixEmbedder, parse_semantics_field
+    lines = [f"split: {split}", f"count: {len(rows)}", f"joint_exact_match: {both_exact / len(rows) if rows else 0.0:.6f}"]
+    for name, metrics in [("domain", domain), ("intent", intent)]:
+        lines.append(f"[{name}]")
+        for key in ["exact_match", "micro_precision", "micro_recall", "micro_f1", "macro_f1"]:
+            lines.append(f"{key}: {metrics[key]:.6f}")
+    return "\n".join(lines) + "\n"
 
-    train_conf = load_train_conf_from_exp_dir(args.exp_dir)
-    _, model_args_conf = train_conf
-    sr = int(model_args_conf.get("sr", 16000))
-    dtype = resolve_dtype(str(model_args_conf.get("dtype", "auto")), args.device)
-    decoding_conf = load_decoding_conf(args.decoding_conf)
-    resolved_decoding = resolve_decoding_conf(model_args_conf, decoding_conf)
-    effective_mode = validate_decoding_mode(resolved_decoding)
-    if effective_mode != "basic":
-        print(f"[warning] prototype script currently uses basic generate kwargs; requested mode={effective_mode}")
-    gen_cfg = resolved_decoding["generation"]
-    max_new_tokens = int(gen_cfg["max_new_tokens"])
-    do_sample = bool(gen_cfg["do_sample"])
-    temperature = float(gen_cfg["temperature"])
-    top_p = float(gen_cfg["top_p"])
-    top_k = int(gen_cfg.get("top_k", 0))
-    repetition_penalty = float(gen_cfg.get("repetition_penalty", 1.0))
 
-    asr_wrapper = _load_asr(args, model_args_conf, dtype)
-    processor = asr_wrapper.processor
-    model = asr_wrapper.model
-    tok = processor.tokenizer if hasattr(processor, "tokenizer") else processor
-    prototype_index = PrototypeIndex.load(args.prototype_json)
-    label_schema = MACSLULabelSchema(labels_path=args.labels_path, schema_path=args.schema_path)
-    proto_schema = prototype_index.data.get("label_schema", {}) or {}
-    # Merge prototype schema as a JSON-like temporary schema.
-    for d in proto_schema.get("domains", []) or []:
-        label_schema.domains.add(str(d))
-    for d, intents in (proto_schema.get("domain2intents", {}) or {}).items():
-        for intent in intents or []:
-            label_schema.add_domain_intent(str(d), str(intent))
-    for di, slots in (proto_schema.get("domain_intent2slot_keys", {}) or {}).items():
-        parts = str(di).split("|||")
-        if len(parts) >= 2:
-            for slot in slots or []:
-                label_schema.add_slot_key(parts[0], parts[1], str(slot))
-
-    text_embedder = TokenEmbeddingPrefixEmbedder(
-        tok,
-        model,
-        processor=processor,
-        device=args.device,
-        pooling=prototype_index.data.get("prototype_pooling", "mean_pooling"),
-        sample_rate=sr,
-    )
-    current_audio = {"path": "", "prompt": ""}
-    if prototype_index.prototype_source in {"audio_only", "audio_prompt", "audio_prefix"}:
-        embedder = AudioStatsPrefixEmbedder(text_embedder, sample_rate=sr)
-        if prototype_index.prototype_source == "audio_only":
-            embed_fn = lambda text: embedder("", audio_path=current_audio["path"], prompt="")
-        elif prototype_index.prototype_source == "audio_prompt":
-            embed_fn = lambda text: embedder("", audio_path=current_audio["path"], prompt=current_audio["prompt"])
-        else:
-            embed_fn = lambda text: embedder(text, audio_path=current_audio["path"], prompt=current_audio["prompt"])
-    else:
-        embedder = text_embedder
-        embed_fn = lambda text: embedder(text)
-    logits_processor = StateAwarePrototypeTrackerLogitsProcessor(
-        tok,
-        prototype_index=prototype_index,
-        embed_text_fn=embed_fn,
-        label_schema=label_schema,
-        top_k=args.prototype_top_k,
-    )
-
-    def load_audio(path: str):
-        wav, _ = librosa.load(path, sr=sr, mono=True)
-        return wav
-
-    def infer_one(row):
-        current_audio["path"] = row.get("audio", "")
-        current_audio["prompt"] = row.get("prompt", "")
-        wav = load_audio(row.get("audio", ""))
+def infer_split(
+    model: Any,
+    processor: Any,
+    input_jsonl: str,
+    output_jsonl: str,
+    metrics_path: str,
+    split: str,
+    sr: int,
+    prototype_top_k: int,
+) -> List[Dict[str, Any]]:
+    rows = read_jsonl(input_jsonl)
+    device = next(model.parameters()).device
+    model_dtype = getattr(model, "dtype", torch.float16)
+    proto_model = get_predict_model(model)
+    out_rows: List[Dict[str, Any]] = []
+    for idx, row in enumerate(rows, start=1):
+        text_id = str(row.get("text_id", f"line{idx}")).strip()
+        wav = load_audio(row.get("audio", ""), sr=sr)
         prefix_text = build_prefix_text(processor, row.get("prompt", ""))
         inputs = processor(text=[prefix_text], audio=[wav], return_tensors="pt", padding=True, truncation=False)
         prefix_len = int(inputs["attention_mask"][0].sum().item())
-        inputs = move_inputs_to_device(inputs, device=args.device, model_dtype=getattr(model, "dtype", torch.float16))
-        logits_processor.base_prefix_len = prefix_len
-        logits_processor.reset()
-        gen_kwargs = {"max_new_tokens": max_new_tokens, "do_sample": do_sample, "repetition_penalty": repetition_penalty, "logits_processor": LogitsProcessorList([logits_processor])}
-        if do_sample:
-            gen_kwargs.update({"temperature": temperature, "top_p": top_p})
-            if top_k > 0:
-                gen_kwargs["top_k"] = top_k
+        inputs["prototype_prefix_lengths"] = torch.tensor([prefix_len], dtype=torch.long)
+        inputs = move_inputs_to_device(inputs, device=device, model_dtype=model_dtype)
         with torch.inference_mode():
-            gen_out = model.generate(**inputs, **gen_kwargs)
-        output_ids = unwrap_generate_output(gen_out)
-        if output_ids.dim() == 1:
-            output_ids = output_ids.unsqueeze(0)
-        gen_only = output_ids[:, prefix_len:] if output_ids.size(1) > prefix_len else output_ids
-        return batch_decode_text(processor, gen_only)[0].strip(), logits_processor.get_records(), logits_processor.get_debug_stats()
+            hits = proto_model.predict_prototypes(top_k=prototype_top_k, **inputs)
+        gold_domains, gold_intents = extract_gold_domain_intents(row)
+        pred_domains, domain_confs = pack_hit_labels_and_confs(hits["domains"][0])
+        pred_intents, intent_confs = pack_hit_labels_and_confs(hits["intents"][0])
+        out_rows.append(
+            {
+                "text_id": text_id,
+                "pred_domains": pred_domains,
+                "pred_intents": pred_intents,
+                "domain_confs": domain_confs,
+                "intent_conf": intent_confs,
+                "intent_confs": intent_confs,
+                "gold_domains": gold_domains,
+                "gold_intents": gold_intents,
+            }
+        )
+        print(f"[{split} {idx}/{len(rows)}] prototype predicted: {text_id}")
 
-    rows = load_jsonl(args.input_jsonl)
-    rows_out = []
-    trace_rows = []
-    thresholds = {"domain": args.domain_threshold, "intent": args.intent_threshold, "slot_key": args.slot_key_threshold, "margin": args.replacement_margin}
-    for i, row in enumerate(rows, 1):
-        text_id = str(row.get("text_id", f"line{i}"))
-        pred_raw, records, dbg = infer_one(row)
-        pred_json = try_parse_score_dict(pred_raw)
-        pred_query = pred_json.get("asr_text", "FAILED")
-        pred_semantics = parse_semantics_field(pred_json.get("semantics", []))
-        trace = {"events": [], "changes": []}
-        if not args.disable_replacement:
-            pred_semantics, trace = apply_replacements(pred_semantics, records, label_schema, thresholds)
-            pred_json["semantics"] = json.dumps(pred_semantics, ensure_ascii=False)
-        rows_out.append({"text_id": text_id, "query": row.get("query", ""), "semantics": row.get("semantics", []), "pred_query": pred_query, "pred_semantics": pred_semantics})
-        trace_rows.append({"text_id": text_id, "pred_raw": pred_raw, "pred_json_after": pred_json, "debug_stats": dbg, "prototype_records": records, "replacement_trace": trace})
-        print(f"[{i}/{len(rows)}] done: {text_id}")
+    write_jsonl(output_jsonl, out_rows)
+    metrics_text = format_metrics(split, out_rows)
+    os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
+    with open(metrics_path, "w", encoding="utf-8") as f:
+        f.write(metrics_text)
+    print(metrics_text, end="")
+    print(f"[info] saved prototype predictions: {output_jsonl}")
+    print(f"[info] saved prototype metrics: {metrics_path}")
+    return out_rows
 
-    jsonl_name = build_output_subdir_name(args.input_jsonl, effective_mode, args.decoding_conf)
-    resolved_decoding["effective_mode"] = effective_mode
-    save_resolved_decoding_conf(resolved_decoding, args.output_root, jsonl_name)
-    write_slu_prediction_jsonl(rows_out, args.output_root, jsonl_name)
-    save_dir = os.path.join(args.output_root, jsonl_name)
-    trace_path = os.path.join(save_dir, "prototype_trace.jsonl")
-    with open(trace_path, "w", encoding="utf-8") as f:
-        for item in trace_rows:
-            f.write(json.dumps(item, ensure_ascii=False) + "\n")
-    print(f"[info] saved prototype trace: {trace_path}")
+
+def build_augmented_data(input_jsonl: str, pred_rows: Sequence[Dict[str, Any]], output_jsonl: str, prompt_template: Dict[str, str]) -> None:
+    rows = read_jsonl(input_jsonl)
+    by_id = {str(r.get("text_id", "")): r for r in pred_rows}
+    augmented = []
+    for idx, row in enumerate(rows, start=1):
+        text_id = str(row.get("text_id", f"line{idx}")).strip()
+        pred = by_id.get(text_id, {})
+        item = dict(row)
+        item["prompt"] = format_domain_intent_candidates(
+            row.get("prompt", ""),
+            pred.get("pred_domains", []),
+            pred.get("pred_intents", []),
+            **prompt_template,
+        )
+        item["prototype_pred_domains"] = pred.get("pred_domains", [])
+        item["prototype_pred_intents"] = pred.get("pred_intents", [])
+        augmented.append(item)
+    write_jsonl(output_jsonl, augmented)
+    print(f"[info] saved augmented MAC-SLU jsonl: {output_jsonl}")
+
+
+def run_inference_and_build_data(args: argparse.Namespace) -> None:
+    train_conf_path = os.path.join(args.exp_dir, "train_conf.json")
+    train_conf = load_train_conf(train_conf_path)
+    _, model_args_conf = train_conf
+    prototype_conf = dict(model_args_conf.get("prototype", {}) or {})
+    sr = int(model_args_conf.get("sr", 16000))
+    dtype = resolve_dtype(str(model_args_conf.get("dtype", "auto")), args.device)
+    checkpoint_args = SimpleNamespace(
+        exp_dir=args.exp_dir,
+        auto_best_checkpoint=args.checkpoint_mode == "best",
+        auto_latest_checkpoint=args.checkpoint_mode == "latest",
+        device=args.device,
+    )
+    model, processor, _ = load_prototype_model(checkpoint_args, model_args_conf, dtype)
+    prototype_top_k = int(args.prototype_top_k or prototype_conf.get("k", 5))
+    prompt_template = get_prompt_template(prototype_conf)
+    split_to_file = {"train": args.train_file, "dev": args.eval_file, "test": args.test_file}
+    prediction_root = args.prediction_root or args.exp_dir
+    for split in args.splits:
+        input_jsonl = split_to_file[split]
+        split_dir = os.path.join(prediction_root, split)
+        pred_path = os.path.join(split_dir, "prototype_predictions.jsonl")
+        metrics_path = os.path.join(split_dir, "metrics_proto.txt")
+        pred_rows = infer_split(
+            model=model,
+            processor=processor,
+            input_jsonl=input_jsonl,
+            output_jsonl=pred_path,
+            metrics_path=metrics_path,
+            split=split,
+            sr=sr,
+            prototype_top_k=prototype_top_k,
+        )
+        build_augmented_data(input_jsonl, pred_rows, os.path.join(args.output_jsonl_dir, f"{split}.jsonl"), prompt_template)
+
+
+def main() -> None:
+    args = parse_args()
+    run_inference_and_build_data(args)
 
 
 if __name__ == "__main__":
