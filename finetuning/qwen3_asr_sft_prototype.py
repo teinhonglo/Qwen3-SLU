@@ -316,6 +316,43 @@ class CastFloatInputsTrainer(Trainer):
                     inputs[key] = value.to(dtype=model_dtype)
         return inputs
 
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        """Return prototype logits so Trainer can compute eval_f1.
+
+        The base Trainer would collect the language-model logits from the Qwen3-ASR
+        output, but the prototype-only objective is evaluated on the auxiliary
+        domain/intent heads.  Run the regular forward pass for loss, then collect
+        the prototype logits used by those heads as evaluation predictions.
+        """
+        if prediction_loss_only:
+            return super().prediction_step(model, inputs, prediction_loss_only, ignore_keys=ignore_keys)
+
+        inputs = self._prepare_inputs(inputs)
+        domain_labels = inputs.get("domain_labels")
+        intent_labels = inputs.get("intent_labels")
+        proto_inputs = {
+            key: inputs[key]
+            for key in [
+                "input_ids",
+                "input_features",
+                "attention_mask",
+                "feature_attention_mask",
+                "audio_feature_lengths",
+                "prototype_prefix_lengths",
+            ]
+            if key in inputs
+        }
+        with torch.no_grad():
+            outputs = model(**inputs)
+            loss = outputs.loss.detach() if getattr(outputs, "loss", None) is not None else None
+            domain_logits, intent_logits = model.thinker.prototype_logits(**proto_inputs)
+        logits = (domain_logits.detach(), intent_logits.detach())
+        labels = (
+            domain_labels.detach() if torch.is_tensor(domain_labels) else domain_labels,
+            intent_labels.detach() if torch.is_tensor(intent_labels) else intent_labels,
+        )
+        return loss, logits, labels
+
 
 class MakeEveryCheckpointInferableCallback(TrainerCallback):
     def __init__(self, processor, model=None, default_prompt: str = ""):
@@ -379,6 +416,30 @@ class DataCollatorForPrototypeOnlyFinetuning:
         )
         inputs["prototype_prefix_lengths"] = torch.tensor(prefix_lens, dtype=torch.long)
         return inputs
+
+
+
+def _micro_f1_from_logits(logits: Any, labels: Any, threshold: float = 0.5) -> float:
+    pred = torch.as_tensor(logits).float().sigmoid().ge(threshold)
+    gold = torch.as_tensor(labels).float().ge(0.5)
+    tp = (pred & gold).sum().item()
+    fp = (pred & ~gold).sum().item()
+    fn = (~pred & gold).sum().item()
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    return 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+
+
+def compute_prototype_metrics(eval_pred) -> Dict[str, float]:
+    domain_logits, intent_logits = eval_pred.predictions
+    domain_labels, intent_labels = eval_pred.label_ids
+    domain_f1 = _micro_f1_from_logits(domain_logits, domain_labels)
+    intent_f1 = _micro_f1_from_logits(intent_logits, intent_labels)
+    return {
+        "domain_micro_f1": domain_f1,
+        "intent_micro_f1": intent_f1,
+        "f1": (domain_f1 + intent_f1) / 2.0,
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -482,6 +543,11 @@ def train_prototype_only(args: argparse.Namespace) -> None:
     )
 
     training_args_conf = dict(training_args_conf)
+    # Transformers only reports eval_loss when it knows which batch fields are labels.
+    # The prototype-only objective uses custom multi-hot labels instead of the usual
+    # causal-LM `labels`, so make them explicit for evaluation and best-checkpoint
+    # selection.
+    training_args_conf.setdefault("label_names", ["domain_labels", "intent_labels"])
     training_args_conf["run_name"] = os.path.basename(args.output_dir)
     if model_args_conf.get("wandb_project"):
         os.environ["WANDB_PROJECT"] = model_args_conf["wandb_project"]
@@ -494,6 +560,7 @@ def train_prototype_only(args: argparse.Namespace) -> None:
         eval_dataset=ds["validation"],
         data_collator=collator,
         tokenizer=processor.tokenizer,
+        compute_metrics=compute_prototype_metrics,
         callbacks=[MakeEveryCheckpointInferableCallback(processor=processor, model=model, default_prompt=default_prompt)],
     )
     os.makedirs(training_args.output_dir, exist_ok=True)

@@ -143,30 +143,45 @@ def iter_prefix_examples(rows: Iterable[Dict[str, Any]], label_schema: MACSLULab
                 }
 
 
+def load_train_conf_file(path: str) -> List[Dict[str, Any]]:
+    with open(path, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, list) or len(cfg) != 2 or not isinstance(cfg[0], dict) or not isinstance(cfg[1], dict):
+        raise ValueError("train_conf must be [training_args, model_args]")
+    return cfg
+
+
 def resolve_model(args):
     import torch
     from peft.peft_model import PeftModelForCausalLM
     from qwen_asr import Qwen3ASRModel
     from finetuning.qwen3_asr_test import find_latest_checkpoint, load_train_conf_from_exp_dir, resolve_dtype
 
-    train_conf = load_train_conf_from_exp_dir(args.exp_dir)
-    _, model_args_conf = train_conf
-    model_path = args.exp_dir
-    if args.auto_best_checkpoint:
-        model_path = os.path.join(model_path, "checkpoint-best")
-    elif args.auto_latest_checkpoint:
-        ckpt = find_latest_checkpoint(model_path)
-        if ckpt is None:
-            raise ValueError(f"No checkpoint-* found under: {model_path}")
-        model_path = ckpt
-    dtype = resolve_dtype(str(model_args_conf.get("dtype", "auto")), args.device)
-    if model_args_conf.get("lora_config", None):
-        wrapper = Qwen3ASRModel.from_pretrained(model_args_conf["model_path"], dtype=dtype, device_map=args.device)
-        wrapper.model = PeftModelForCausalLM.from_pretrained(wrapper.model, model_path, torch_dtype=torch.bfloat16)
+    if args.exp_dir:
+        train_conf = load_train_conf_from_exp_dir(args.exp_dir)
+        _, model_args_conf = train_conf
+        model_path = args.exp_dir
+        if args.auto_best_checkpoint:
+            model_path = os.path.join(model_path, "checkpoint-best")
+        elif args.auto_latest_checkpoint:
+            ckpt = find_latest_checkpoint(model_path)
+            if ckpt is None:
+                raise ValueError(f"No checkpoint-* found under: {model_path}")
+            model_path = ckpt
+        dtype = resolve_dtype(str(model_args_conf.get("dtype", "auto")), args.device)
+        if model_args_conf.get("lora_config", None):
+            wrapper = Qwen3ASRModel.from_pretrained(model_args_conf["model_path"], dtype=dtype, device_map=args.device)
+            wrapper.model = PeftModelForCausalLM.from_pretrained(wrapper.model, model_path, torch_dtype=torch.bfloat16)
+        else:
+            wrapper = Qwen3ASRModel.from_pretrained(model_path, dtype=dtype, device_map=args.device)
     else:
-        wrapper = Qwen3ASRModel.from_pretrained(model_path, dtype=dtype, device_map=args.device)
+        if not args.train_conf:
+            raise ValueError("Either --exp_dir or --train_conf is required")
+        _, model_args_conf = load_train_conf_file(args.train_conf)
+        dtype = resolve_dtype(str(model_args_conf.get("dtype", "auto")), args.device)
+        wrapper = Qwen3ASRModel.from_pretrained(model_args_conf["model_path"], dtype=dtype, device_map=args.device)
     wrapper.model.eval()
-    return wrapper
+    return wrapper, model_args_conf
 
 
 def _example_record(ex: Dict[str, Any], vec: List[float], split: str) -> Dict[str, Any]:
@@ -304,7 +319,8 @@ def parse_args():
     p.add_argument("--output_json", required=True)
     p.add_argument("--train_examples_jsonl", default="")
     p.add_argument("--test_examples_jsonl", default="")
-    p.add_argument("--exp_dir", required=True)
+    p.add_argument("--exp_dir", default="", help="Existing experiment/checkpoint root used as embedding source")
+    p.add_argument("--train_conf", default="", help="Train config used to initialize the embedding source when --exp_dir is empty")
     p.add_argument("--auto_latest_checkpoint", action="store_true")
     p.add_argument("--auto_best_checkpoint", action="store_true")
     p.add_argument("--device", default="cuda:0")
@@ -325,10 +341,7 @@ def main():
     rows = load_jsonl(args.train_jsonl)
     test_rows = load_jsonl(args.test_jsonl) if args.test_jsonl else []
     label_schema = MACSLULabelSchema(labels_path=args.labels_path, schema_path=args.schema_path)
-    from finetuning.qwen3_asr_test import load_train_conf_from_exp_dir
-
-    _, model_args_conf = load_train_conf_from_exp_dir(args.exp_dir)
-    wrapper = resolve_model(args)
+    wrapper, model_args_conf = resolve_model(args)
     tok = wrapper.processor.tokenizer if hasattr(wrapper.processor, "tokenizer") else wrapper.processor
     
     text_embedder = TokenEmbeddingPrefixEmbedder(
