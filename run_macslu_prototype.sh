@@ -2,6 +2,7 @@
 # MAC-SLU prototype bootstrapping pipeline.
 #
 # Stage 0 builds the MAC-SLU schema used by prototype label maps.
+
 # Stage 1 builds domain/intent prototype vectors from the labels in json_root.
 #         If src_model is non-empty, hidden states are extracted from that
 #         experiment/checkpoint. If src_model is empty, the model is initialized
@@ -100,6 +101,7 @@ proto = dict(model_args.get("prototype", {}) or {})
 proto["enabled"] = True
 proto["labels_path"] = labels_path
 proto["schema_path"] = schema_path
+
 proto["prototype_json"] = init_json
 proto.pop("init_path", None)
 proto["k"] = int(top_k)
@@ -158,7 +160,7 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
             build_source_opts+=(--train_conf "$downstream_train_conf")
             echo "[info] src_model is empty; build prototypes from downstream_train_conf: $downstream_train_conf"
         fi
-
+        
         CUDA_VISIBLE_DEVICES=$gpuid \
             python local/build_macslu_prototypes.py \
                 --train_jsonl "${json_root}/train.jsonl" \
@@ -198,7 +200,7 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
                 --device cuda:0 \
                 $prototype_resume_opts
     else
-        echo "[info] skip prototype-only training; reuse $prototype_exp_dir"
+        echo "[info] skip final prototype-only training; reuse $prototype_exp_dir"
     fi
 fi
 
