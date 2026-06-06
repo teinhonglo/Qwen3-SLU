@@ -2,16 +2,17 @@
 # MAC-SLU prototype bootstrapping pipeline.
 #
 # Stage 0 builds the MAC-SLU schema used by prototype label maps.
-# Stage 1 trains a seed prototype-only Qwen3-ASR model with random prototype
-#         initialization.
-# Stage 2 extracts hidden-state domain/intent prototypes from the seed model by
-#         invoking local/build_macslu_prototypes.py.
-# Stage 3 trains the final prototype-only Qwen3-ASR model initialized from the
-#         extracted prototype JSON.
-# Stage 4 uses the final prototype-only model to predict train/dev/test
+
+# Stage 1 builds domain/intent prototype vectors from the labels in json_root.
+#         If src_model is non-empty, hidden states are extracted from that
+#         experiment/checkpoint. If src_model is empty, the model is initialized
+#         from downstream_train_conf and used only as the embedding source.
+# Stage 2 trains the prototype-only Qwen3-ASR model initialized from the Stage 1
+#         prototype JSON.
+# Stage 3 uses the trained prototype-only model to predict train/dev/test
 #         domain-intent candidates, writes metrics_proto.txt for every split,
 #         and creates ${json_root}_prototype.
-# Stage 5 trains the regular MAC-SLU model on the prototype-augmented JSONL data
+# Stage 4 trains the regular MAC-SLU model on the prototype-augmented JSONL data
 #         by invoking run_macslu.sh with --json_root.
 
 set -euo pipefail
@@ -31,11 +32,13 @@ prototype_top_k=5
 prototype_source="audio_only"       # Match local/build_macslu_prototypes.py default: audio_only | audio_prompt | audio_prefix | text_prefix
 prototype_pooling="mean_pooling"     # Match original prototype extraction default: mean_pooling | last_hidden_state
 
-checkpoint_mode="best"  # best | latest | exp_dir
-prototype_build_checkpoint_mode="best"  # best | latest | exp_dir; checkpoint used by local/build_macslu_prototypes.py
-skip_seed_prototype_train=0
+# Step 1 source model for prototype extraction. Empty means initialize the source
+# model from downstream_train_conf instead of loading an existing experiment.
+src_model="exp/macslu_fixed/macslu_qwen3_asr_17b_ep10_lora_woemblmhead"
+prototype_build_checkpoint_mode="latest"  # best | latest | exp_dir; used only when src_model is non-empty.
+checkpoint_mode="best"  # best | latest | exp_dir; checkpoint used by Stage 3 inference.
 skip_build_prototypes=0
-skip_prototype_train=0       # Skip final prototype-only training; reuse $prototype_exp_dir.
+skip_prototype_train=0
 
 # downstream MAC-SLU config; run_macslu.sh appends the train-conf tag under this root.
 downstream_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead.json"
@@ -58,10 +61,8 @@ stop_stage=1000
 prototype_json_root=${json_root}_prototype
 downstream_exp_root=${exp_root}_prototype
 prototype_schema_path=${prototype_json_root}/schema.json
-prototype_seed_exp_dir=${exp_root}/prototype_seed
 prototype_exp_dir=${exp_root}/prototype
-prototype_seed_runtime_conf=${prototype_json_root}/prototype_seed_runtime.json
-prototype_runtime_conf=${prototype_json_root}/prototype_initialized_runtime.json
+prototype_runtime_conf=${prototype_json_root}/prototype_runtime.json
 prototype_init_json=${prototype_json_root}/prototype_init.json
 prototype_train_examples_jsonl=${prototype_json_root}/prototype_train_examples.jsonl
 prototype_test_examples_jsonl=${prototype_json_root}/prototype_test_examples.jsonl
@@ -100,10 +101,8 @@ proto = dict(model_args.get("prototype", {}) or {})
 proto["enabled"] = True
 proto["labels_path"] = labels_path
 proto["schema_path"] = schema_path
-if init_json:
-    proto["prototype_json"] = init_json
-else:
-    proto["prototype_json"] = ""
+
+proto["prototype_json"] = init_json
 proto.pop("init_path", None)
 proto["k"] = int(top_k)
 proto["prototype_source"] = prototype_source
@@ -112,7 +111,7 @@ model_args["prototype"] = proto
 with open(dst, "w", encoding="utf-8") as f:
     json.dump(cfg, f, ensure_ascii=False, indent=4)
     f.write("\n")
-print(f"[info] wrote prototype runtime config: {dst}; init_json={init_json or '<random>'}")
+print(f"[info] wrote prototype runtime config: {dst}; init_json={init_json}")
 PY
 }
 
@@ -140,35 +139,28 @@ if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
 fi
 
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
-    echo "Stage 1: Train seed prototype-only model with random initialization"
+    echo "Stage 1: Build prototype initialization JSON from json_root labels"
     mkdir -p "$prototype_json_root"
     if [ ! -f "$prototype_schema_path" ]; then
-        python local/build_macslu_schema.py \
-            --input_jsonls "${json_root}/train.jsonl" "${json_root}/dev.jsonl" \
-            --output_json "$prototype_schema_path"
+        echo "[ERROR] prototype schema not found: $prototype_schema_path"
+        echo "        Run stage 0 first or set --prototype_schema_path to an existing schema."
+        exit 1
     fi
-    write_prototype_runtime_conf "$prototype_seed_runtime_conf" ""
 
-    if [ "$skip_seed_prototype_train" != "1" ]; then
-        CUDA_VISIBLE_DEVICES=$gpuid \
-            python finetuning/qwen3_asr_sft_prototype.py \
-                --seed "$seed" \
-                --train_conf "$prototype_seed_runtime_conf" \
-                --train_file "${json_root}/train.jsonl" \
-                --eval_file "${json_root}/dev.jsonl" \
-                --output_dir "$prototype_seed_exp_dir" \
-                --device cuda:0 \
-                $prototype_resume_opts
-    else
-        echo "[info] skip seed prototype-only training; reuse $prototype_seed_exp_dir"
-    fi
-fi
-
-if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
-    echo "Stage 2: Build prototype initialization JSON from seed model"
-    mkdir -p "$prototype_json_root"
     if [ "$skip_build_prototypes" != "1" ]; then
-        build_checkpoint_opt=$(prototype_checkpoint_opt "$prototype_build_checkpoint_mode")
+        build_source_opts=()
+        if [ "$src_model" != "" ]; then
+            build_checkpoint_opt=$(prototype_checkpoint_opt "$prototype_build_checkpoint_mode")
+            build_source_opts+=(--exp_dir "$src_model")
+            if [ "$build_checkpoint_opt" != "" ]; then
+                build_source_opts+=("$build_checkpoint_opt")
+            fi
+            echo "[info] build prototypes from src_model: $src_model"
+        else
+            build_source_opts+=(--train_conf "$downstream_train_conf")
+            echo "[info] src_model is empty; build prototypes from downstream_train_conf: $downstream_train_conf"
+        fi
+        
         CUDA_VISIBLE_DEVICES=$gpuid \
             python local/build_macslu_prototypes.py \
                 --train_jsonl "${json_root}/train.jsonl" \
@@ -178,8 +170,7 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
                 --output_json "$prototype_init_json" \
                 --train_examples_jsonl "$prototype_train_examples_jsonl" \
                 --test_examples_jsonl "$prototype_test_examples_jsonl" \
-                --exp_dir "$prototype_seed_exp_dir" \
-                $build_checkpoint_opt \
+                "${build_source_opts[@]}" \
                 --device cuda:0 \
                 --prototype_source "$prototype_source" \
                 --prototype_pooling "$prototype_pooling"
@@ -188,12 +179,12 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
     fi
 fi
 
-if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
-    echo "Stage 3: Train final prototype-only model initialized from prototype JSON"
+if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
+    echo "Stage 2: Train prototype-only model initialized from prototype JSON"
     mkdir -p "$prototype_json_root"
     if [ ! -f "$prototype_init_json" ]; then
         echo "[ERROR] prototype initialization JSON not found: $prototype_init_json"
-        echo "        Run stage 2 first or set --skip_build_prototypes 0."
+        echo "        Run stage 1 first or set --prototype_init_json to an existing file."
         exit 1
     fi
     write_prototype_runtime_conf "$prototype_runtime_conf" "$prototype_init_json"
@@ -213,8 +204,8 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     fi
 fi
 
-if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
-    echo "Stage 4: Prototype train/dev/test inference and jsonl generation"
+if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
+    echo "Stage 3: Prototype train/dev/test inference and jsonl generation"
     mkdir -p "$prototype_json_root"
     CUDA_VISIBLE_DEVICES=$gpuid \
         python finetuning/qwen3_asr_test_prototype.py \
@@ -229,8 +220,8 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
             --device cuda:0
 fi
 
-if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
-    echo "Stage 5: Train MAC-SLU with prototype-augmented jsonl"
+if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
+    echo "Stage 4: Train MAC-SLU with prototype-augmented jsonl"
     ./run_macslu.sh \
         --json_root "$prototype_json_root" \
         --exp_root "$downstream_exp_root" \
