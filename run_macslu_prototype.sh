@@ -29,6 +29,8 @@ prompt_file=""   # Empty uses prepare_macslu_jsonl.py built-in prompt.
 prototype_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead_prototype.json"
 
 prototype_top_k=5
+prototype_min_similarity=""       # Empty keeps all top-k candidates in generated data-json prompts.
+prototype_metric_ks="1 3 5"       # IR metric cutoffs used by Stage 3.
 prototype_source="audio_only"       # Match local/build_macslu_prototypes.py default: audio_only | audio_prompt | audio_prefix | text_prefix
 prototype_pooling="mean_pooling"     # Match original prototype extraction default: mean_pooling | last_hidden_state
 
@@ -207,6 +209,10 @@ fi
 if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     echo "Stage 3: Prototype train/dev/test inference and jsonl generation"
     mkdir -p "$prototype_json_root"
+    prototype_infer_opts=(--prototype_metric_ks $prototype_metric_ks)
+    if [ -n "$prototype_min_similarity" ]; then
+        prototype_infer_opts+=(--prototype_min_similarity "$prototype_min_similarity")
+    fi
     CUDA_VISIBLE_DEVICES=$gpuid \
         python finetuning/qwen3_asr_test_prototype.py \
             --exp_dir "$prototype_exp_dir" \
@@ -216,6 +222,7 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
             --output_jsonl_dir "$prototype_json_root" \
             --prediction_root "$prototype_exp_dir" \
             --prototype_top_k "$prototype_top_k" \
+            "${prototype_infer_opts[@]}" \
             --checkpoint_mode "$checkpoint_mode" \
             --device cuda:0
 fi

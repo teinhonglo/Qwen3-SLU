@@ -220,22 +220,33 @@ class Qwen3ASRPrototypeForConditionalGeneration(Qwen3ASRForConditionalGeneration
         intent_labels = list(proto_cfg.get("intent_labels", []) or [])
         k_domain = min(int(top_k), domain_logits.size(-1))
         k_intent = min(int(top_k), intent_logits.size(-1))
+        temperature = max(float(proto_cfg.get("temperature", 1.0)), 1e-6)
         domain_scores = torch.softmax(domain_logits.float(), dim=-1)
         intent_scores = torch.softmax(intent_logits.float(), dim=-1)
+        # ``prototype_logits`` returns dot-product prototype scores divided by
+        # temperature.  Multiplying by temperature recovers the raw prototype
+        # similarity used for ranking/threshold analysis.  When the prototype
+        # head is normalized, this value is cosine similarity.
+        domain_similarities = domain_logits.float() * temperature
+        intent_similarities = intent_logits.float() * temperature
         domain_top = torch.topk(domain_scores, k=k_domain, dim=-1)
         intent_top = torch.topk(intent_scores, k=k_intent, dim=-1)
 
-        def pack(top, labels):
+        def pack(top, labels, similarities):
             rows = []
-            for row_scores, row_indices in zip(top.values, top.indices):
+            for batch_idx, (row_scores, row_indices) in enumerate(zip(top.values, top.indices)):
                 packed = []
                 for score, idx in zip(row_scores.tolist(), row_indices.tolist()):
                     label = labels[idx] if idx < len(labels) else str(idx)
-                    packed.append({"label": label, "score": float(score), "index": int(idx)})
+                    similarity = similarities[batch_idx, int(idx)].item()
+                    packed.append({"label": label, "score": float(score), "similarity": float(similarity), "index": int(idx)})
                 rows.append(packed)
             return rows
 
-        return {"domains": pack(domain_top, domain_labels), "intents": pack(intent_top, intent_labels)}
+        return {
+            "domains": pack(domain_top, domain_labels, domain_similarities),
+            "intents": pack(intent_top, intent_labels, intent_similarities),
+        }
 
 
 __all__ = [
