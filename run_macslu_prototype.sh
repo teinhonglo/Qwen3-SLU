@@ -41,6 +41,7 @@ prototype_build_checkpoint_mode="latest"  # best | latest | exp_dir; used only w
 checkpoint_mode="best"  # best | latest | exp_dir; checkpoint used by Stage 3 inference.
 skip_build_prototypes=0
 skip_prototype_train=0
+skip_prototype_tsne=0
 
 # downstream MAC-SLU config; run_macslu.sh appends the train-conf tag under this root.
 downstream_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead.json"
@@ -68,6 +69,7 @@ prototype_runtime_conf=${prototype_json_root}/prototype_runtime.json
 prototype_init_json=${prototype_json_root}/prototype_init.json
 prototype_train_examples_jsonl=${prototype_json_root}/prototype_train_examples.jsonl
 prototype_test_examples_jsonl=${prototype_json_root}/prototype_test_examples.jsonl
+prototype_tsne_root=${prototype_json_root}/prototype_tsne
 
 if [ ! -f "$prototype_train_conf" ]; then
     echo "[ERROR] prototype_train_conf not found: $prototype_train_conf"
@@ -179,6 +181,15 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
     else
         echo "[info] skip prototype JSON build; reuse $prototype_init_json"
     fi
+
+    if [ "$skip_prototype_tsne" != "1" ]; then
+        python local/plot_macslu_prototype_tsne.py \
+            --prototype_json "$prototype_init_json" \
+            --train_examples_jsonl "$prototype_train_examples_jsonl" \
+            --test_examples_jsonl "$prototype_test_examples_jsonl" \
+            --output_dir "${prototype_tsne_root}/before_train" \
+            --random_state "$seed"
+    fi
 fi
 
 if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
@@ -203,6 +214,15 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
                 $prototype_resume_opts
     else
         echo "[info] skip final prototype-only training; reuse $prototype_exp_dir"
+    fi
+
+    if [ "$skip_prototype_tsne" != "1" ]; then
+        python local/plot_macslu_prototype_tsne.py \
+            --prototype_json "$prototype_init_json" \
+            --train_examples_jsonl "$prototype_train_examples_jsonl" \
+            --test_examples_jsonl "$prototype_test_examples_jsonl" \
+            --output_dir "${prototype_tsne_root}/after_train" \
+            --random_state "$seed"
     fi
 fi
 
