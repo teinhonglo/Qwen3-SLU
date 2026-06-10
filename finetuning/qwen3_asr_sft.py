@@ -264,9 +264,15 @@ def parse_args():
     p.add_argument("--eval_file", type=str, default="dev.jsonl")
     p.add_argument("--output_dir", type=str, default="./qwen3-asr-finetuning-out")
 
-    # Resume
+    # Resume / warm start
     p.add_argument("--resume_from", type=str, default="")
     p.add_argument("--resume", type=int, default=0)
+    p.add_argument(
+        "--init_from_checkpoint",
+        type=str,
+        default="",
+        help="Warm-start model/adapter weights from a checkpoint without resuming optimizer/scheduler state",
+    )
 
     return p.parse_args()
 
@@ -348,21 +354,34 @@ def main():
     patch_outer_forward(model)
     model.generation_config = GenerationConfig.from_model_config(model.config)
     
+    init_from_checkpoint = (args_cli.init_from_checkpoint or "").strip()
+    if init_from_checkpoint and not os.path.isdir(init_from_checkpoint):
+        raise FileNotFoundError(f"init_from_checkpoint not found: {init_from_checkpoint}")
+
     if lora_config:
         if lora_type not in ["default", "qlora"]:
             raise ValueError(f"lora_type: {lora_type} is NOT implemented yet.")
 
         print(f"LoRA Finetuning {lora_type}")
-        peft_config = LoraConfig(
-            task_type=TaskType.CAUSAL_LM,
-            **lora_config
-        )
-        
-        model = get_peft_model(model, peft_config)
+        if init_from_checkpoint:
+            print(f"[init] warm-start LoRA adapter from checkpoint = {init_from_checkpoint}")
+            model = PeftModel.from_pretrained(
+                model,
+                init_from_checkpoint,
+                is_trainable=True,
+            )
+        else:
+            peft_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                **lora_config
+            )
+            model = get_peft_model(model, peft_config)
         print("="*100)
         model.print_trainable_parameters()
         print("="*100)
     else:
+        if init_from_checkpoint:
+            raise ValueError("--init_from_checkpoint currently supports LoRA/QLoRA checkpoints only")
         print("Full Finetuning")
     
     if training_args_conf["gradient_checkpointing"]:
@@ -433,6 +452,8 @@ def main():
         model.generation_config.save_pretrained(training_args.output_dir)
 
     resume_from = (args_cli.resume_from or "").strip()
+    if init_from_checkpoint and (resume_from or args_cli.resume == 1):
+        raise ValueError("--init_from_checkpoint warm-starts weights and cannot be combined with --resume/--resume_from")
     if not resume_from and args_cli.resume == 1:
         resume_from = find_latest_checkpoint(training_args.output_dir) or ""
 
