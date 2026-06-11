@@ -23,6 +23,11 @@ from finetuning.prototype_prompt_utils import (  # noqa: E402
     format_domain_intent_candidates,
     get_prompt_template,
 )
+from finetuning.prototype_joint_utils import (  # noqa: E402
+    extract_gold_domain_intent_labels,
+    split_domain_intent_label,
+    unique_keep_order,
+)
 from finetuning.qwen3_asr_sft_prototype import (  # noqa: E402
     build_prefix_text,
     find_latest_checkpoint,
@@ -31,8 +36,8 @@ from finetuning.qwen3_asr_sft_prototype import (  # noqa: E402
     resolve_dtype,
 )
 from qwen_asr.core.transformers_backend.configuration_qwen3_asr import Qwen3ASRConfig  # noqa: E402
-from qwen_asr.core.transformers_backend.modeling_qwen3_asr_prototype import (  # noqa: E402
-    Qwen3ASRPrototypeForConditionalGeneration,
+from qwen_asr.core.transformers_backend.modeling_qwen3_asr_prototype_joint import (  # noqa: E402
+    Qwen3ASRJointPrototypeForConditionalGeneration,
 )
 
 
@@ -89,7 +94,7 @@ def load_prototype_model(args, model_args_conf: Dict[str, Any], dtype: torch.dty
         base_path = model_args_conf["model_path"]
         config = Qwen3ASRConfig.from_pretrained(base_path)
         config.thinker_config.prototype_config = prototype_conf
-        model = Qwen3ASRPrototypeForConditionalGeneration.from_pretrained(
+        model = Qwen3ASRJointPrototypeForConditionalGeneration.from_pretrained(
             base_path,
             config=config,
             dtype=dtype,
@@ -99,7 +104,7 @@ def load_prototype_model(args, model_args_conf: Dict[str, Any], dtype: torch.dty
         model = PeftModelForCausalLM.from_pretrained(model, ckpt_path, torch_dtype=torch.bfloat16)
         processor = AutoProcessor.from_pretrained(base_path, fix_mistral_regex=True)
     else:
-        model = Qwen3ASRPrototypeForConditionalGeneration.from_pretrained(ckpt_path, dtype=dtype, device_map=args.device)
+        model = Qwen3ASRJointPrototypeForConditionalGeneration.from_pretrained(ckpt_path, dtype=dtype, device_map=args.device)
         processor = AutoProcessor.from_pretrained(ckpt_path, fix_mistral_regex=True)
     model.eval()
     return model, processor, ckpt_path
@@ -152,7 +157,7 @@ def write_jsonl(path: str, rows: Iterable[Dict[str, Any]]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
-            
+
 def strip_empty(labels: Sequence[str]) -> List[str]:
     return [str(x) for x in labels if str(x) and str(x) != "__empty__"]
 
@@ -330,25 +335,21 @@ def thresholded_metrics(rows: Sequence[Dict[str, Any]], pred_key: str, sim_key: 
 
 
 def compute_metrics(split: str, rows: Sequence[Dict[str, Any]], metric_ks: Sequence[int], min_similarity: Optional[float]) -> Dict[str, Any]:
-    domain_set = score_one_kind(rows, "pred_domains", "gold_domains")
-    intent_set = score_one_kind(rows, "pred_intents", "gold_intents")
-    both_exact = sum(
-        int(set(strip_empty(r.get("pred_domains", []))) == set(strip_empty(r.get("gold_domains", []))) and set(strip_empty(r.get("pred_intents", []))) == set(strip_empty(r.get("gold_intents", []))))
-        for r in rows
-    )
+    domain_intent_set = score_one_kind(rows, "pred_domain_intents", "gold_domain_intents")
     out: Dict[str, Any] = {
         "split": split,
         "count": len(rows),
-        "joint_exact_match": both_exact / len(rows) if rows else 0.0,
-        "domain": {
-            "set": domain_set,
-            "ranking": ranking_metrics(rows, "pred_domains", "gold_domains", metric_ks),
-            "thresholded": thresholded_metrics(rows, "pred_domains", "pred_domains_similarity", "gold_domains", min_similarity),
-        },
-        "intent": {
-            "set": intent_set,
-            "ranking": ranking_metrics(rows, "pred_intents", "gold_intents", metric_ks),
-            "thresholded": thresholded_metrics(rows, "pred_intents", "pred_intents_similarity", "gold_intents", min_similarity),
+        "domain_intent_exact_match": domain_intent_set["exact_match"],
+        "domain_intent": {
+            "set": domain_intent_set,
+            "ranking": ranking_metrics(rows, "pred_domain_intents", "gold_domain_intents", metric_ks),
+            "thresholded": thresholded_metrics(
+                rows,
+                "pred_domain_intents",
+                "pred_domain_intents_similarity",
+                "gold_domain_intents",
+                min_similarity,
+            ),
         },
         "by_semantic_frame_count": {},
     }
@@ -356,42 +357,60 @@ def compute_metrics(split: str, rows: Sequence[Dict[str, Any]], metric_ks: Seque
         group = [r for r in rows if int(r.get("semantic_frame_count", 0)) == count]
         out["by_semantic_frame_count"][str(count)] = {
             "count": len(group),
-            "domain_ranking": ranking_metrics(group, "pred_domains", "gold_domains", metric_ks),
-            "intent_ranking": ranking_metrics(group, "pred_intents", "gold_intents", metric_ks),
-            "domain_thresholded": thresholded_metrics(group, "pred_domains", "pred_domains_similarity", "gold_domains", min_similarity),
-            "intent_thresholded": thresholded_metrics(group, "pred_intents", "pred_intents_similarity", "gold_intents", min_similarity),
+            "domain_intent_ranking": ranking_metrics(group, "pred_domain_intents", "gold_domain_intents", metric_ks),
+            "domain_intent_thresholded": thresholded_metrics(
+                group,
+                "pred_domain_intents",
+                "pred_domain_intents_similarity",
+                "gold_domain_intents",
+                min_similarity,
+            ),
         }
     return out
 
 
 def format_metrics(split: str, rows: Sequence[Dict[str, Any]], metric_ks: Sequence[int], min_similarity: Optional[float]) -> str:
     metrics = compute_metrics(split, rows, metric_ks, min_similarity)
-    lines = [f"split: {split}", f"count: {metrics['count']}", f"joint_exact_match: {metrics['joint_exact_match']:.6f}"]
-    for name in ["domain", "intent"]:
-        lines.append(f"[{name}/set]")
-        for key in ["exact_match", "micro_precision", "micro_recall", "micro_f1", "macro_f1"]:
-            lines.append(f"{key}: {metrics[name]['set'][key]:.6f}")
-        lines.append(f"[{name}/ranking]")
-        for key, value in metrics[name]["ranking"].items():
+    lines = [
+        f"split: {split}",
+        f"count: {metrics['count']}",
+        f"domain_intent_exact_match: {metrics['domain_intent_exact_match']:.6f}",
+    ]
+    name = "domain_intent"
+    lines.append(f"[{name}/set]")
+    for key in ["exact_match", "micro_precision", "micro_recall", "micro_f1", "macro_f1"]:
+        lines.append(f"{key}: {metrics[name]['set'][key]:.6f}")
+    lines.append(f"[{name}/ranking]")
+    for key, value in metrics[name]["ranking"].items():
+        lines.append(f"{key}: {value:.6f}")
+    lines.append(f"[{name}/thresholded]")
+    for key, value in metrics[name]["thresholded"].items():
+        if value is None:
+            lines.append(f"{key}: none")
+        else:
             lines.append(f"{key}: {value:.6f}")
-        lines.append(f"[{name}/thresholded]")
-        for key, value in metrics[name]["thresholded"].items():
-            if value is None:
-                lines.append(f"{key}: none")
-            else:
-                lines.append(f"{key}: {value:.6f}")
     lines.append("[by_semantic_frame_count]")
     max_k = max([int(k) for k in metric_ks if int(k) > 0], default=0)
     for count, group in metrics["by_semantic_frame_count"].items():
         lines.append(f"{count}_intent count: {group['count']}")
         if max_k > 0:
-            lines.append(f"{count}_intent domain_recall@{max_k}: {group['domain_ranking'].get(f'recall@{max_k}', 0.0):.6f}")
-            lines.append(f"{count}_intent domain_all_gold_covered@{max_k}: {group['domain_ranking'].get(f'all_gold_covered@{max_k}', 0.0):.6f}")
-            lines.append(f"{count}_intent intent_recall@{max_k}: {group['intent_ranking'].get(f'recall@{max_k}', 0.0):.6f}")
-            lines.append(f"{count}_intent intent_all_gold_covered@{max_k}: {group['intent_ranking'].get(f'all_gold_covered@{max_k}', 0.0):.6f}")
-            lines.append(f"{count}_intent avg_thresholded_intent_candidates: {group['intent_thresholded'].get('avg_candidates', 0.0):.6f}")
+            ranking = group["domain_intent_ranking"]
+            thresholded = group["domain_intent_thresholded"]
+            lines.append(f"{count}_intent domain_intent_recall@{max_k}: {ranking.get(f'recall@{max_k}', 0.0):.6f}")
+            lines.append(f"{count}_intent domain_intent_all_gold_covered@{max_k}: {ranking.get(f'all_gold_covered@{max_k}', 0.0):.6f}")
+            lines.append(f"{count}_intent avg_thresholded_domain_intent_candidates: {thresholded.get('avg_candidates', 0.0):.6f}")
     return "\n".join(lines) + "\n"
 
+
+def split_domain_intent_candidates(labels: Sequence[str]) -> Tuple[List[str], List[str]]:
+    domains: List[str] = []
+    intents: List[str] = []
+    for label in labels:
+        domain, intent = split_domain_intent_label(label)
+        if domain and intent:
+            domains.append(domain)
+            intents.append(intent)
+    return unique_keep_order(domains), unique_keep_order(intents)
 
 def infer_split(
     model: Any,
@@ -427,18 +446,20 @@ def infer_split(
         with torch.inference_mode():
             hits = proto_model.predict_prototypes(top_k=prototype_top_k, **inputs)
         gold_domains, gold_intents = extract_gold_domain_intents(row)
-        pred_domains, domain_confs, domain_similarities = pack_hit_labels_confs_and_similarities(hits["domains"][0])
-        pred_intents, intent_confs, intent_similarities = pack_hit_labels_confs_and_similarities(hits["intents"][0])
+        gold_domain_intents = extract_gold_domain_intent_labels(row)
+        pred_domain_intents, domain_intent_confs, domain_intent_similarities = pack_hit_labels_confs_and_similarities(
+            hits["domain_intents"][0]
+        )
+        pred_domains, pred_intents = split_domain_intent_candidates(pred_domain_intents)
         out_rows.append(
             {
                 "text_id": text_id,
+                "pred_domain_intents": pred_domain_intents,
+                "domain_intent_confs": domain_intent_confs,
+                "pred_domain_intents_similarity": domain_intent_similarities,
                 "pred_domains": pred_domains,
                 "pred_intents": pred_intents,
-                "domain_confs": domain_confs,
-                "intent_conf": intent_confs,
-                "intent_confs": intent_confs,
-                "pred_domains_similarity": domain_similarities,
-                "pred_intents_similarity": intent_similarities,
+                "gold_domain_intents": gold_domain_intents,
                 "gold_domains": gold_domains,
                 "gold_intents": gold_intents,
                 "semantic_frame_count": semantic_frame_count(row),
@@ -475,12 +496,10 @@ def build_augmented_data(
         text_id = str(row.get("text_id", f"line{idx}")).strip()
         pred = by_id.get(text_id, {})
         item = dict(row)
-        filtered_domains, filtered_domain_similarities = filter_by_similarity(
-            pred.get("pred_domains", []), pred.get("pred_domains_similarity", []), min_similarity
+        filtered_domain_intents, filtered_domain_intent_similarities = filter_by_similarity(
+            pred.get("pred_domain_intents", []), pred.get("pred_domain_intents_similarity", []), min_similarity
         )
-        filtered_intents, filtered_intent_similarities = filter_by_similarity(
-            pred.get("pred_intents", []), pred.get("pred_intents_similarity", []), min_similarity
-        )
+        filtered_domains, filtered_intents = split_domain_intent_candidates(filtered_domain_intents)
         item["prompt"] = format_domain_intent_candidates(
             row.get("prompt", ""),
             filtered_domains,
@@ -489,8 +508,8 @@ def build_augmented_data(
         )
         item["prototype_pred_domains"] = filtered_domains
         item["prototype_pred_intents"] = filtered_intents
-        item["prototype_pred_domains_similarity"] = filtered_domain_similarities
-        item["prototype_pred_intents_similarity"] = filtered_intent_similarities
+        item["prototype_pred_domain_intents"] = filtered_domain_intents
+        item["prototype_pred_domain_intents_similarity"] = filtered_domain_intent_similarities
         item["prototype_min_similarity"] = float(min_similarity) if min_similarity is not None else None
         augmented.append(item)
     write_jsonl(output_jsonl, augmented)
@@ -516,17 +535,15 @@ def candidate_similarity_thresholds(rows: Sequence[Dict[str, Any]], sim_keys: Se
 
 
 def auto_select_min_similarity(rows: Sequence[Dict[str, Any]]) -> Optional[float]:
-    """Select one threshold on dev by maximizing domain/intent thresholded F1."""
-    candidates = candidate_similarity_thresholds(rows, ["pred_domains_similarity", "pred_intents_similarity"])
+    """Select one threshold on dev by maximizing joint domain-intent F1."""
+    candidates = candidate_similarity_thresholds(rows, ["pred_domain_intents_similarity"])
     if not candidates:
         return None
     best_threshold = candidates[0]
     best_score = float("-inf")
     for threshold in candidates:
         metrics = compute_metrics("dev", rows, [], threshold)
-        domain_f1 = float(metrics["domain"]["thresholded"].get("micro_f1", 0.0))
-        intent_f1 = float(metrics["intent"]["thresholded"].get("micro_f1", 0.0))
-        score = (domain_f1 + intent_f1) / 2.0
+        score = float(metrics["domain_intent"]["thresholded"].get("micro_f1", 0.0))
         if score > best_score or (score == best_score and threshold < best_threshold):
             best_score = score
             best_threshold = threshold
