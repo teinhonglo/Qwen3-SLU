@@ -784,29 +784,44 @@ def main() -> None:
 
     pred_rows = load_jsonl(args.pred_file)
     gt_rows = load_jsonl(args.gt_file)
-    domain_gt, domain_pred, intent_gt, intent_pred, events = collect_confusion_data(pred_rows, gt_rows, schema, mapping)
+    domain_gt, domain_pred, domain_intent_gt, domain_intent_pred, events = collect_confusion_data(
+        pred_rows, gt_rows, schema, mapping
+    )
 
     domain_labels = schema.domains + [NONE_LABEL, EMPTY_LABEL]
-    intent_labels = [intent_display_label(domain, intent) for domain, intent in schema.domain_intents] + [NONE_LABEL, EMPTY_LABEL]
+    domain_intent_labels = [
+        intent_display_label(domain, intent) for domain, intent in schema.domain_intents
+    ] + [NONE_LABEL, EMPTY_LABEL]
 
     domain_count_df = build_matrix(domain_gt, domain_pred, domain_labels)
-    intent_count_df = build_matrix(intent_gt, intent_pred, intent_labels)
+    domain_intent_count_df = build_matrix(domain_intent_gt, domain_intent_pred, domain_intent_labels)
 
     save_count_and_normalized_csv(domain_count_df, args.output_dir, "domain_confusion_matrix")
-    save_count_and_normalized_csv(intent_count_df, args.output_dir, "intent_confusion_matrix")
+    # Keep the historical intent_* output names for compatibility.  These labels are
+    # already domain-scoped ("domain / intent"), so also write explicit
+    # domain_intent_* aliases to make the joint confusion matrix easy to find.
+    save_count_and_normalized_csv(domain_intent_count_df, args.output_dir, "intent_confusion_matrix")
+    save_count_and_normalized_csv(domain_intent_count_df, args.output_dir, "domain_intent_confusion_matrix")
     if not args.skip_plots:
         configure_fonts()
         plot_heatmap(domain_count_df, os.path.join(args.output_dir, "domain_confusion_matrix.png"), "Domain Confusion Matrix", False)
         plot_heatmap(
-            intent_count_df,
+            domain_intent_count_df,
             os.path.join(args.output_dir, "intent_confusion_matrix.png"),
             "Intent Confusion Matrix",
             True,
             annotate=None,
         )
+        plot_heatmap(
+            domain_intent_count_df,
+            os.path.join(args.output_dir, "domain_intent_confusion_matrix.png"),
+            "Domain-Intent Confusion Matrix",
+            True,
+            annotate=None,
+        )
         if not args.no_intent_by_domain_plots:
             save_domain_intent_plots(
-                intent_count_df,
+                domain_intent_count_df,
                 schema=schema,
                 mapping=mapping,
                 output_dir=args.output_dir,
@@ -815,24 +830,32 @@ def main() -> None:
             )
 
     domain_labels_en = make_english_labels(domain_labels, mapping, intent=False)
-    intent_labels_en = make_english_labels(intent_labels, mapping, intent=True)
+    domain_intent_labels_en = make_english_labels(domain_intent_labels, mapping, intent=True)
     domain_count_en_df = relabel_dataframe(domain_count_df, domain_labels_en)
-    intent_count_en_df = relabel_dataframe(intent_count_df, intent_labels_en)
+    domain_intent_count_en_df = relabel_dataframe(domain_intent_count_df, domain_intent_labels_en)
 
     save_count_and_normalized_csv(domain_count_en_df, args.output_dir, "domain_confusion_matrix_en")
-    save_count_and_normalized_csv(intent_count_en_df, args.output_dir, "intent_confusion_matrix_en")
+    save_count_and_normalized_csv(domain_intent_count_en_df, args.output_dir, "intent_confusion_matrix_en")
+    save_count_and_normalized_csv(domain_intent_count_en_df, args.output_dir, "domain_intent_confusion_matrix_en")
     if not args.skip_plots:
         plot_heatmap(domain_count_en_df, os.path.join(args.output_dir, "domain_confusion_matrix_en.png"), "Domain Confusion Matrix", False)
         plot_heatmap(
-            intent_count_en_df,
+            domain_intent_count_en_df,
             os.path.join(args.output_dir, "intent_confusion_matrix_en.png"),
             "Intent Confusion Matrix",
             True,
             annotate=None,
         )
+        plot_heatmap(
+            domain_intent_count_en_df,
+            os.path.join(args.output_dir, "domain_intent_confusion_matrix_en.png"),
+            "Domain-Intent Confusion Matrix",
+            True,
+            annotate=None,
+        )
         if not args.no_intent_by_domain_plots:
             save_domain_intent_plots(
-                intent_count_df,
+                domain_intent_count_df,
                 schema=schema,
                 mapping=mapping,
                 output_dir=args.output_dir,
@@ -855,6 +878,10 @@ def main() -> None:
     else:
         print(f"Saved domain confusion matrix to {os.path.join(args.output_dir, 'domain_confusion_matrix.png')}")
         print(f"Saved intent confusion matrix to {os.path.join(args.output_dir, 'intent_confusion_matrix.png')}")
+        print(
+            f"Saved domain-intent confusion matrix to "
+            f"{os.path.join(args.output_dir, 'domain_intent_confusion_matrix.png')}"
+        )
         if not args.no_intent_by_domain_plots:
             print(f"Saved per-domain intent matrices to {os.path.join(args.output_dir, 'intent_by_domain')}")
     print(f"Saved hallucination report to {os.path.join(args.output_dir, 'hallucination.txt')}")
