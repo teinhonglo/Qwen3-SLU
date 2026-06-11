@@ -1,17 +1,17 @@
 #!/bin/bash
 # MAC-SLU prototype bootstrapping pipeline.
 #
-# Stage 0 builds the MAC-SLU schema used by prototype label maps.
+# Stage 0 builds the MAC-SLU schema and domain-intents.txt used by prototype label maps.
 
-# Stage 1 builds domain/intent prototype vectors from the labels in json_root.
+# Stage 1 builds domain-intent prototype vectors from the labels in json_root.
 #         If src_model is non-empty, hidden states are extracted from that
 #         experiment/checkpoint. If src_model is empty, the model is initialized
 #         from downstream_train_conf and used only as the embedding source.
 # Stage 2 trains the prototype-only Qwen3-ASR model initialized from the Stage 1
 #         prototype JSON.
 # Stage 3 uses the trained prototype-only model to predict train/dev/test
-#         domain-intent candidates, writes metrics_proto.txt for every split,
-#         and creates ${json_root}_prototype.
+#         joint domain-intent candidates, writes metrics_proto.txt for every split,
+#         and creates ${json_root}_prototype_joint.
 # Stage 4 trains the regular MAC-SLU model on the prototype-augmented JSONL data
 #         by invoking run_macslu.sh with --json_root.
 
@@ -61,10 +61,11 @@ stop_stage=1000
 . ./local/parse_options.sh
 . ./path.sh
 
-prototype_json_root=${json_root}_prototype
-downstream_exp_root=${exp_root}_prototype
+prototype_json_root=${json_root}_prototype_joint
+downstream_exp_root=${exp_root}_prototype_joint
 prototype_schema_path=${prototype_json_root}/schema.json
-prototype_exp_dir=${exp_root}/prototype
+prototype_domain_intents_txt=${prototype_json_root}/domain-intents.txt
+prototype_exp_dir=${exp_root}/prototype_joint
 prototype_runtime_conf=${prototype_json_root}/prototype_runtime.json
 prototype_init_json=${prototype_json_root}/prototype_init.json
 prototype_train_examples_jsonl=${prototype_json_root}/prototype_train_examples.jsonl
@@ -134,12 +135,16 @@ prototype_checkpoint_opt() {
 }
 
 if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
-    echo "Stage 0: Build MAC-SLU prototype schema"
+    echo "Stage 0: Build MAC-SLU joint prototype schema"
     mkdir -p "$prototype_json_root"
 
     python local/build_macslu_schema.py \
         --input_jsonls "${json_root}/train.jsonl" "${json_root}/dev.jsonl" \
         --output_json "$prototype_schema_path"
+    python local/build_macslu_domain_intents.py \
+        --input_jsonls "${json_root}/train.jsonl" "${json_root}/dev.jsonl" \
+        --labels_path "$labels_path" \
+        --output_txt "$prototype_domain_intents_txt"
 fi
 
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
@@ -164,7 +169,7 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
             build_source_opts+=(--train_conf "$downstream_train_conf")
             echo "[info] src_model is empty; build prototypes from downstream_train_conf: $downstream_train_conf"
         fi
-        
+
         CUDA_VISIBLE_DEVICES=$gpuid \
             python local/build_macslu_prototypes.py \
                 --train_jsonl "${json_root}/train.jsonl" \
@@ -193,7 +198,7 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
 fi
 
 if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
-    echo "Stage 2: Train prototype-only model initialized from prototype JSON"
+    echo "Stage 2: Train joint prototype-only model initialized from prototype JSON"
     mkdir -p "$prototype_json_root"
     if [ ! -f "$prototype_init_json" ]; then
         echo "[ERROR] prototype initialization JSON not found: $prototype_init_json"
@@ -204,7 +209,7 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
 
     if [ "$skip_prototype_train" != "1" ]; then
         CUDA_VISIBLE_DEVICES=$gpuid \
-            python finetuning/qwen3_asr_sft_prototype.py \
+            python finetuning/qwen3_asr_sft_prototype_joint.py \
                 --seed "$seed" \
                 --train_conf "$prototype_runtime_conf" \
                 --train_file "${json_root}/train.jsonl" \
@@ -227,14 +232,14 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
 fi
 
 if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
-    echo "Stage 3: Prototype train/dev/test inference and jsonl generation"
+    echo "Stage 3: Joint prototype train/dev/test inference and jsonl generation"
     mkdir -p "$prototype_json_root"
     prototype_infer_opts=(--prototype_metric_ks $prototype_metric_ks)
     if [ -n "$prototype_min_similarity" ]; then
         prototype_infer_opts+=(--prototype_min_similarity "$prototype_min_similarity")
     fi
     CUDA_VISIBLE_DEVICES=$gpuid \
-        python finetuning/qwen3_asr_test_prototype.py \
+        python finetuning/qwen3_asr_test_prototype_joint.py \
             --exp_dir "$prototype_exp_dir" \
             --train_file "${json_root}/train.jsonl" \
             --eval_file "${json_root}/dev.jsonl" \
