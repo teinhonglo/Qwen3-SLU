@@ -36,7 +36,7 @@ prototype_pooling="mean_pooling"     # Match original prototype extraction defau
 
 # Step 1 source model for prototype extraction. Empty means initialize the source
 # model from downstream_train_conf instead of loading an existing experiment.
-src_model="exp/macslu_fixed/macslu_qwen3_asr_17b_ep10_lora_woemblmhead"
+src_model="exp/macslu_fixed/macslu_qwen3_asr_17b_ep20_lora_woemblmhead"
 prototype_build_checkpoint_mode="latest"  # best | latest | exp_dir; used only when src_model is non-empty.
 checkpoint_mode="best"  # best | latest | exp_dir; checkpoint used by Stage 3 inference.
 skip_build_prototypes=0
@@ -44,7 +44,7 @@ skip_prototype_train=0
 skip_prototype_tsne=0
 
 # downstream MAC-SLU config; run_macslu.sh appends the train-conf tag under this root.
-downstream_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead.json"
+downstream_train_conf="conf/macslu_qwen3_asr_17b_ep20_lora_woemblmhead.json"
 downstream_exp_root="exp/macslu_prototype"
 downstream_extra_opts=""
 
@@ -137,10 +137,17 @@ prototype_checkpoint_opt() {
 if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
     echo "Stage 0: Build MAC-SLU joint prototype schema"
     mkdir -p "$prototype_json_root"
+    
+    python local/count_macslu_intent_distribution.py \
+        --jsonl-root "$json_root" \
+        --splits train dev test \
+        --output-txt "${json_root}/intent_distribution.txt" \
+        --output-json "${json_root}/intent_distribution.json"
 
     python local/build_macslu_schema.py \
         --input_jsonls "${json_root}/train.jsonl" "${json_root}/dev.jsonl" \
         --output_json "$prototype_schema_path"
+    
     python local/build_macslu_domain_intents.py \
         --input_jsonls "${json_root}/train.jsonl" "${json_root}/dev.jsonl" \
         --labels_path "$labels_path" \
@@ -242,7 +249,7 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
         python finetuning/qwen3_asr_test_prototype_joint.py \
             --exp_dir "$prototype_exp_dir" \
             --train_file "${json_root}/train.jsonl" \
-            --eval_file "${json_root}/dev.jsonl" \
+            --dev_file "${json_root}/dev.jsonl" \
             --test_file "${json_root}/test.jsonl" \
             --output_jsonl_dir "$prototype_json_root" \
             --prediction_root "$prototype_exp_dir" \

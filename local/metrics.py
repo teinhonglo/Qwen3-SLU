@@ -120,6 +120,8 @@ def slot_mer_metric(slot_tp, slot_fp, slot_fn):
 
 
 def get_intent_group(intent_num):
+    if intent_num == 0:
+        return "0_intent"
     if intent_num == 1:
         return "1_intent"
     if intent_num == 2:
@@ -202,6 +204,7 @@ def calculate_metrics(predict_file, ground_truth_file):
     slot_match_counts = 0
     valid_slotss = 0
     intent_group_stats = {
+        "0_intent": init_group_stats(),
         "1_intent": init_group_stats(),
         "2_intent": init_group_stats(),
         "3plus_intent": init_group_stats(),

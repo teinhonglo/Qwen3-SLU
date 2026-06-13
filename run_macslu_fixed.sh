@@ -13,7 +13,7 @@ labels_path="data/macslu/labels.txt"
 splits="train dev test"
 
 stage=1
-stop_stage=2
+stop_stage=1000
 
 . ./local/parse_options.sh
 . ./path.sh
@@ -42,4 +42,14 @@ if [ ${stage} -le 2 ] && [ ${stop_stage} -ge 2 ]; then
         --labels_path "${labels_path}" \
         --splits ${splits} \
         --write_reports
+fi
+
+if [ ${stage} -le 3 ] && [ ${stop_stage} -ge 3 ]; then
+    echo "[Stage 3] Fixing MacSLU jsonl annotations with manual review.xlsx..."
+    python local/apply_manual_review_candidates.py \
+    --data-dir data-json/macslu_fixed \
+    --review-xlsx data-json/macslu_fixed/reports/manual_review.xlsx \
+    --sheet-name v1 \
+    --output-dir data-json/macslu_fixedv2 \
+    --copy-root-files
 fi

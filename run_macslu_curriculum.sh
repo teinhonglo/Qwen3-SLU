@@ -16,7 +16,7 @@ decoding_conf="conf/decoding/basic_decoding.json"
 nj=4
 gpuid=0
 suffix=
-train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead.json"
+train_conf="conf/macslu_qwen3_asr_17b_ep3_lora_woemblmhead.json"
 seed=66
 
 # stage

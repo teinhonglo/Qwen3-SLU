@@ -9,12 +9,12 @@
     },
     "slot_key": {
       "path": "exp/macslu/macslu_qwen3_asr_17b_ep10_lora_woemblmhead/dexperts_experts/slot_key",
-      "alpha": 0.8
+      "alpha": 1.0
     }
   },
   "grounding": {
     "mode": "copy_bias",
-    "strength": 1.0
+    "strength": 0.0
   },
   "schema_mask": true
 }

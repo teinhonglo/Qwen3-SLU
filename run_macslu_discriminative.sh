@@ -19,7 +19,7 @@ nbest_decoding_conf="conf/decoding/nbest_decoding.json"
 inference_mode="--auto_latest_checkpoint"
 
 # source model used to create denominator n-best hypotheses and initialize MMI training
-src_model=""
+src_model="exp/macslu_fixed/macslu_qwen3_asr_17b_ep10_lora_woemblmhead"
 mmi_init_model=""
 mmi_init_checkpoint_mode="latest"  # latest, best, or none
 mmi_train_conf=""  # default: source model train_conf.json, then train_conf
@@ -28,7 +28,7 @@ mmi_train_conf=""  # default: source model train_conf.json, then train_conf
 nj=4
 gpuid=0
 suffix=
-train_conf=conf/macslu_qwen3_asr_06b_ep10_lora.json
+train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead.json"
 seed=66
 checkpoint=
 

@@ -283,7 +283,14 @@ def process_split(split, input_dir: Path, output_dir: Path, schema, auto_rows, m
 
             if row_manual_issues:
                 manual_review_rows += 1
+            
+            prefix_info, asr_slu_str = row["text"].split("<asr_text>")
+            asr_slu_json = json.loads(asr_slu_str)
+            # NOTE: Depends on locel/prepare_macslu_jsonl.py 
+            asr_slu_json["semantics"] = json.dumps(semantics, ensure_ascii=False)
+            asr_slu_str2 = json.dumps(asr_slu_json, ensure_ascii=False)
 
+            row["text"] = f"{prefix_info}<asr_text>{asr_slu_str2}"
             row["semantics"] = semantics
             fout.write(json.dumps(row, ensure_ascii=False) + "\n")
 

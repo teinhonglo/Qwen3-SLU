@@ -15,7 +15,7 @@ gpuid=0
 suffix=
 train_conf=conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead.json
 seed=66
-expert_train_conf=conf/expert/macslu_qwen3_text_expert_17b.json
+expert_train_conf=conf/expert/qwen3_text_expert_17b.json
 
 # stage
 stage=0
@@ -37,7 +37,8 @@ fi
 
 conf_tag=$(basename -s .json $train_conf)
 base_exp_dir=${exp_root}/${conf_tag}${suffix}
-expert_exp_root=$base_exp_dir/dexperts_experts
+expert_conf_tag=$(basename -s .json $expert_train_conf)
+expert_exp_root=$base_exp_dir/dexperts_experts_${expert_conf_tag}
 
 if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
     echo "Stage 0: Verify legacy MAC-SLU jsonl exists"

@@ -16,6 +16,90 @@ from matplotlib.lines import Line2D
 
 SEP = "|||"
 
+# Labels used to align with the confusion-matrix convention.
+# Empty: missing/blank/no semantic label.
+# OOD: out-of-domain label, used for domain-level invalid labels.
+# OOI: out-of-intent label, used for intent-level invalid labels.
+NONE_LABEL = "None"
+EMPTY_LABEL = "Empty"
+OOD_LABEL = "OOD"
+OOI_LABEL = "OOI"
+
+
+def clean_label(value: Any) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        value = str(value)
+    return value.strip()
+
+
+def normalize_label_for_display(label: Any, kind: str) -> str:
+    """
+    Normalize legacy labels for plotting.
+
+    Domain-level:
+        None -> OOD
+        empty/blank -> Empty
+
+    Intent-level:
+        None -> OOI
+        empty/blank -> Empty
+
+    This script receives pre-extracted embeddings, so it does not perform
+    GT/pred frame matching. It only normalizes labels already present in the
+    JSON/JSONL files.
+    """
+    label = clean_label(label)
+    kind = clean_label(kind)
+
+    if not label:
+        return EMPTY_LABEL
+
+    if label == NONE_LABEL:
+        return OOD_LABEL if kind == "domain" else OOI_LABEL
+
+    return label
+
+
+def normalize_domain_for_display(domain: Any) -> str:
+    domain = clean_label(domain)
+    if not domain:
+        return EMPTY_LABEL
+    if domain == NONE_LABEL:
+        return OOD_LABEL
+    return domain
+
+
+def normalize_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    row = dict(row)
+    kind = clean_label(row.get("kind", ""))
+    row["kind"] = kind
+    row["label"] = normalize_label_for_display(row.get("label", ""), kind)
+
+    if "domain" in row:
+        row["domain"] = normalize_domain_for_display(row.get("domain", ""))
+
+    return row
+
+
+def sort_labels(labels: Iterable[str]) -> List[str]:
+    """
+    Sort normal labels alphabetically, keep Empty near the end, and place
+    OOD/OOI at the far-right/end of legends and class ordering.
+    """
+    def key(label: str):
+        label = str(label)
+        if label == EMPTY_LABEL:
+            return (1, 0, label)
+        if label == OOD_LABEL:
+            return (2, 0, label)
+        if label == OOI_LABEL:
+            return (2, 1, label)
+        return (0, 0, label)
+
+    return sorted(labels, key=key)
+
 
 # ============================================================
 # 0. Linux 中文字體設定
@@ -114,9 +198,14 @@ def load_jsonl(path: str) -> List[Dict[str, Any]]:
                 continue
 
             try:
-                rows.append(json.loads(line))
+                row = json.loads(line)
             except Exception as exc:
                 raise ValueError(f"Invalid JSONL at {path}:{line_id}: {exc}") from exc
+
+            if not isinstance(row, dict):
+                raise ValueError(f"JSON object expected at {path}:{line_id}")
+
+            rows.append(normalize_row(row))
 
     return rows
 
@@ -143,7 +232,7 @@ def sample_rows(
     rng = random.Random(seed)
     sampled = []
 
-    for label in sorted(groups):
+    for label in sort_labels(groups):
         vals = list(groups[label])
         rng.shuffle(vals)
         sampled.extend(vals[:max_per_label])
@@ -157,6 +246,8 @@ def prototype_rows(
     domain: str = "",
 ) -> List[Dict[str, Any]]:
     rows = []
+    kind = clean_label(kind)
+    domain = normalize_domain_for_display(domain) if domain else ""
 
     for key, item in (prototype_json.get(kind, {}) or {}).items():
         if not isinstance(item, dict):
@@ -164,7 +255,10 @@ def prototype_rows(
 
         meta = item.get("meta", {}) or {}
 
-        if domain and meta.get("domain", "") != domain:
+        raw_domain = meta.get("domain", key if kind == "domain" else "")
+        meta_domain = normalize_domain_for_display(raw_domain)
+
+        if domain and meta_domain != domain:
             continue
 
         vec = item.get("vector", []) or []
@@ -172,14 +266,17 @@ def prototype_rows(
         if not vec:
             continue
 
+        raw_label = meta.get("label", key.split(SEP)[-1])
+        label = normalize_label_for_display(raw_label, kind)
+
         rows.append(
             {
                 "split": "prototype",
                 "kind": kind,
                 "key": key,
-                "label": meta.get("label", key.split(SEP)[-1]),
-                "domain": meta.get("domain", key if kind == "domain" else ""),
-                "intent": meta.get("intent", ""),
+                "label": label,
+                "domain": meta_domain,
+                "intent": normalize_label_for_display(meta.get("intent", ""), "intent"),
                 "vector": vec,
                 "count": item.get("count", 0),
             }
@@ -228,7 +325,7 @@ def run_tsne(
 
 
 def color_map(labels: List[str], plt_module):
-    unique = sorted(set(labels))
+    unique = sort_labels(set(labels))
     cmap_name = "tab20" if len(unique) <= 20 else "hsv"
     cmap = plt_module.get_cmap(cmap_name, max(len(unique), 1))
 
@@ -290,7 +387,7 @@ def plot_rows(
         if not idxs:
             continue
 
-        for label in sorted({labels[i] for i in idxs}):
+        for label in sort_labels({labels[i] for i in idxs}):
             label_idxs = [
                 i
                 for i in idxs
@@ -333,7 +430,7 @@ def plot_rows(
             markersize=8,
             linestyle="None",
         )
-        for label in sorted(colors)
+        for label in sort_labels(colors)
     ]
 
     marker_handles = [
@@ -473,9 +570,9 @@ def main():
         args.annotate_prototypes,
     )
 
-    domains = sorted(
+    domains = sort_labels(
         set(
-            r.get("domain", "")
+            normalize_domain_for_display(r.get("domain", ""))
             for r in train_rows + test_rows
             if r.get("kind") == "intent" and r.get("domain", "")
         )

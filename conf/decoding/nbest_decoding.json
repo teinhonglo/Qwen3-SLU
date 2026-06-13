@@ -9,8 +9,8 @@
       "top_p": 1.0,
       "top_k": 0,
       "repetition_penalty": 1.0,
-      "num_return_sequences": 8,
-      "beam_size": 8
+      "num_return_sequences": 10,
+      "beam_size": 5
     },
     "dola": {
       "enabled": false,

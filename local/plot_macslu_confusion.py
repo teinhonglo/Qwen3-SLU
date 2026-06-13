@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
-NONE_LABEL = "None"
+OOD_LABEL = "OOD"
+OOI_LABEL = "OOI"
 EMPTY_LABEL = "Empty"
 MISSING_MAPPING_FILENAME = "missing_label_mapping.txt"
 OTHER_DOMAIN_LABEL = "Other domain"
@@ -145,38 +146,16 @@ def get_semantics(row: Dict[str, Any], key: str) -> List[Any]:
 
 
 def intent_display_label(domain: str, intent: str) -> str:
-    if intent in {NONE_LABEL, EMPTY_LABEL}:
+    if intent in {OOI_LABEL, EMPTY_LABEL}:
         return intent
-    if domain in {NONE_LABEL, EMPTY_LABEL, ""}:
+    if domain in {OOD_LABEL, EMPTY_LABEL, ""}:
         return intent
     return f"{domain} / {intent}"
 
 
 def validate_gt_frame(frame: Any, schema: LabelSchema) -> SemanticFrame:
     if not isinstance(frame, dict):
-        return SemanticFrame(frame, "", "", NONE_LABEL, NONE_LABEL, ["malformed_gt_frame"], malformed=True)
-
-    domain = clean_label(frame.get("domain"))
-    intent = clean_label(frame.get("intent"))
-    domain_label = domain if domain in schema.valid_domains else (NONE_LABEL if domain else EMPTY_LABEL)
-    if domain and intent and (domain, intent) in schema.valid_domain_intents:
-        intent_label = intent_display_label(domain, intent)
-    elif intent:
-        intent_label = NONE_LABEL
-    else:
-        intent_label = EMPTY_LABEL
-
-    reasons: List[str] = []
-    if domain_label == NONE_LABEL:
-        reasons.append("invalid_gt_domain")
-    if intent_label == NONE_LABEL:
-        reasons.append("invalid_gt_intent")
-    return SemanticFrame(frame, domain, intent, domain_label, intent_label, reasons)
-
-
-def validate_pred_frame(frame: Any, schema: LabelSchema) -> SemanticFrame:
-    if not isinstance(frame, dict):
-        return SemanticFrame(frame, "", "", NONE_LABEL, NONE_LABEL, ["malformed_frame"], malformed=True)
+        return SemanticFrame(frame, "", "", OOD_LABEL, OOI_LABEL, ["malformed_gt_frame"], malformed=True)
 
     domain = clean_label(frame.get("domain"))
     intent = clean_label(frame.get("intent"))
@@ -185,14 +164,47 @@ def validate_pred_frame(frame: Any, schema: LabelSchema) -> SemanticFrame:
     if not domain:
         domain_label = EMPTY_LABEL
         if intent:
-            intent_label = NONE_LABEL
+            intent_label = OOI_LABEL
+            reasons.append("missing_gt_domain")
+        else:
+            intent_label = EMPTY_LABEL
+    elif domain not in schema.valid_domains:
+        domain_label = OOD_LABEL
+        intent_label = OOI_LABEL
+        reasons.append("out_of_gt_domain")
+    else:
+        domain_label = domain
+        if not intent:
+            intent_label = EMPTY_LABEL
+        elif (domain, intent) in schema.valid_domain_intents:
+            intent_label = intent_display_label(domain, intent)
+        else:
+            intent_label = OOI_LABEL
+            valid_elsewhere = any((other_domain, intent) in schema.valid_domain_intents for other_domain in schema.domains)
+            reasons.append("out_of_gt_domain_intent_pair" if valid_elsewhere else "out_of_gt_intent")
+
+    return SemanticFrame(frame, domain, intent, domain_label, intent_label, reasons)
+
+
+def validate_pred_frame(frame: Any, schema: LabelSchema) -> SemanticFrame:
+    if not isinstance(frame, dict):
+        return SemanticFrame(frame, "", "", OOD_LABEL, OOI_LABEL, ["malformed_frame"], malformed=True)
+
+    domain = clean_label(frame.get("domain"))
+    intent = clean_label(frame.get("intent"))
+    reasons: List[str] = []
+
+    if not domain:
+        domain_label = EMPTY_LABEL
+        if intent:
+            intent_label = OOI_LABEL
             reasons.append("missing_domain")
         else:
             intent_label = EMPTY_LABEL
     elif domain not in schema.valid_domains:
-        domain_label = NONE_LABEL
-        intent_label = NONE_LABEL
-        reasons.append("invalid_domain")
+        domain_label = OOD_LABEL
+        intent_label = OOI_LABEL
+        reasons.append("out_of_domain")
     else:
         domain_label = domain
         if not intent:
@@ -201,9 +213,9 @@ def validate_pred_frame(frame: Any, schema: LabelSchema) -> SemanticFrame:
         elif (domain, intent) in schema.valid_domain_intents:
             intent_label = intent_display_label(domain, intent)
         else:
-            intent_label = NONE_LABEL
+            intent_label = OOI_LABEL
             valid_elsewhere = any((other_domain, intent) in schema.valid_domain_intents for other_domain in schema.domains)
-            reasons.append("invalid_domain_intent_pair" if valid_elsewhere else "invalid_intent")
+            reasons.append("out_of_domain_intent_pair" if valid_elsewhere else "out_of_intent")
 
     return SemanticFrame(frame, domain, intent, domain_label, intent_label, reasons)
 
@@ -211,7 +223,7 @@ def validate_pred_frame(frame: Any, schema: LabelSchema) -> SemanticFrame:
 def frame_match_score(gt: SemanticFrame, pred: SemanticFrame) -> int:
     if gt.domain and pred.domain and gt.domain == pred.domain and gt.intent and pred.intent and gt.intent == pred.intent:
         return 100
-    if gt.domain_label not in {NONE_LABEL, EMPTY_LABEL} and gt.domain_label == pred.domain_label:
+    if gt.domain_label not in {OOD_LABEL, EMPTY_LABEL} and gt.domain_label == pred.domain_label:
         if gt.intent and pred.intent:
             return 80
         return 70
@@ -219,7 +231,7 @@ def frame_match_score(gt: SemanticFrame, pred: SemanticFrame) -> int:
         return 60
     if pred.domain_label == EMPTY_LABEL or pred.intent_label == EMPTY_LABEL:
         return 10
-    if pred.domain_label == NONE_LABEL or pred.intent_label == NONE_LABEL:
+    if pred.domain_label == OOD_LABEL or pred.intent_label == OOI_LABEL:
         return 5
     return 1
 
@@ -290,13 +302,13 @@ def append_event(
 
 
 def translate_label(label: str, mapping: Dict[str, str]) -> str:
-    if label in {NONE_LABEL, EMPTY_LABEL, ""}:
+    if label in {OOD_LABEL, OOI_LABEL, EMPTY_LABEL, ""}:
         return label
     return mapping.get(label, label)
 
 
 def translate_intent_display(label: str, mapping: Dict[str, str]) -> str:
-    if label in {NONE_LABEL, EMPTY_LABEL, ""}:
+    if label in {OOD_LABEL, OOI_LABEL, EMPTY_LABEL, ""}:
         return label
     if " / " not in label:
         return translate_label(label, mapping)
@@ -534,14 +546,37 @@ def drop_empty_rows_and_columns(count_df, keep_rows: Optional[Sequence[str]] = N
         count_df = count_df.loc[:, col_mask]
     return count_df
 
+def drop_absent_square_labels(count_df, keep_labels: Optional[Sequence[str]] = None):
+    """
+    Remove labels whose annotation count and prediction count are both zero.
+
+    This keeps the matrix square:
+    - row sum > 0 means the label appears as annotation
+    - column sum > 0 means the label appears as prediction
+    - both zero means the label never appears and can be hidden from the plot
+    """
+    keep_labels = set(keep_labels or [])
+
+    row_sum = count_df.sum(axis=1)
+    col_sum = count_df.sum(axis=0)
+
+    labels_to_keep = [
+        label for label in count_df.index
+        if row_sum.get(label, 0) > 0
+        or col_sum.get(label, 0) > 0
+        or label in keep_labels
+    ]
+
+    return count_df.loc[labels_to_keep, labels_to_keep]
+
 
 def build_domain_intent_matrix(full_count_df, domain: str, intents: Sequence[str], drop_empty: bool = True):
     import pandas as pd
 
     domain_labels = [intent_display_label(domain, intent) for intent in intents]
-    explicit_lookup_cols = domain_labels + [NONE_LABEL, EMPTY_LABEL]
-    # Keep Empty as the final displayed class, and always keep Other domain visible.
-    output_cols = domain_labels + [NONE_LABEL, OTHER_DOMAIN_LABEL, EMPTY_LABEL]
+    explicit_lookup_cols = domain_labels + [EMPTY_LABEL, OOI_LABEL]
+    # Keep OOI as the rightmost displayed class, and always keep Other domain visible.
+    output_cols = domain_labels + [OTHER_DOMAIN_LABEL, EMPTY_LABEL, OOI_LABEL]
 
     rows = []
     for row_label in domain_labels:
@@ -549,7 +584,7 @@ def build_domain_intent_matrix(full_count_df, domain: str, intents: Sequence[str
             continue
 
         row_values = {}
-        for col_label in domain_labels + [NONE_LABEL, EMPTY_LABEL]:
+        for col_label in domain_labels + [EMPTY_LABEL, OOI_LABEL]:
             row_values[col_label] = int(full_count_df.loc[row_label, col_label]) if col_label in full_count_df.columns else 0
 
         other_sum = 0
@@ -566,7 +601,7 @@ def build_domain_intent_matrix(full_count_df, domain: str, intents: Sequence[str
     if drop_empty:
         out_df = drop_empty_rows_and_columns(
             out_df,
-            keep_cols=[NONE_LABEL, OTHER_DOMAIN_LABEL, EMPTY_LABEL],
+            keep_cols=[OTHER_DOMAIN_LABEL, EMPTY_LABEL, OOI_LABEL],
         )
     return out_df
 
@@ -708,6 +743,16 @@ def collect_confusion_data(
         text_id = clean_label(gt_row.get("text_id") or pred_row.get("text_id") or f"line_{row_idx}")
         gt_frames = [validate_gt_frame(frame, schema) for frame in get_semantics(gt_row, "semantics")]
         pred_frames = [validate_pred_frame(frame, schema) for frame in get_semantics(pred_row, "pred_semantics")]
+
+        # Count no-frame utterances as Empty -> Empty in both domain- and intent-level matrices.
+        # This makes GT semantics=[] and prediction semantics=[] explicit true-empty cases.
+        if not gt_frames and not pred_frames:
+            domain_gt.append(EMPTY_LABEL)
+            domain_pred.append(EMPTY_LABEL)
+            intent_gt.append(EMPTY_LABEL)
+            intent_pred.append(EMPTY_LABEL)
+            continue
+
         pairs = pair_frames(gt_frames, pred_frames)
 
         for gt_idx, pred_idx in pairs:
@@ -788,10 +833,10 @@ def main() -> None:
         pred_rows, gt_rows, schema, mapping
     )
 
-    domain_labels = schema.domains + [NONE_LABEL, EMPTY_LABEL]
+    domain_labels = schema.domains + [EMPTY_LABEL, OOD_LABEL]
     domain_intent_labels = [
         intent_display_label(domain, intent) for domain, intent in schema.domain_intents
-    ] + [NONE_LABEL, EMPTY_LABEL]
+    ] + [EMPTY_LABEL, OOI_LABEL]
 
     domain_count_df = build_matrix(domain_gt, domain_pred, domain_labels)
     domain_intent_count_df = build_matrix(domain_intent_gt, domain_intent_pred, domain_intent_labels)
@@ -804,6 +849,16 @@ def main() -> None:
     save_count_and_normalized_csv(domain_intent_count_df, args.output_dir, "domain_intent_confusion_matrix")
     if not args.skip_plots:
         configure_fonts()
+
+        domain_plot_df = drop_absent_square_labels(
+            domain_count_df,
+            keep_labels=[EMPTY_LABEL, OOD_LABEL],
+        )
+        domain_intent_plot_df = drop_absent_square_labels(
+            domain_intent_count_df,
+            keep_labels=[EMPTY_LABEL, OOI_LABEL],
+        )
+
         plot_heatmap(domain_count_df, os.path.join(args.output_dir, "domain_confusion_matrix.png"), "Domain Confusion Matrix", False)
         plot_heatmap(
             domain_intent_count_df,

@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("Qwen3-ASR MAC-SLU prototype domain/intent inference")
     p.add_argument("--exp_dir", type=str, required=True)
     p.add_argument("--train_file", type=str, required=True)
-    p.add_argument("--eval_file", type=str, required=True)
+    p.add_argument("--dev_file", type=str, required=True)
     p.add_argument("--test_file", type=str, required=True)
     p.add_argument("--output_jsonl_dir", type=str, default="data-json/macslu_prototype")
     p.add_argument("--prediction_root", type=str, default="")
@@ -602,7 +602,7 @@ def run_inference_and_build_data(args: argparse.Namespace) -> None:
     metric_ks = sorted({int(k) for k in args.prototype_metric_ks if int(k) > 0 and int(k) <= prototype_top_k} | {prototype_top_k})
     prompt_template = get_prompt_template(prototype_conf)
     prototype_source = str(prototype_conf.get("prototype_source", "audio_only"))
-    split_to_file = {"train": args.train_file, "dev": args.eval_file, "test": args.test_file}
+    split_to_file = {"train": args.train_file, "dev": args.dev_file, "test": args.test_file}
     prediction_root = args.prediction_root or args.exp_dir
     auto_min_similarity = is_auto_min_similarity(args.prototype_min_similarity)
     initial_min_similarity = None if auto_min_similarity else args.prototype_min_similarity

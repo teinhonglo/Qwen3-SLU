@@ -25,7 +25,7 @@ seed=66
 checkpoint=
 
 # stage
-stage=0
+stage=1
 stop_stage=1000
 test_sets="test"
 
