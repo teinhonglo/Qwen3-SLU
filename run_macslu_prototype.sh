@@ -11,7 +11,7 @@
 #         prototype JSON.
 # Stage 3 uses the trained prototype-only model to predict train/dev/test
 #         domain-intent candidates, writes metrics_proto.txt for every split,
-#         and creates ${json_root}_prototype.
+#         and creates a prototype-variant-scoped ${json_root}_prototype_* root.
 # Stage 4 trains the regular MAC-SLU model on the prototype-augmented JSONL data
 #         by invoking run_macslu.sh with --json_root.
 
@@ -31,8 +31,9 @@ prototype_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead_prototype.
 prototype_top_k=5
 prototype_min_similarity="-1"       # -1 auto-selects on dev; empty keeps all top-k candidates in generated data-json prompts.
 prototype_metric_ks="1 3 5"       # IR metric cutoffs used by Stage 3.
-prototype_source="audio_only"       # Match local/build_macslu_prototypes.py default: audio_only | audio_prompt | audio_prefix | text_prefix
-prototype_pooling="mean_pooling"     # Match original prototype extraction default: mean_pooling | last_hidden_state
+prototype_source="audio_prompt"       # audio_only | audio_prompt | audio_prefix | text_prefix
+prototype_pooling="last_hidden_state" # mean_pooling | last_hidden_state
+prototype_variant=""                  # Empty auto-tags output dirs as ${prototype_source}_${prototype_pooling}.
 
 # Step 1 source model for prototype extraction. Empty means initialize the source
 # model from downstream_train_conf instead of loading an existing experiment.
@@ -61,10 +62,14 @@ stop_stage=1000
 . ./local/parse_options.sh
 . ./path.sh
 
-prototype_json_root=${json_root}_prototype
-downstream_exp_root=${exp_root}_prototype
+if [ "$prototype_variant" = "" ]; then
+    prototype_variant="${prototype_source}_${prototype_pooling}"
+fi
+
+prototype_json_root=${json_root}_prototype_${prototype_variant}
+downstream_exp_root=${exp_root}_prototype_${prototype_variant}
 prototype_schema_path=${prototype_json_root}/schema.json
-prototype_exp_dir=${exp_root}/prototype
+prototype_exp_dir=${exp_root}/prototype_${prototype_variant}
 prototype_runtime_conf=${prototype_json_root}/prototype_runtime.json
 prototype_init_json=${prototype_json_root}/prototype_init.json
 prototype_train_examples_jsonl=${prototype_json_root}/prototype_train_examples.jsonl
