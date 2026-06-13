@@ -33,7 +33,7 @@ prototype_min_similarity="-1"       # -1 auto-selects on dev; empty keeps all to
 prototype_metric_ks="1 3 5"       # IR metric cutoffs used by Stage 3.
 prototype_source="audio_prompt"       # audio_only | audio_prompt | audio_prefix | text_prefix
 prototype_pooling="last_hidden_state" # mean_pooling | last_hidden_state
-prototype_variant=""                  # Empty auto-tags output dirs as ${prototype_source}_${prototype_pooling}.
+prototype_variant=""                  # Empty auto-tags output dirs as ${prototype_source}_${prototype_pooling}_${src_model ep tag}.
 
 # Step 1 source model for prototype extraction. Empty means initialize the source
 # model from downstream_train_conf instead of loading an existing experiment.
@@ -62,8 +62,18 @@ stop_stage=1000
 . ./local/parse_options.sh
 . ./path.sh
 
+prototype_src_ep="src_ep_unknown"
+if [ "$src_model" = "" ]; then
+    prototype_src_ep="no_src_model"
+else
+    src_model_name=$(basename "$src_model")
+    if [[ "$src_model_name" =~ (^|[_-])ep([0-9]+)($|[_-]) ]]; then
+        prototype_src_ep="ep${BASH_REMATCH[2]}"
+    fi
+fi
+
 if [ "$prototype_variant" = "" ]; then
-    prototype_variant="${prototype_source}_${prototype_pooling}"
+    prototype_variant="${prototype_source}_${prototype_pooling}_${prototype_src_ep}"
 fi
 
 prototype_json_root=${json_root}_prototype_joint_${prototype_variant}
