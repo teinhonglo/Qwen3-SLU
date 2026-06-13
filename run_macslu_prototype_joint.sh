@@ -31,8 +31,9 @@ prototype_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead_prototype.
 prototype_top_k=5
 prototype_min_similarity="-1"       # -1 auto-selects on dev; empty keeps all top-k candidates in generated data-json prompts.
 prototype_metric_ks="1 3 5"       # IR metric cutoffs used by Stage 3.
-prototype_source="audio_only"       # Match local/build_macslu_prototypes.py default: audio_only | audio_prompt | audio_prefix | text_prefix
-prototype_pooling="mean_pooling"     # Match original prototype extraction default: mean_pooling | last_hidden_state
+prototype_source="audio_prompt"       # audio_only | audio_prompt | audio_prefix | text_prefix
+prototype_pooling="last_hidden_state" # mean_pooling | last_hidden_state
+prototype_variant=""                  # Empty auto-tags output dirs as ${prototype_source}_${prototype_pooling}.
 
 # Step 1 source model for prototype extraction. Empty means initialize the source
 # model from downstream_train_conf instead of loading an existing experiment.
@@ -61,11 +62,15 @@ stop_stage=1000
 . ./local/parse_options.sh
 . ./path.sh
 
-prototype_json_root=${json_root}_prototype_joint
-downstream_exp_root=${exp_root}_prototype_joint
+if [ "$prototype_variant" = "" ]; then
+    prototype_variant="${prototype_source}_${prototype_pooling}"
+fi
+
+prototype_json_root=${json_root}_prototype_joint_${prototype_variant}
+downstream_exp_root=${exp_root}_prototype_joint_${prototype_variant}
 prototype_schema_path=${prototype_json_root}/schema.json
 prototype_domain_intents_txt=${prototype_json_root}/domain-intents.txt
-prototype_exp_dir=${exp_root}/prototype_joint
+prototype_exp_dir=${exp_root}/prototype_joint_${prototype_variant}
 prototype_runtime_conf=${prototype_json_root}/prototype_runtime.json
 prototype_init_json=${prototype_json_root}/prototype_init.json
 prototype_train_examples_jsonl=${prototype_json_root}/prototype_train_examples.jsonl
