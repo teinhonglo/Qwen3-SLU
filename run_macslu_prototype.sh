@@ -54,6 +54,7 @@ gpuid=0
 suffix=
 seed=66
 checkpoint=
+prototype_init_from_checkpoint=""  # Optional LoRA/QLoRA adapter warm-start for Stage 2.
 
 # stage config
 stage=0
@@ -100,6 +101,11 @@ if [ "$checkpoint" != "" ]; then
 else
     prototype_resume_opts=""
 fi
+if [ "$prototype_init_from_checkpoint" != "" ]; then
+    prototype_init_opts="--init_from_checkpoint $prototype_init_from_checkpoint"
+else
+    prototype_init_opts=""
+fi
 
 write_prototype_runtime_conf() {
     local output_conf=$1
@@ -114,8 +120,6 @@ with open(src, "r", encoding="utf-8") as f:
 if not isinstance(cfg, list) or len(cfg) != 2:
     raise ValueError("prototype_train_conf must be [training_args, model_args]")
 model_args = cfg[1]
-model_args.pop("lora_config", None)
-model_args["lora_type"] = "full"
 proto = dict(model_args.get("prototype", {}) or {})
 proto["enabled"] = True
 proto["labels_path"] = labels_path
@@ -226,7 +230,8 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
                 --eval_file "${json_root}/dev.jsonl" \
                 --output_dir "$prototype_exp_dir" \
                 --device cuda:0 \
-                $prototype_resume_opts
+                $prototype_resume_opts \
+                $prototype_init_opts
     else
         echo "[info] skip final prototype-only training; reuse $prototype_exp_dir"
     fi
