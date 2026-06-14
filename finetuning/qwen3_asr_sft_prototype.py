@@ -517,6 +517,7 @@ def get_prototype_base_model(model):
 def apply_lora_if_configured(model, model_args_conf: Dict[str, Any], init_from_checkpoint: str = ""):
     lora_config = model_args_conf.get("lora_config", None)
     lora_type = str(model_args_conf.get("lora_type", "default")).lower()
+    
     if lora_type == "adapter_head":
         if lora_config is not None:
             raise ValueError('lora_type="adapter_head" expects lora_config to be null')
@@ -536,6 +537,7 @@ def apply_lora_if_configured(model, model_args_conf: Dict[str, Any], init_from_c
         print(f"trainable params: {trainable:,} || all params: {total:,} || trainable%: {100 * trainable / max(total, 1):.6f}")
         print("=" * 100)
         return model
+      
     if not lora_config:
         if init_from_checkpoint:
             raise ValueError("--init_from_checkpoint currently supports LoRA/QLoRA checkpoints only")
