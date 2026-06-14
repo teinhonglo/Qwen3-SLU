@@ -460,6 +460,8 @@ def prepare_full_finetune_conf(train_conf_path: str) -> Tuple[List[Dict[str, Any
     training_args_conf, model_args_conf = dict(train_conf[0]), dict(train_conf[1])
     prototype_conf = dict(model_args_conf.get("prototype", {}) or {})
     prototype_conf["enabled"] = True
+    lora_type = str(model_args_conf.get("lora_type", "default")).lower()
+    prototype_conf["use_projection_head"] = lora_type == "adapter_head"
 
     prototype_json = resolve_prototype_json_path(prototype_conf)
     prototype_index = PrototypeIndex.load(prototype_json) if prototype_json else None
@@ -503,6 +505,26 @@ def get_prototype_base_model(model):
 def apply_lora_if_configured(model, model_args_conf: Dict[str, Any], init_from_checkpoint: str = ""):
     lora_config = model_args_conf.get("lora_config", None)
     lora_type = str(model_args_conf.get("lora_type", "default")).lower()
+    if lora_type == "adapter_head":
+        if lora_config is not None:
+            raise ValueError('lora_type="adapter_head" expects lora_config to be null')
+        if init_from_checkpoint:
+            raise ValueError("--init_from_checkpoint currently supports LoRA/QLoRA checkpoints only")
+        print("Adapter-head prototype finetuning: freeze backbone, train prototype_head only")
+        for param in model.parameters():
+            param.requires_grad = False
+        head = getattr(model.thinker, "prototype_head", None)
+        if head is None:
+            raise RuntimeError("prototype_head is not enabled")
+        for param in head.parameters():
+            param.requires_grad = True
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in model.parameters())
+        print("=" * 100)
+        print(f"trainable params: {trainable:,} || all params: {total:,} || trainable%: {100 * trainable / max(total, 1):.6f}")
+        print("=" * 100)
+        return model
+
     if not lora_config:
         if init_from_checkpoint:
             raise ValueError("--init_from_checkpoint currently supports LoRA/QLoRA checkpoints only")

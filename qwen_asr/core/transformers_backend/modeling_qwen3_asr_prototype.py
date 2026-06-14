@@ -26,14 +26,18 @@ class DomainIntentPrototypeHead(nn.Module):
         num_intents: int,
         temperature: float = 1.0,
         normalize: bool = True,
+        use_projection_head: bool = False,
     ):
         super().__init__()
+        self.query_projection = nn.Linear(int(hidden_size), int(hidden_size)) if use_projection_head else None
         self.domain_prototypes = nn.Embedding(int(num_domains), int(hidden_size))
         self.intent_prototypes = nn.Embedding(int(num_intents), int(hidden_size))
         self.temperature = float(temperature)
         self.normalize = bool(normalize)
 
     def forward(self, pooled_hidden: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.query_projection is not None:
+            pooled_hidden = self.query_projection(pooled_hidden)
         query = pooled_hidden.float()
         domain_weight = self.domain_prototypes.weight.float()
         intent_weight = self.intent_prototypes.weight.float()
@@ -60,6 +64,7 @@ class Qwen3ASRPrototypeThinkerForConditionalGeneration(Qwen3ASRThinkerForConditi
                 num_intents=self.prototype_config.get("num_intents", 0),
                 temperature=self.prototype_config.get("temperature", 1.0),
                 normalize=self.prototype_config.get("normalize", True),
+                use_projection_head=self.prototype_config.get("use_projection_head", False),
             )
         else:
             self.prototype_head = None
