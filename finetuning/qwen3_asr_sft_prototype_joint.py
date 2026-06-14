@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Prototype-only Qwen3-ASR full finetuning for MAC-SLU domain/intent labels.
+"""Prototype-only Qwen3-ASR finetuning for MAC-SLU domain/intent labels.
 
 The training target is the auxiliary prototype loss only: the collator does not
-provide autoregressive ``labels``. When the train config contains LoRA options
-they are removed, so the prototype objective is optimized with full finetuning.
+provide autoregressive ``labels``. When the train config contains LoRA options,
+the prototype objective is optimized with LoRA/QLoRA; otherwise it falls back to
+full finetuning.
 """
 
 from __future__ import annotations
@@ -21,6 +22,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import librosa
 import numpy as np
 import torch
+from peft import LoraConfig, TaskType, get_peft_model
+from peft.peft_model import PeftModel
 from transformers import AutoProcessor, BitsAndBytesConfig, GenerationConfig, Trainer, TrainerCallback, TrainingArguments
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -341,7 +344,8 @@ class CastFloatInputsTrainer(Trainer):
         with torch.no_grad():
             outputs = model(**inputs)
             loss = outputs.loss.detach() if getattr(outputs, "loss", None) is not None else None
-            domain_intent_logits = model.thinker.prototype_logits(**proto_inputs)
+            proto_model = get_prototype_base_model(model)
+            domain_intent_logits = proto_model.thinker.prototype_logits(**proto_inputs)
         logits = domain_intent_logits.detach()
         labels = domain_intent_labels.detach() if torch.is_tensor(domain_intent_labels) else domain_intent_labels
         return loss, logits, labels
@@ -427,7 +431,7 @@ def compute_prototype_metrics(eval_pred) -> Dict[str, float]:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser("Qwen3-ASR MAC-SLU prototype-only full finetuning")
+    p = argparse.ArgumentParser("Qwen3-ASR MAC-SLU prototype-only finetuning")
     p.add_argument("--train_conf", type=str, required=True)
     p.add_argument("--seed", type=int, default=66)
     p.add_argument("--train_file", type=str, required=True)
@@ -436,6 +440,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default="cuda:0")
     p.add_argument("--resume_from", type=str, default="")
     p.add_argument("--resume", type=int, default=0)
+    p.add_argument("--init_from_checkpoint", type=str, default="", help="Warm-start a LoRA/QLoRA adapter checkpoint")
     return p.parse_args()
 
 def set_seed(seed: int) -> None:
@@ -455,6 +460,8 @@ def prepare_full_finetune_conf(train_conf_path: str) -> Tuple[List[Dict[str, Any
     training_args_conf, model_args_conf = dict(train_conf[0]), dict(train_conf[1])
     prototype_conf = dict(model_args_conf.get("prototype", {}) or {})
     prototype_conf["enabled"] = True
+    lora_type = str(model_args_conf.get("lora_type", "default")).lower()
+    prototype_conf["use_projection_head"] = lora_type == "adapter_head"
 
     prototype_json = resolve_prototype_json_path(prototype_conf)
     prototype_index = PrototypeIndex.load(prototype_json) if prototype_json else None
@@ -475,11 +482,70 @@ def prepare_full_finetune_conf(train_conf_path: str) -> Tuple[List[Dict[str, Any
     prototype_conf["domain_intent_labels"] = domain_intent_labels
     prototype_conf["num_domain_intents"] = len(domain_intent_labels)
 
-    # Force full finetuning for the prototype-only objective.
-    model_args_conf.pop("lora_config", None)
-    model_args_conf["lora_type"] = "full"
     model_args_conf["prototype"] = prototype_conf
     return [training_args_conf, model_args_conf], prototype_index, domain_intent_labels
+
+
+def get_prototype_base_model(model):
+    """Return the prototype-aware base model, unwrapping PEFT adapters if needed."""
+    if hasattr(model, "thinker") and hasattr(model.thinker, "prototype_logits"):
+        return model
+    getter = getattr(model, "get_base_model", None)
+    if callable(getter):
+        base = getter()
+        if hasattr(base, "thinker") and hasattr(base.thinker, "prototype_logits"):
+            return base
+    base_model = getattr(model, "base_model", None)
+    inner = getattr(base_model, "model", None) if base_model is not None else None
+    if inner is not None and hasattr(inner, "thinker") and hasattr(inner.thinker, "prototype_logits"):
+        return inner
+    raise RuntimeError("Unable to locate prototype-aware base model")
+
+
+def apply_lora_if_configured(model, model_args_conf: Dict[str, Any], init_from_checkpoint: str = ""):
+    lora_config = model_args_conf.get("lora_config", None)
+    lora_type = str(model_args_conf.get("lora_type", "default")).lower()
+    if lora_type == "adapter_head":
+        if lora_config is not None:
+            raise ValueError('lora_type="adapter_head" expects lora_config to be null')
+        if init_from_checkpoint:
+            raise ValueError("--init_from_checkpoint currently supports LoRA/QLoRA checkpoints only")
+        print("Adapter-head prototype finetuning: freeze backbone, train prototype_head only")
+        for param in model.parameters():
+            param.requires_grad = False
+        head = getattr(model.thinker, "prototype_head", None)
+        if head is None:
+            raise RuntimeError("prototype_head is not enabled")
+        for param in head.parameters():
+            param.requires_grad = True
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in model.parameters())
+        print("=" * 100)
+        print(f"trainable params: {trainable:,} || all params: {total:,} || trainable%: {100 * trainable / max(total, 1):.6f}")
+        print("=" * 100)
+        return model
+    if not lora_config:
+        if init_from_checkpoint:
+            raise ValueError("--init_from_checkpoint currently supports LoRA/QLoRA checkpoints only")
+        print("Full Finetuning (prototype-only objective)")
+        return model
+    if lora_type not in {"default", "qlora"}:
+        raise ValueError(f"lora_type: {lora_type} is NOT implemented yet.")
+    print(f"LoRA Finetuning {lora_type} (prototype-only objective)")
+    if init_from_checkpoint:
+        print(f"[init] warm-start LoRA adapter from checkpoint = {init_from_checkpoint}")
+        model = PeftModel.from_pretrained(
+            model,
+            init_from_checkpoint,
+            is_trainable=True,
+        )
+    else:
+        peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, **lora_config)
+        model = get_peft_model(model, peft_config)
+    print("=" * 100)
+    model.print_trainable_parameters()
+    print("=" * 100)
+    return model
 
 
 def train_prototype_only(args: argparse.Namespace) -> None:
@@ -505,7 +571,10 @@ def train_prototype_only(args: argparse.Namespace) -> None:
     processor = AutoProcessor.from_pretrained(model_path, fix_mistral_regex=True)
     initialize_prototype_embeddings(model, prototype_conf, domain_intent_labels, prototype_index)
     model.generation_config = GenerationConfig.from_model_config(model.config)
-    print("Full Finetuning (prototype-only objective)")
+    init_from_checkpoint = (getattr(args, "init_from_checkpoint", "") or "").strip()
+    if init_from_checkpoint and not os.path.isdir(init_from_checkpoint):
+        raise FileNotFoundError(f"init_from_checkpoint not found: {init_from_checkpoint}")
+    model = apply_lora_if_configured(model, model_args_conf, init_from_checkpoint=init_from_checkpoint)
 
     if training_args_conf.get("gradient_checkpointing", False):
         model.config.use_cache = False
