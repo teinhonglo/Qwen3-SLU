@@ -524,7 +524,7 @@ def apply_lora_if_configured(model, model_args_conf: Dict[str, Any], init_from_c
         print(f"trainable params: {trainable:,} || all params: {total:,} || trainable%: {100 * trainable / max(total, 1):.6f}")
         print("=" * 100)
         return model
-
+    
     if not lora_config:
         if init_from_checkpoint:
             raise ValueError("--init_from_checkpoint currently supports LoRA/QLoRA checkpoints only")
