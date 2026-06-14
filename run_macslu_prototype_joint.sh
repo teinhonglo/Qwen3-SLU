@@ -25,14 +25,15 @@ json_root="data-json/macslu_fixed"
 labels_path=${data_root}/labels.txt
 prompt_file=""   # Empty uses prepare_macslu_jsonl.py built-in prompt.
 
-# prototype-only full-finetune config
-prototype_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead_prototype.json"
+# prototype-only adapter-head finetune config
+prototype_train_conf="conf/macslu_qwen3_asr_17b_ep10_adapter_head_woemblmhead_prototype.json"
 
 prototype_top_k=5
 prototype_min_similarity="-1"       # -1 auto-selects on dev; empty keeps all top-k candidates in generated data-json prompts.
 prototype_metric_ks="1 3 5"       # IR metric cutoffs used by Stage 3.
-prototype_source="audio_only"       # Match local/build_macslu_prototypes.py default: audio_only | audio_prompt | audio_prefix | text_prefix
-prototype_pooling="mean_pooling"     # Match original prototype extraction default: mean_pooling | last_hidden_state
+prototype_source="audio_prompt"       # audio_only | audio_prompt | audio_prefix | text_prefix
+prototype_pooling="last_hidden_state" # mean_pooling | last_hidden_state
+prototype_variant=""                  # Empty auto-tags output dirs as ${prototype_source}_${prototype_pooling}_${src_model ep tag}.
 
 # Step 1 source model for prototype extraction. Empty means initialize the source
 # model from downstream_train_conf instead of loading an existing experiment.
@@ -53,6 +54,7 @@ gpuid=0
 suffix=
 seed=66
 checkpoint=
+prototype_init_from_checkpoint=""  # Optional LoRA/QLoRA adapter warm-start for Stage 2.
 
 # stage config
 stage=0
@@ -61,11 +63,25 @@ stop_stage=1000
 . ./local/parse_options.sh
 . ./path.sh
 
-prototype_json_root=${json_root}_prototype_joint
-downstream_exp_root=${exp_root}_prototype_joint
+prototype_src_ep="src_ep_unknown"
+if [ "$src_model" = "" ]; then
+    prototype_src_ep="no_src_model"
+else
+    src_model_name=$(basename "$src_model")
+    if [[ "$src_model_name" =~ (^|[_-])ep([0-9]+)($|[_-]) ]]; then
+        prototype_src_ep="ep${BASH_REMATCH[2]}"
+    fi
+fi
+
+if [ "$prototype_variant" = "" ]; then
+    prototype_variant="${prototype_source}_${prototype_pooling}_${prototype_src_ep}"
+fi
+
+prototype_json_root=${json_root}_prototype_joint_${prototype_variant}
+downstream_exp_root=${exp_root}_prototype_joint_${prototype_variant}
 prototype_schema_path=${prototype_json_root}/schema.json
 prototype_domain_intents_txt=${prototype_json_root}/domain-intents.txt
-prototype_exp_dir=${exp_root}/prototype_joint
+prototype_exp_dir=${exp_root}/prototype_joint_${prototype_variant}
 prototype_runtime_conf=${prototype_json_root}/prototype_runtime.json
 prototype_init_json=${prototype_json_root}/prototype_init.json
 prototype_train_examples_jsonl=${prototype_json_root}/prototype_train_examples.jsonl
@@ -86,6 +102,11 @@ if [ "$checkpoint" != "" ]; then
 else
     prototype_resume_opts=""
 fi
+if [ "$prototype_init_from_checkpoint" != "" ]; then
+    prototype_init_opts="--init_from_checkpoint $prototype_init_from_checkpoint"
+else
+    prototype_init_opts=""
+fi
 
 write_prototype_runtime_conf() {
     local output_conf=$1
@@ -100,8 +121,6 @@ with open(src, "r", encoding="utf-8") as f:
 if not isinstance(cfg, list) or len(cfg) != 2:
     raise ValueError("prototype_train_conf must be [training_args, model_args]")
 model_args = cfg[1]
-model_args.pop("lora_config", None)
-model_args["lora_type"] = "full"
 proto = dict(model_args.get("prototype", {}) or {})
 proto["enabled"] = True
 proto["labels_path"] = labels_path
@@ -216,7 +235,8 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
                 --eval_file "${json_root}/dev.jsonl" \
                 --output_dir "$prototype_exp_dir" \
                 --device cuda:0 \
-                $prototype_resume_opts
+                $prototype_resume_opts \
+                $prototype_init_opts
     else
         echo "[info] skip final prototype-only training; reuse $prototype_exp_dir"
     fi

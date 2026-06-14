@@ -25,8 +25,10 @@ class JointDomainIntentPrototypeHead(nn.Module):
         num_domain_intents: int,
         temperature: float = 1.0,
         normalize: bool = True,
+        use_projection_head: bool = False,
     ):
         super().__init__()
+        self.query_projection = nn.Linear(int(hidden_size), int(hidden_size)) if use_projection_head else None
         # The previous independent domain_prototypes/intent_prototypes heads are
         # intentionally disabled: prototype training now predicts legal
         # domain-intent pairs directly.
@@ -35,6 +37,8 @@ class JointDomainIntentPrototypeHead(nn.Module):
         self.normalize = bool(normalize)
 
     def forward(self, pooled_hidden: torch.Tensor) -> torch.Tensor:
+        if self.query_projection is not None:
+            pooled_hidden = self.query_projection(pooled_hidden)
         query = pooled_hidden.float()
         domain_intent_weight = self.domain_intent_prototypes.weight.float()
         if self.normalize:
@@ -56,6 +60,7 @@ class Qwen3ASRJointPrototypeThinkerForConditionalGeneration(Qwen3ASRThinkerForCo
                 num_domain_intents=self.prototype_config.get("num_domain_intents", 0),
                 temperature=self.prototype_config.get("temperature", 1.0),
                 normalize=self.prototype_config.get("normalize", True),
+                use_projection_head=self.prototype_config.get("use_projection_head", False),
             )
         else:
             self.prototype_head = None
