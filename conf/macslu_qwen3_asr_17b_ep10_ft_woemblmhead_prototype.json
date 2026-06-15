@@ -25,7 +25,7 @@
             "wandb"
         ],
         "load_best_model_at_end": true,
-        "metric_for_best_model": "eval_f1",
+        "metric_for_best_model": "eval_domain_intent_all_gold_covered@5",
         "greater_is_better": true
     },
     {
