@@ -744,7 +744,12 @@ def train_prototype_only(args: argparse.Namespace) -> None:
     os.environ["WANDB_LOG_MODEL"] = str(model_args_conf.get("wandb_log_model", "false")).lower()
     training_args = TrainingArguments(output_dir=args.output_dir, do_eval=True, bf16=use_bf16, fp16=not use_bf16, **training_args_conf)
     prototype_top_k = int(prototype_conf.get("k", 5))
-    metric_ks = sorted({int(k) for k in prototype_conf.get("metric_ks", [1, 3, 5]) if int(k) > 0 and int(k) <= prototype_top_k} | {prototype_top_k})
+    
+    # Keep Stage 2 evaluation cheap: training only scores the same fixed top-k
+    # candidate set used for best-checkpoint selection.  Stage 3 inference can
+    # still report richer metric_ks for offline analysis.
+    metric_ks = [prototype_top_k]
+    
     trainer = CastFloatInputsTrainer(
         model=model,
         args=training_args,
