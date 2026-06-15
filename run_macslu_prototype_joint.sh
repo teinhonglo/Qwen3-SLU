@@ -76,6 +76,8 @@ with open(sys.argv[1], "r", encoding="utf-8") as f:
     cfg = json.load(f)
 if not isinstance(cfg, list) or len(cfg) != 2:
     raise ValueError("prototype_train_conf must be [training_args, model_args]")
+training_args = cfg[0]
+training_args.setdefault("metric_for_best_model", "eval_domain_intent_micro_f1")
 model_args = cfg[1]
 lora_type = str(model_args.get("lora_type", "default")).lower()
 lora_config = model_args.get("lora_config", None)
@@ -135,11 +137,11 @@ fi
 write_prototype_runtime_conf() {
     local output_conf=$1
     local init_json=$2
-    python - "$prototype_train_conf" "$output_conf" "$labels_path" "$prototype_schema_path" "$prototype_top_k" "$prototype_source" "$prototype_pooling" "$init_json" <<'PY'
+    python - "$prototype_train_conf" "$output_conf" "$labels_path" "$prototype_schema_path" "$prototype_top_k" "$prototype_metric_ks" "$prototype_source" "$prototype_pooling" "$init_json" <<'PY'
 import json
 import sys
 
-src, dst, labels_path, schema_path, top_k, prototype_source, prototype_pooling, init_json = sys.argv[1:]
+src, dst, labels_path, schema_path, top_k, metric_ks, prototype_source, prototype_pooling, init_json = sys.argv[1:]
 with open(src, "r", encoding="utf-8") as f:
     cfg = json.load(f)
 if not isinstance(cfg, list) or len(cfg) != 2:
@@ -153,6 +155,7 @@ proto["schema_path"] = schema_path
 proto["prototype_json"] = init_json
 proto.pop("init_path", None)
 proto["k"] = int(top_k)
+proto["metric_ks"] = [int(k) for k in metric_ks.split() if int(k) > 0]
 proto["prototype_source"] = prototype_source
 proto["pooling"] = prototype_pooling
 model_args["prototype"] = proto

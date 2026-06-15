@@ -17,7 +17,7 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import librosa
 import numpy as np
@@ -317,7 +317,7 @@ class CastFloatInputsTrainer(Trainer):
         return inputs
 
     def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
-        """Return prototype logits so Trainer can compute eval_f1.
+        """Return prototype logits so Trainer can compute prototype metrics.
 
         The base Trainer would collect the language-model logits from the Qwen3-ASR
         output, but the prototype-only objective is evaluated on the auxiliary
@@ -411,23 +411,122 @@ class DataCollatorForPrototypeOnlyFinetuning:
 
 
 
-def _micro_f1_from_logits(logits: Any, labels: Any, threshold: float = 0.5) -> float:
-    pred = torch.as_tensor(logits).float().sigmoid().ge(threshold)
+def _as_2d_scores_and_gold(logits: Any, labels: Any) -> Tuple[torch.Tensor, torch.Tensor]:
+    scores = torch.as_tensor(logits).float()
     gold = torch.as_tensor(labels).float().ge(0.5)
+    if scores.dim() == 1:
+        scores = scores.unsqueeze(0)
+    if gold.dim() == 1:
+        gold = gold.unsqueeze(0)
+    return scores, gold
+
+
+def _prediction_mask_at_k(scores: torch.Tensor, k: int) -> torch.Tensor:
+    if scores.numel() == 0:
+        return torch.zeros_like(scores, dtype=torch.bool)
+    k = max(1, min(int(k), scores.size(-1)))
+    pred = torch.zeros_like(scores, dtype=torch.bool)
+    top_idx = torch.topk(scores, k=k, dim=-1).indices
+    pred.scatter_(1, top_idx, True)
+    return pred
+
+
+def _set_metrics_from_masks(pred: torch.Tensor, gold: torch.Tensor) -> Dict[str, float]:
+    exact = (pred == gold).all(dim=1).float().mean().item() if pred.numel() else 0.0
     tp = (pred & gold).sum().item()
     fp = (pred & ~gold).sum().item()
     fn = (~pred & gold).sum().item()
     precision = tp / (tp + fp) if tp + fp else 0.0
     recall = tp / (tp + fn) if tp + fn else 0.0
-    return 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    micro_f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
 
-
-def compute_prototype_metrics(eval_pred) -> Dict[str, float]:
-    domain_intent_f1 = _micro_f1_from_logits(eval_pred.predictions, eval_pred.label_ids)
+    per_label_f1: List[float] = []
+    for label_idx in range(gold.size(1) if gold.dim() == 2 else 0):
+        label_pred = pred[:, label_idx]
+        label_gold = gold[:, label_idx]
+        label_tp = (label_pred & label_gold).sum().item()
+        label_fp = (label_pred & ~label_gold).sum().item()
+        label_fn = (~label_pred & label_gold).sum().item()
+        label_precision = label_tp / (label_tp + label_fp) if label_tp + label_fp else 0.0
+        label_recall = label_tp / (label_tp + label_fn) if label_tp + label_fn else 0.0
+        if label_tp + label_fp + label_fn:
+            per_label_f1.append(
+                2 * label_precision * label_recall / (label_precision + label_recall)
+                if label_precision + label_recall
+                else 0.0
+            )
+    macro_f1 = sum(per_label_f1) / len(per_label_f1) if per_label_f1 else 0.0
     return {
-        "domain_intent_micro_f1": domain_intent_f1,
-        "f1": domain_intent_f1,
+        "exact_match": exact,
+        "micro_precision": precision,
+        "micro_recall": recall,
+        "micro_f1": micro_f1,
+        "macro_f1": macro_f1,
     }
+
+
+def _ranking_metrics_from_scores(scores: torch.Tensor, gold: torch.Tensor, metric_ks: Sequence[int]) -> Dict[str, float]:
+    metrics: Dict[str, float] = {}
+    clean_ks = sorted({int(k) for k in metric_ks if int(k) > 0})
+    if scores.numel() == 0 or gold.numel() == 0:
+        for k in clean_ks:
+            metrics.update({f"precision@{k}": 0.0, f"recall@{k}": 0.0, f"hit@{k}": 0.0, f"all_gold_covered@{k}": 0.0, f"map@{k}": 0.0, f"mrr@{k}": 0.0})
+        return metrics
+
+    sorted_idx = torch.argsort(scores, dim=-1, descending=True)
+    denom = scores.size(0)
+    for k in clean_ks:
+        k = min(k, scores.size(-1))
+        precision_sum = recall_sum = hit_sum = covered_sum = ap_sum = rr_sum = 0.0
+        for row_idx in range(denom):
+            gold_idx = set(torch.nonzero(gold[row_idx], as_tuple=False).flatten().tolist())
+            pred_idx = sorted_idx[row_idx, :k].tolist()
+            pred_set = set(pred_idx)
+            hits = len(pred_set & gold_idx)
+            precision_sum += hits / k if k else 0.0
+            recall_sum += hits / len(gold_idx) if gold_idx else 0.0
+            hit_sum += 1.0 if hits > 0 else 0.0
+            covered_sum += 1.0 if gold_idx and gold_idx.issubset(pred_set) else 0.0
+
+            running_hits = 0
+            ap = 0.0
+            rr = 0.0
+            for rank, label_idx in enumerate(pred_idx, start=1):
+                if label_idx in gold_idx:
+                    running_hits += 1
+                    ap += running_hits / rank
+                    if rr == 0.0:
+                        rr = 1.0 / rank
+            ap_sum += ap / min(len(gold_idx), k) if gold_idx and k else 0.0
+            rr_sum += rr
+        metrics[f"precision@{k}"] = precision_sum / denom if denom else 0.0
+        metrics[f"recall@{k}"] = recall_sum / denom if denom else 0.0
+        metrics[f"hit@{k}"] = hit_sum / denom if denom else 0.0
+        metrics[f"all_gold_covered@{k}"] = covered_sum / denom if denom else 0.0
+        metrics[f"map@{k}"] = ap_sum / denom if denom else 0.0
+        metrics[f"mrr@{k}"] = rr_sum / denom if denom else 0.0
+    return metrics
+
+
+def make_compute_prototype_metrics(prototype_top_k: int, metric_ks: Sequence[int]):
+    def compute_prototype_metrics(eval_pred) -> Dict[str, float]:
+        scores, gold = _as_2d_scores_and_gold(eval_pred.predictions, eval_pred.label_ids)
+        pred = _prediction_mask_at_k(scores, prototype_top_k)
+        set_metrics = _set_metrics_from_masks(pred, gold)
+        ranking_metrics = _ranking_metrics_from_scores(scores, gold, metric_ks)
+
+        out = {f"domain_intent_{key}": value for key, value in set_metrics.items()}
+        out.update({f"domain_intent_{key}": value for key, value in ranking_metrics.items()})
+        # Keep the best-checkpoint metric used by the prototype configs explicit.
+        # With the default prototype_top_k=5 this creates:
+        #   eval_domain_intent_all_gold_covered@5
+        # after the Trainer adds its eval_ prefix.
+        best_coverage_key = f"all_gold_covered@{prototype_top_k}"
+        if best_coverage_key in ranking_metrics:
+            out[f"domain_intent_{best_coverage_key}"] = ranking_metrics[best_coverage_key]
+        return out
+
+    return compute_prototype_metrics
 
 
 def parse_args() -> argparse.Namespace:
@@ -610,6 +709,8 @@ def train_prototype_only(args: argparse.Namespace) -> None:
         os.environ["WANDB_PROJECT"] = model_args_conf["wandb_project"]
     os.environ["WANDB_LOG_MODEL"] = str(model_args_conf.get("wandb_log_model", "false")).lower()
     training_args = TrainingArguments(output_dir=args.output_dir, do_eval=True, bf16=use_bf16, fp16=not use_bf16, **training_args_conf)
+    prototype_top_k = int(prototype_conf.get("k", 5))
+    metric_ks = sorted({int(k) for k in prototype_conf.get("metric_ks", [1, 3, 5]) if int(k) > 0 and int(k) <= prototype_top_k} | {prototype_top_k})
     trainer = CastFloatInputsTrainer(
         model=model,
         args=training_args,
@@ -617,7 +718,7 @@ def train_prototype_only(args: argparse.Namespace) -> None:
         eval_dataset=ds["validation"],
         data_collator=collator,
         tokenizer=processor.tokenizer,
-        compute_metrics=compute_prototype_metrics,
+        compute_metrics=make_compute_prototype_metrics(prototype_top_k=prototype_top_k, metric_ks=metric_ks),
         callbacks=[MakeEveryCheckpointInferableCallback(processor=processor, model=model, default_prompt=default_prompt)],
     )
     os.makedirs(training_args.output_dir, exist_ok=True)
