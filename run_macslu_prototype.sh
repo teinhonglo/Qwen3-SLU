@@ -26,13 +26,14 @@ labels_path=${data_root}/labels.txt
 prompt_file=""   # Empty uses prepare_macslu_jsonl.py built-in prompt.
 
 # prototype-only adapter-head finetune config
-prototype_train_conf="conf/macslu_qwen3_asr_17b_ep10_adapter_head_woemblmhead_prototype.json"
+prototype_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead_prototype.json"
 
 prototype_top_k=5
 prototype_min_similarity="-1"       # -1 auto-selects on dev; empty keeps all top-k candidates in generated data-json prompts.
 prototype_metric_ks="1 3 5"       # IR metric cutoffs used by Stage 3.
 prototype_source="audio_prompt"       # audio_only | audio_prompt | audio_prefix | text_prefix
 prototype_pooling="last_hidden_state" # mean_pooling | last_hidden_state
+prototype_variant=""                  # Empty auto-tags output dirs as ${prototype_source}_${prototype_pooling}_${prototype_finetune_type}_${src_model ep tag}.
 
 # Step 1 source model for prototype extraction. Empty means initialize the source
 # model from downstream_train_conf instead of loading an existing experiment.

@@ -26,7 +26,7 @@ labels_path=${data_root}/labels.txt
 prompt_file=""   # Empty uses prepare_macslu_jsonl.py built-in prompt.
 
 # prototype-only adapter-head finetune config
-prototype_train_conf="conf/macslu_qwen3_asr_17b_ep10_adapter_head_woemblmhead_prototype.json"
+prototype_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead_prototype.json"
 
 prototype_top_k=5
 prototype_min_similarity="-1"       # -1 auto-selects on dev; empty keeps all top-k candidates in generated data-json prompts.
@@ -219,7 +219,7 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
             build_source_opts+=(--train_conf "$downstream_train_conf")
             echo "[info] src_model is empty; build prototypes from downstream_train_conf: $downstream_train_conf"
         fi
-
+        
         CUDA_VISIBLE_DEVICES=$gpuid \
             python local/build_macslu_prototypes.py \
                 --train_jsonl "${json_root}/train.jsonl" \
