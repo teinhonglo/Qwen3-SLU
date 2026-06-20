@@ -109,9 +109,11 @@ def plot_stop_logprob(rows, root, splits):
     rng = np.random.default_rng(0)
     for ax, split in zip(axes, splits):
         data = [[r["stop_logprob"] for r in rows if r.get("split") == split and r.get("count_status") == g and isinstance(r.get("stop_logprob"), (int, float))] for g in COUNT_ORDER]
+        
         ax.boxplot(data)
         ax.set_xticks(range(1, len(COUNT_ORDER) + 1))
         ax.set_xticklabels([COUNT_LABELS[g] for g in COUNT_ORDER])
+        
         for i, vals in enumerate(data, start=1):
             if vals:
                 ax.scatter(rng.normal(i, 0.04, len(vals)), vals, alpha=0.35, s=12)
