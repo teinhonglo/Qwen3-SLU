@@ -305,7 +305,7 @@ def generate_once(asr_wrapper, inputs, prefix_len: int, gen_kwargs: Dict[str, An
     kwargs = dict(gen_kwargs)
     
     kwargs.update({"do_sample": False, "num_beams": 1, "output_scores": True})
-  
+    
     if logits_processor is not None:
         kwargs["logits_processor"] = logits_processor
     model.eval()

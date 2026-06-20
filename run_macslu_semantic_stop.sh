@@ -62,10 +62,17 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
         test_jsonl=${json_root}/${test_set}.jsonl
         out_root=${src_exp}/${test_set}/${out_subdir}
         records=${out_root}/records.jsonl
-        if [ -f "$records" ] && [ "$overwrite" != "true" ]; then
-            echo "[skip] existing records: $records (use --overwrite true to rerun)"
+        
+        pred_file=${out_root}/predictions.jsonl
+        forced_pred_file=${out_root}/forced_predictions.jsonl
+        if [ "$overwrite" != "true" ] && [ -s "$records" ] && [ -s "$pred_file" ] && [ -s "$forced_pred_file" ]; then
+            echo "[skip] existing semantic STOP outputs: $out_root (use --overwrite true to rerun)"
             continue
         fi
+        if [ "$overwrite" != "true" ] && { [ -e "$records" ] || [ -e "$pred_file" ] || [ -e "$forced_pred_file" ]; }; then
+            echo "[info] incomplete semantic STOP outputs under $out_root; regenerating missing/empty files"
+        fi
+        
         mkdir -p "$out_root"
         limit_opt=()
         if [ "$limit" -gt 0 ]; then
@@ -102,9 +109,10 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
         out_root=${src_exp}/${test_set}/${out_subdir}
         pred_file=${out_root}/predictions.jsonl
         forced_pred_file=${out_root}/forced_predictions.jsonl
-
-        if [ ! -f "$pred_file" ]; then
-            echo "[WARNING] prediction file not found: $pred_file"
+        
+        if [ ! -s "$pred_file" ]; then
+            echo "[WARNING] prediction file missing or empty: $pred_file"
+            echo "[WARNING] rerun Stage 1 with --overwrite true if this came from an older/incomplete diagnostic run"
             continue
         fi
 
@@ -112,8 +120,8 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
         python local/metrics.py \
             --output_dir "${out_root}/metrics_greedy" \
             "$pred_file" "$gt_file" | tee "${out_root}/metrics.txt"
-
-        if [ -f "$forced_pred_file" ]; then
+            
+        if [ -s "$forced_pred_file" ]; then
             mkdir -p "${out_root}/metrics_forced"
             python local/metrics.py \
                 --output_dir "${out_root}/metrics_forced" \
