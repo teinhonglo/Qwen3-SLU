@@ -119,6 +119,16 @@ def slot_mer_metric(slot_tp, slot_fp, slot_fn):
     return slot_precision, slot_recall, slot_f1
 
 
+def collect_slot_set(semantics, slot_key):
+    slot_set = set()
+    for s in semantics:
+        slots = s.get(slot_key, {})
+        if isinstance(slots, dict):
+            for k, v in slots.items():
+                slot_set.add((k, v))
+    return slot_set
+
+
 def get_intent_group(intent_num):
     if intent_num == 0:
         return "0_intent"
@@ -139,6 +149,9 @@ def init_group_stats():
         "slot_tp": 0,
         "slot_fp": 0,
         "slot_fn": 0,
+        "explicit_slot_tp": 0,
+        "explicit_slot_fp": 0,
+        "explicit_slot_fn": 0,
         "implicit_slot_tp": 0,
         "implicit_slot_fp": 0,
         "implicit_slot_fn": 0,
@@ -152,6 +165,9 @@ def init_group_stats():
 def finalize_group_stats(group_stats):
     slot_precision, slot_recall, slot_f1 = slot_mer_metric(
         group_stats["slot_tp"], group_stats["slot_fp"], group_stats["slot_fn"]
+    )
+    explicit_slot_precision, explicit_slot_recall, explicit_slot_f1 = slot_mer_metric(
+        group_stats["explicit_slot_tp"], group_stats["explicit_slot_fp"], group_stats["explicit_slot_fn"]
     )
     implicit_slot_precision, implicit_slot_recall, implicit_slot_f1 = slot_mer_metric(
         group_stats["implicit_slot_tp"], group_stats["implicit_slot_fp"], group_stats["implicit_slot_fn"]
@@ -170,6 +186,12 @@ def finalize_group_stats(group_stats):
         "slot_precision": slot_precision,
         "slot_recall": slot_recall,
         "slot_f1": slot_f1,
+        "explicit_slot_tp": group_stats["explicit_slot_tp"],
+        "explicit_slot_fp": group_stats["explicit_slot_fp"],
+        "explicit_slot_fn": group_stats["explicit_slot_fn"],
+        "explicit_slot_precision": explicit_slot_precision,
+        "explicit_slot_recall": explicit_slot_recall,
+        "explicit_slot_f1": explicit_slot_f1,
         "implicit_slot_tp": group_stats["implicit_slot_tp"],
         "implicit_slot_fp": group_stats["implicit_slot_fp"],
         "implicit_slot_fn": group_stats["implicit_slot_fn"],
@@ -198,6 +220,7 @@ def calculate_metrics(predict_file, ground_truth_file):
     overall_match_count = 0
     intent_match_count = 0
     slot_tp = slot_fp = slot_fn = 0
+    explicit_slot_tp = explicit_slot_fp = explicit_slot_fn = 0
     implicit_slot_tp = implicit_slot_fp = implicit_slot_fn = 0
     mer_errors = 0
     mer_ref_lens = 0
@@ -240,6 +263,12 @@ def calculate_metrics(predict_file, ground_truth_file):
                 "slot_precision": 0,
                 "slot_recall": 0,
                 "slot_f1": 0,
+                "explicit_slot_tp": 0,
+                "explicit_slot_fp": 0,
+                "explicit_slot_fn": 0,
+                "explicit_slot_precision": 0,
+                "explicit_slot_recall": 0,
+                "explicit_slot_f1": 0,
                 "implicit_slot_tp": 0,
                 "implicit_slot_fp": 0,
                 "implicit_slot_fn": 0,
@@ -262,47 +291,25 @@ def calculate_metrics(predict_file, ground_truth_file):
                 if intent_group is not None:
                     intent_group_stats[intent_group]["intent_match_count"] += 1
 
-            # slot
-            pred_slot_set = set()
-            for s in pred_semantics:
-                slots = s.get("slots", {})
-                if isinstance(slots, dict):
-                    for k, v in slots.items():
-                        pred_slot_set.add((k, v))
+            # explicit slot (formerly slot)
+            pred_explicit_slot_set = collect_slot_set(pred_semantics, "slots")
+            gt_explicit_slot_set = collect_slot_set(gt_semantics, "slots")
 
-            gt_slot_set = set()
-            for s in gt_semantics:
-                slots = s.get("slots", {})
-                if isinstance(slots, dict):
-                    for k, v in slots.items():
-                        gt_slot_set.add((k, v))
+            report_detail[text_id]["explicit_slot_tp"] = len(pred_explicit_slot_set & gt_explicit_slot_set)
+            report_detail[text_id]["explicit_slot_fp"] = len(pred_explicit_slot_set - gt_explicit_slot_set)
+            report_detail[text_id]["explicit_slot_fn"] = len(gt_explicit_slot_set - pred_explicit_slot_set)
 
-            report_detail[text_id]["slot_tp"] = len(pred_slot_set & gt_slot_set)
-            report_detail[text_id]["slot_fp"] = len(pred_slot_set - gt_slot_set)
-            report_detail[text_id]["slot_fn"] = len(gt_slot_set - pred_slot_set)
-
-            slot_tp += report_detail[text_id]["slot_tp"]
-            slot_fp += report_detail[text_id]["slot_fp"]
-            slot_fn += report_detail[text_id]["slot_fn"]
+            explicit_slot_tp += report_detail[text_id]["explicit_slot_tp"]
+            explicit_slot_fp += report_detail[text_id]["explicit_slot_fp"]
+            explicit_slot_fn += report_detail[text_id]["explicit_slot_fn"]
             if intent_group is not None:
-                intent_group_stats[intent_group]["slot_tp"] += report_detail[text_id]["slot_tp"]
-                intent_group_stats[intent_group]["slot_fp"] += report_detail[text_id]["slot_fp"]
-                intent_group_stats[intent_group]["slot_fn"] += report_detail[text_id]["slot_fn"]
+                intent_group_stats[intent_group]["explicit_slot_tp"] += report_detail[text_id]["explicit_slot_tp"]
+                intent_group_stats[intent_group]["explicit_slot_fp"] += report_detail[text_id]["explicit_slot_fp"]
+                intent_group_stats[intent_group]["explicit_slot_fn"] += report_detail[text_id]["explicit_slot_fn"]
 
             # implicit slot
-            pred_implicit_slot_set = set()
-            for s in pred_semantics:
-                slots = s.get("implicit_slots", {})
-                if isinstance(slots, dict):
-                    for k, v in slots.items():
-                        pred_implicit_slot_set.add((k, v))
-
-            gt_implicit_slot_set = set()
-            for s in gt_semantics:
-                slots = s.get("implicit_slots", {})
-                if isinstance(slots, dict):
-                    for k, v in slots.items():
-                        gt_implicit_slot_set.add((k, v))
+            pred_implicit_slot_set = collect_slot_set(pred_semantics, "implicit_slots")
+            gt_implicit_slot_set = collect_slot_set(gt_semantics, "implicit_slots")
 
             report_detail[text_id]["implicit_slot_tp"] = len(pred_implicit_slot_set & gt_implicit_slot_set)
             report_detail[text_id]["implicit_slot_fp"] = len(pred_implicit_slot_set - gt_implicit_slot_set)
@@ -315,6 +322,25 @@ def calculate_metrics(predict_file, ground_truth_file):
                 intent_group_stats[intent_group]["implicit_slot_tp"] += report_detail[text_id]["implicit_slot_tp"]
                 intent_group_stats[intent_group]["implicit_slot_fp"] += report_detail[text_id]["implicit_slot_fp"]
                 intent_group_stats[intent_group]["implicit_slot_fn"] += report_detail[text_id]["implicit_slot_fn"]
+
+            # slot = explicit slot + implicit slot
+            report_detail[text_id]["slot_tp"] = (
+                report_detail[text_id]["explicit_slot_tp"] + report_detail[text_id]["implicit_slot_tp"]
+            )
+            report_detail[text_id]["slot_fp"] = (
+                report_detail[text_id]["explicit_slot_fp"] + report_detail[text_id]["implicit_slot_fp"]
+            )
+            report_detail[text_id]["slot_fn"] = (
+                report_detail[text_id]["explicit_slot_fn"] + report_detail[text_id]["implicit_slot_fn"]
+            )
+
+            slot_tp += report_detail[text_id]["slot_tp"]
+            slot_fp += report_detail[text_id]["slot_fp"]
+            slot_fn += report_detail[text_id]["slot_fn"]
+            if intent_group is not None:
+                intent_group_stats[intent_group]["slot_tp"] += report_detail[text_id]["slot_tp"]
+                intent_group_stats[intent_group]["slot_fp"] += report_detail[text_id]["slot_fp"]
+                intent_group_stats[intent_group]["slot_fn"] += report_detail[text_id]["slot_fn"]
 
             # MER
             query_ref_tokens = tokenize_for_mer(report_detail[text_id]["query"])
@@ -361,10 +387,18 @@ def calculate_metrics(predict_file, ground_truth_file):
                 intent_group_stats[intent_group]["total_count"] += 1
 
             slot_precision, slot_recall, slot_f1 = slot_mer_metric(report_detail[text_id]["slot_tp"], report_detail[text_id]["slot_fp"], report_detail[text_id]["slot_fn"])
+            explicit_slot_precision, explicit_slot_recall, explicit_slot_f1 = slot_mer_metric(report_detail[text_id]["explicit_slot_tp"], report_detail[text_id]["explicit_slot_fp"], report_detail[text_id]["explicit_slot_fn"])
+            implicit_slot_precision, implicit_slot_recall, implicit_slot_f1 = slot_mer_metric(report_detail[text_id]["implicit_slot_tp"], report_detail[text_id]["implicit_slot_fp"], report_detail[text_id]["implicit_slot_fn"])
 
             report_detail[text_id]["slot_precision"] = slot_precision
             report_detail[text_id]["slot_recall"] = slot_recall
             report_detail[text_id]["slot_f1"] = slot_f1
+            report_detail[text_id]["explicit_slot_precision"] = explicit_slot_precision
+            report_detail[text_id]["explicit_slot_recall"] = explicit_slot_recall
+            report_detail[text_id]["explicit_slot_f1"] = explicit_slot_f1
+            report_detail[text_id]["implicit_slot_precision"] = implicit_slot_precision
+            report_detail[text_id]["implicit_slot_recall"] = implicit_slot_recall
+            report_detail[text_id]["implicit_slot_f1"] = implicit_slot_f1
             report_detail[text_id]["mer"] = mer
             report_detail[text_id]["slot_acc"] = slot_match_acc
 
@@ -375,12 +409,13 @@ def calculate_metrics(predict_file, ground_truth_file):
     overall_accuracy = overall_match_count / total_count if total_count else 0.0
     intent_accuracy = intent_match_count / total_count if total_count else 0.0
     # slot
-    slot_precision = slot_tp / (slot_tp + slot_fp) if (slot_tp + slot_fp) else (1.0 if slot_fn == 0 else 0.0)
-    slot_recall = slot_tp / (slot_tp + slot_fn) if (slot_tp + slot_fn) else (1.0 if slot_fp == 0 else 0.0)
-    slot_f1 = 0.0 if (slot_precision + slot_recall) == 0 else 2 * slot_precision * slot_recall / (slot_precision + slot_recall)
-    implicit_slot_precision = implicit_slot_tp / (implicit_slot_tp + implicit_slot_fp) if (implicit_slot_tp + implicit_slot_fp) else (1.0 if implicit_slot_fn == 0 else 0.0)
-    implicit_slot_recall = implicit_slot_tp / (implicit_slot_tp + implicit_slot_fn) if (implicit_slot_tp + implicit_slot_fn) else (1.0 if implicit_slot_fp == 0 else 0.0)
-    implicit_slot_f1 = 0.0 if (implicit_slot_precision + implicit_slot_recall) == 0 else 2 * implicit_slot_precision * implicit_slot_recall / (implicit_slot_precision + implicit_slot_recall)
+    slot_precision, slot_recall, slot_f1 = slot_mer_metric(slot_tp, slot_fp, slot_fn)
+    explicit_slot_precision, explicit_slot_recall, explicit_slot_f1 = slot_mer_metric(
+        explicit_slot_tp, explicit_slot_fp, explicit_slot_fn
+    )
+    implicit_slot_precision, implicit_slot_recall, implicit_slot_f1 = slot_mer_metric(
+        implicit_slot_tp, implicit_slot_fp, implicit_slot_fn
+    )
     # mer
     mer = mer_errors / mer_ref_lens if mer_ref_lens else 0.0
     slot_match_accs = slot_match_counts / valid_slotss if valid_slotss else 0.0
@@ -399,6 +434,12 @@ def calculate_metrics(predict_file, ground_truth_file):
         "slot_precision": slot_precision,
         "slot_recall": slot_recall,
         "slot_f1": slot_f1,
+        "explicit_slot_tp": explicit_slot_tp,
+        "explicit_slot_fp": explicit_slot_fp,
+        "explicit_slot_fn": explicit_slot_fn,
+        "explicit_slot_precision": explicit_slot_precision,
+        "explicit_slot_recall": explicit_slot_recall,
+        "explicit_slot_f1": explicit_slot_f1,
         "implicit_slot_tp": implicit_slot_tp,
         "implicit_slot_fp": implicit_slot_fp,
         "implicit_slot_fn": implicit_slot_fn,
@@ -429,6 +470,7 @@ def main():
     print(f"Overall accuracy: {r['overall_accuracy']:.4f}")
     print(f"Intent accuracy:  {r['intent_accuracy']:.4f}")
     print(f"Slot P/R/F1:      {r['slot_precision']:.4f} / {r['slot_recall']:.4f} / {r['slot_f1']:.4f}")
+    print(f"Explicit Slot P/R/F1:      {r['explicit_slot_precision']:.4f} / {r['explicit_slot_recall']:.4f} / {r['explicit_slot_f1']:.4f}")
     print(f"Implicit Slot P/R/F1:      {r['implicit_slot_precision']:.4f} / {r['implicit_slot_recall']:.4f} / {r['implicit_slot_f1']:.4f}")
     print(f"Query MER:        {r['query_mer']:.4f} ({r['query_mer_errors']}/{r['query_mer_ref_lens']})")
     print(f"Slot Match accuracy:        {r['slot_match_accs']:.4f}")
@@ -438,6 +480,7 @@ def main():
         print(f"[{group_name}] Overall accuracy: {group_result['overall_accuracy']:.4f}")
         print(f"[{group_name}] Intent accuracy:  {group_result['intent_accuracy']:.4f}")
         print(f"[{group_name}] Slot P/R/F1:      {group_result['slot_precision']:.4f} / {group_result['slot_recall']:.4f} / {group_result['slot_f1']:.4f}")
+        print(f"[{group_name}] Explicit Slot P/R/F1:      {group_result['explicit_slot_precision']:.4f} / {group_result['explicit_slot_recall']:.4f} / {group_result['explicit_slot_f1']:.4f}")
         print(f"[{group_name}] Implicit Slot P/R/F1:      {group_result['implicit_slot_precision']:.4f} / {group_result['implicit_slot_recall']:.4f} / {group_result['implicit_slot_f1']:.4f}")
         print(f"[{group_name}] Query MER:        {group_result['query_mer']:.4f} ({group_result['query_mer_errors']}/{group_result['query_mer_ref_lens']})")
         print(f"[{group_name}] Slot Match accuracy:        {group_result['slot_match_accs']:.4f}")
