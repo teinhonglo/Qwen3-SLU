@@ -525,6 +525,7 @@ def infer_split(
     print(f"[info] saved prototype metrics json: {metrics_json_path}")
     return out_rows
 
+
 def build_augmented_data(
     input_jsonl: str,
     pred_rows: Sequence[Dict[str, Any]],
@@ -542,7 +543,7 @@ def build_augmented_data(
         filtered_domain_intents, filtered_domain_intent_similarities = filter_by_similarity(
             pred.get("pred_domain_intents", []), pred.get("pred_domain_intents_similarity", []), min_similarity
         )
-        filtered_domains, filtered_intents = split_domain_intent_candidates(filtered_domain_intents)
+        filtered_domains, filtered_intents, _, _ = split_domain_intent_candidates(filtered_domain_intents)
         item["prompt"] = format_domain_intent_candidates(
             row.get("prompt", ""),
             filtered_domains,
