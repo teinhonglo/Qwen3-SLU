@@ -1340,7 +1340,13 @@ class Qwen3ASRForConditionalGeneration(Qwen3ASRPreTrainedModel, GenerationMixin)
 
         self.thinker = Qwen3ASRThinkerForConditionalGeneration._from_config(config.thinker_config)
         self.post_init()
-    
+
+    def get_input_embeddings(self):
+        return self.thinker.get_input_embeddings()
+
+    def set_input_embeddings(self, value):
+        self.thinker.set_input_embeddings(value)
+
     def get_support_languages(self):
         return self.config.support_languages
 
