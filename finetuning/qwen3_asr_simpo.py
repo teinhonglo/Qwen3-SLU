@@ -216,6 +216,18 @@ class SimPOTrainer(CastFloatInputsTrainer):
         self.simpo_beta = float(simpo_beta)
         self.simpo_gamma = float(simpo_gamma)
         self.simpo_sft_loss_weight = float(simpo_sft_loss_weight)
+        self._simpo_metric_buffer = []
+
+    def _buffer_simpo_metrics(self, metrics: Dict[str, float]):
+        self._simpo_metric_buffer.append(metrics)
+
+    def log(self, logs: Dict[str, float], start_time: Optional[float] = None) -> None:
+        if self._simpo_metric_buffer:
+            metric_keys = self._simpo_metric_buffer[0].keys()
+            for key in metric_keys:
+                logs[key] = float(np.mean([metrics[key] for metrics in self._simpo_metric_buffer]))
+            self._simpo_metric_buffer.clear()
+        super().log(logs, start_time=start_time)
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         pair_ids = inputs.pop("simpo_pair_ids")
@@ -266,7 +278,8 @@ class SimPOTrainer(CastFloatInputsTrainer):
             chosen_t = torch.stack(chosen_scores)
             rejected_t = torch.stack(rejected_scores)
             margin_t = chosen_t - rejected_t
-            self.log({
+            
+            self._buffer_simpo_metrics({
                 "simpo/chosen_avg_logp": chosen_t.mean().item(),
                 "simpo/rejected_avg_logp": rejected_t.mean().item(),
                 "simpo/margin": margin_t.mean().item(),
@@ -592,7 +605,6 @@ def main():
 
     if training_args_conf["gradient_checkpointing"]:
         model.config.use_cache = False
-        
         model.enable_input_require_grads()
         
         try:
