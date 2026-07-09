@@ -83,6 +83,7 @@ def calculate_one_prediction_metrics(pred_data: Dict[str, Any], gt_data: Dict[st
 
     pred_intents = sorted([(safe_metric_text(s.get("domain")), safe_metric_text(s.get("intent"))) for s in pred_semantics])
     gt_intents = sorted([(safe_metric_text(s.get("domain")), safe_metric_text(s.get("intent"))) for s in gt_semantics])
+    
     intent_match = int(pred_intents == gt_intents)
     overall_match = int(pred_semantics == gt_semantics)
 

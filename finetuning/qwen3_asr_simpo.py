@@ -278,6 +278,7 @@ class SimPOTrainer(CastFloatInputsTrainer):
             chosen_t = torch.stack(chosen_scores)
             rejected_t = torch.stack(rejected_scores)
             margin_t = chosen_t - rejected_t
+            
             self._buffer_simpo_metrics({
                 "simpo/chosen_avg_logp": chosen_t.mean().item(),
                 "simpo/rejected_avg_logp": rejected_t.mean().item(),
@@ -605,6 +606,7 @@ def main():
     if training_args_conf["gradient_checkpointing"]:
         model.config.use_cache = False
         model.enable_input_require_grads()
+        
         try:
             model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         except TypeError:
