@@ -83,7 +83,7 @@ exp_base=$exp_root
 exp_dir=${exp_base}/${conf_tag}${suffix}
 
 nbest_dir_for_split() {
-    echo "${exp_dir}/$1/nbest"
+    echo "${src_exp_dir}/$1/nbest"
 }
 
 nbest_jsonl_for_split() {
@@ -124,7 +124,8 @@ if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
     fi
 fi
 
-# Stage 1: Use src_exp_dir to generate n-best JSONL under exp_dir/<split>/nbest/.
+# Stage 1: Use src_exp_dir to generate n-best JSONL under src_exp_dir/<split>/nbest/.
+
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
     echo "Stage 1: Generate same-audio n-best JSONL from src_exp_dir for: $nbest_splits"
 
@@ -154,7 +155,8 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
     done
 fi
 
-# Stage 2: Score each n-best hypothesis under exp_dir/<split>/nbest/.
+# Stage 2: Score each n-best hypothesis under src_exp_dir/<split>/nbest/.
+
 if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
     echo "Stage 2: Score n-best with oracle EMA and local/metrics.py metrics for: $score_splits"
 
@@ -171,7 +173,8 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
     done
 fi
 
-# Stage 3: Build chosen/rejected SimPO pairs under exp_dir/<split>/nbest/.
+# Stage 3: Build chosen/rejected SimPO pairs under src_exp_dir/<split>/nbest/.
+
 if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     echo "Stage 3: Build SimPO chosen/rejected pairs for: $pair_splits"
 
