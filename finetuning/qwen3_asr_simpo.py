@@ -593,14 +593,8 @@ def main():
     if training_args_conf["gradient_checkpointing"]:
         model.config.use_cache = False
         
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()
-        else:
-            input_embeddings = model.get_input_embeddings() if hasattr(model, "get_input_embeddings") else None
-            if input_embeddings is not None:
-                def make_inputs_require_grad(_module, _inputs, output):
-                    output.requires_grad_(True)
-                input_embeddings.register_forward_hook(make_inputs_require_grad)
+        model.enable_input_require_grads()
+        
         try:
             model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         except TypeError:
