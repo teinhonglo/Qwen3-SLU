@@ -79,7 +79,7 @@ def calculate_one_prediction_metrics(pred_data: Dict[str, Any], gt_data: Dict[st
     """Calculate one n-best hypothesis' oracle EMA and SLU metrics."""
     pred_semantics = normalize_semantics(pred_data.get("pred_semantics", []))
     gt_semantics = normalize_semantics(gt_data.get("semantics", []))
-    
+
     pred_intents = sorted([(safe_metric_text(s.get("domain")), safe_metric_text(s.get("intent"))) for s in pred_semantics])
     gt_intents = sorted([(safe_metric_text(s.get("domain")), safe_metric_text(s.get("intent"))) for s in gt_semantics])
     
