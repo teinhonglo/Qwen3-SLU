@@ -20,7 +20,6 @@ from local.metrics import (  # noqa: E402
 def safe_metric_text(value: Any) -> str:
     return "" if value is None else str(value)
 
-
 def extract_payload_text(raw_text: str) -> str:
     raw_text = (raw_text or "").strip()
     m = re.match(r"^language\s+.+?<asr_text>(.*)$", raw_text, flags=re.DOTALL)
@@ -83,6 +82,7 @@ def calculate_one_prediction_metrics(pred_data: Dict[str, Any], gt_data: Dict[st
 
     pred_intents = sorted([(safe_metric_text(s.get("domain")), safe_metric_text(s.get("intent"))) for s in pred_semantics])
     gt_intents = sorted([(safe_metric_text(s.get("domain")), safe_metric_text(s.get("intent"))) for s in gt_semantics])
+    
     intent_match = int(pred_intents == gt_intents)
     overall_match = int(pred_semantics == gt_semantics)
 

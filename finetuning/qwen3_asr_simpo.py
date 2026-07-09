@@ -592,6 +592,7 @@ def main():
 
     if training_args_conf["gradient_checkpointing"]:
         model.config.use_cache = False
+        
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
         else:
