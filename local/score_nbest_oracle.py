@@ -119,12 +119,13 @@ def calculate_one_prediction_metrics(pred_data: Dict[str, Any], gt_data: Dict[st
 
     slot_match_count = 0
     valid_slots = len(pred_slots_value)
-    pred_query_ori = pred_data.get("pred_query", "")
+    pred_query_ori = str(pred_data.get("pred_query", ""))
     gt_semantics_ori = gt_data.get("semantics", [])
     for slot in pred_slots_value:
-        if slot in pred_query_ori:
+        slot_text = str(slot)
+        if slot_text in pred_query_ori:
             slot_match_count += 1
-        elif slot in str(gt_semantics_ori):
+        elif slot_text in str(gt_semantics_ori):
             valid_slots -= 1
     slot_match_acc = slot_match_count / valid_slots if valid_slots else 0.0
 
