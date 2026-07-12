@@ -156,7 +156,6 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
 fi
 
 # Stage 2: Score each n-best hypothesis under src_exp_dir/<split>/nbest/.
-
 if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
     echo "Stage 2: Score n-best with oracle EMA and local/metrics.py metrics for: $score_splits"
 
@@ -174,7 +173,6 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
 fi
 
 # Stage 3: Build chosen/rejected SimPO pairs under src_exp_dir/<split>/nbest/.
-
 if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     echo "Stage 3: Build SimPO chosen/rejected pairs for: $pair_splits"
 
