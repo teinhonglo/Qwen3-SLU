@@ -125,6 +125,7 @@ if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
 fi
 
 # Stage 1: Use src_exp_dir to generate n-best JSONL under src_exp_dir/<split>/nbest/.
+
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
     echo "Stage 1: Generate same-audio n-best JSONL from src_exp_dir for: $nbest_splits"
 
