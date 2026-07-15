@@ -10,6 +10,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from local.metrics import (  # noqa: E402
     collect_slot_set,
     edit_distance,
+    finalize_group_stats,
+    get_intent_group,
+    init_group_stats,
     normalize_semantics,
     normalize_text,
     slot_mer_metric,
@@ -159,6 +162,8 @@ def calculate_one_prediction_metrics(pred_data: Dict[str, Any], gt_data: Dict[st
         "query_mer_errors": mer_error,
         "query_mer_ref_lens": mer_ref_len,
         "query_mer": mer,
+        "slot_match_count": slot_match_count,
+        "valid_slots": valid_slots,
         "slot_match_acc": slot_match_acc,
     }
 
@@ -177,20 +182,155 @@ def score_key(item: Dict[str, Any]) -> float:
     )
 
 
-def format_metrics_text(stats: Dict[str, Any]) -> str:
+def format_metrics_report(r: Dict[str, Any]) -> str:
+    """Format metrics.txt with the same fields/order as local/metrics.py."""
     lines = [
-        "N-best oracle scoring metrics",
-        "=============================",
-        f"samples: {stats['samples']}",
-        f"hypotheses: {stats['hypotheses']}",
-        f"valid_json: {stats['valid_json']}",
-        f"valid_json_rate: {stats['valid_json_rate']:.6f}",
-        f"oracle_hit_samples: {stats['oracle_hit_samples']}",
-        f"oracle_ema_coverage: {stats['oracle_ema_coverage']:.6f}",
-        f"average_oracle_rank: {stats['average_oracle_rank']:.6f}",
-        f"oracle_rank_count: {stats['oracle_rank_count']}",
+        "-" * 60,
+        "Evaluation Results",
+        "-" * 60,
+        f"Total: {r['total_count']}",
+        f"Success_count: {r['success_count']}",
+        f"Overall accuracy: {r['overall_accuracy']:.4f}",
+        f"Intent accuracy:  {r['intent_accuracy']:.4f}",
+        f"Slot P/R/F1:      {r['slot_precision']:.4f} / {r['slot_recall']:.4f} / {r['slot_f1']:.4f}",
+        f"Explicit Slot P/R/F1:      {r['explicit_slot_precision']:.4f} / {r['explicit_slot_recall']:.4f} / {r['explicit_slot_f1']:.4f}",
+        f"Implicit Slot P/R/F1:      {r['implicit_slot_precision']:.4f} / {r['implicit_slot_recall']:.4f} / {r['implicit_slot_f1']:.4f}",
+        f"Query MER:        {r['query_mer']:.4f} ({r['query_mer_errors']}/{r['query_mer_ref_lens']})",
+        f"Slot Match accuracy:        {r['slot_match_accs']:.4f}",
+        "-" * 60,
     ]
+    for group_name, group_result in r["intent_group_metrics"].items():
+        lines.extend([
+            f"[{group_name}] Total: {group_result['total_count']}",
+            f"[{group_name}] Overall accuracy: {group_result['overall_accuracy']:.4f}",
+            f"[{group_name}] Intent accuracy:  {group_result['intent_accuracy']:.4f}",
+            f"[{group_name}] Slot P/R/F1:      {group_result['slot_precision']:.4f} / {group_result['slot_recall']:.4f} / {group_result['slot_f1']:.4f}",
+            f"[{group_name}] Explicit Slot P/R/F1:      {group_result['explicit_slot_precision']:.4f} / {group_result['explicit_slot_recall']:.4f} / {group_result['explicit_slot_f1']:.4f}",
+            f"[{group_name}] Implicit Slot P/R/F1:      {group_result['implicit_slot_precision']:.4f} / {group_result['implicit_slot_recall']:.4f} / {group_result['implicit_slot_f1']:.4f}",
+            f"[{group_name}] Query MER:        {group_result['query_mer']:.4f} ({group_result['query_mer_errors']}/{group_result['query_mer_ref_lens']})",
+            f"[{group_name}] Slot Match accuracy:        {group_result['slot_match_accs']:.4f}",
+            "-" * 60,
+        ])
     return "\n".join(lines) + "\n"
+
+
+def init_best_metrics_stats() -> Dict[str, Any]:
+    return {
+        "total_count": 0,
+        "success_count": 0,
+        "overall_match_count": 0,
+        "intent_match_count": 0,
+        "slot_tp": 0,
+        "slot_fp": 0,
+        "slot_fn": 0,
+        "explicit_slot_tp": 0,
+        "explicit_slot_fp": 0,
+        "explicit_slot_fn": 0,
+        "implicit_slot_tp": 0,
+        "implicit_slot_fp": 0,
+        "implicit_slot_fn": 0,
+        "query_mer_errors": 0,
+        "query_mer_ref_lens": 0,
+        "slot_match_counts": 0,
+        "valid_slotss": 0,
+        "intent_group_stats": {
+            "0_intent": init_group_stats(),
+            "1_intent": init_group_stats(),
+            "2_intent": init_group_stats(),
+            "3plus_intent": init_group_stats(),
+        },
+    }
+
+
+def add_best_metrics(best_stats: Dict[str, Any], score: Dict[str, Any], gt_data: Dict[str, Any]) -> None:
+    best_stats["total_count"] += 1
+    best_stats["success_count"] += 1
+    best_stats["overall_match_count"] += int(score.get("overall_match", 0))
+    best_stats["intent_match_count"] += int(score.get("intent_match", 0))
+    for key in (
+        "slot_tp",
+        "slot_fp",
+        "slot_fn",
+        "explicit_slot_tp",
+        "explicit_slot_fp",
+        "explicit_slot_fn",
+        "implicit_slot_tp",
+        "implicit_slot_fp",
+        "implicit_slot_fn",
+        "query_mer_errors",
+        "query_mer_ref_lens",
+    ):
+        best_stats[key] += int(score.get(key, 0))
+    best_stats["slot_match_counts"] += int(score.get("slot_match_count", 0))
+    best_stats["valid_slotss"] += int(score.get("valid_slots", 0))
+
+    intent_group = get_intent_group(len(normalize_semantics(gt_data.get("semantics", []))))
+    if intent_group is None:
+        return
+    group_stats = best_stats["intent_group_stats"][intent_group]
+    group_stats["total_count"] += 1
+    group_stats["overall_match_count"] += int(score.get("overall_match", 0))
+    group_stats["intent_match_count"] += int(score.get("intent_match", 0))
+    for key in (
+        "slot_tp",
+        "slot_fp",
+        "slot_fn",
+        "explicit_slot_tp",
+        "explicit_slot_fp",
+        "explicit_slot_fn",
+        "implicit_slot_tp",
+        "implicit_slot_fp",
+        "implicit_slot_fn",
+        "query_mer_errors",
+        "query_mer_ref_lens",
+    ):
+        group_stats[key] += int(score.get(key, 0))
+    group_stats["slot_match_counts"] += int(score.get("slot_match_count", 0))
+    group_stats["valid_slotss"] += int(score.get("valid_slots", 0))
+
+
+def finalize_best_metrics(best_stats: Dict[str, Any]) -> Dict[str, Any]:
+    slot_precision, slot_recall, slot_f1 = slot_mer_metric(
+        best_stats["slot_tp"], best_stats["slot_fp"], best_stats["slot_fn"]
+    )
+    explicit_slot_precision, explicit_slot_recall, explicit_slot_f1 = slot_mer_metric(
+        best_stats["explicit_slot_tp"], best_stats["explicit_slot_fp"], best_stats["explicit_slot_fn"]
+    )
+    implicit_slot_precision, implicit_slot_recall, implicit_slot_f1 = slot_mer_metric(
+        best_stats["implicit_slot_tp"], best_stats["implicit_slot_fp"], best_stats["implicit_slot_fn"]
+    )
+    total_count = best_stats["total_count"]
+    return {
+        "total_count": total_count,
+        "success_count": best_stats["success_count"],
+        "overall_match_count": best_stats["overall_match_count"],
+        "overall_accuracy": best_stats["overall_match_count"] / total_count if total_count else 0.0,
+        "intent_match_count": best_stats["intent_match_count"],
+        "intent_accuracy": best_stats["intent_match_count"] / total_count if total_count else 0.0,
+        "slot_tp": best_stats["slot_tp"],
+        "slot_fp": best_stats["slot_fp"],
+        "slot_fn": best_stats["slot_fn"],
+        "slot_precision": slot_precision,
+        "slot_recall": slot_recall,
+        "slot_f1": slot_f1,
+        "explicit_slot_tp": best_stats["explicit_slot_tp"],
+        "explicit_slot_fp": best_stats["explicit_slot_fp"],
+        "explicit_slot_fn": best_stats["explicit_slot_fn"],
+        "explicit_slot_precision": explicit_slot_precision,
+        "explicit_slot_recall": explicit_slot_recall,
+        "explicit_slot_f1": explicit_slot_f1,
+        "implicit_slot_tp": best_stats["implicit_slot_tp"],
+        "implicit_slot_fp": best_stats["implicit_slot_fp"],
+        "implicit_slot_fn": best_stats["implicit_slot_fn"],
+        "implicit_slot_precision": implicit_slot_precision,
+        "implicit_slot_recall": implicit_slot_recall,
+        "implicit_slot_f1": implicit_slot_f1,
+        "query_mer_errors": best_stats["query_mer_errors"],
+        "query_mer_ref_lens": best_stats["query_mer_ref_lens"],
+        "query_mer": best_stats["query_mer_errors"] / best_stats["query_mer_ref_lens"] if best_stats["query_mer_ref_lens"] else 0.0,
+        "slot_match_accs": best_stats["slot_match_counts"] / best_stats["valid_slotss"] if best_stats["valid_slotss"] else 0.0,
+        "intent_group_metrics": {k: finalize_group_stats(v) for k, v in best_stats["intent_group_stats"].items()},
+    }
 
 
 def score_file(input_jsonl: str, output_jsonl: str) -> Dict[str, Any]:
@@ -203,6 +343,7 @@ def score_file(input_jsonl: str, output_jsonl: str) -> Dict[str, Any]:
         "oracle_rank_sum": 0.0,
         "oracle_rank_count": 0,
     }
+    best_metrics_stats = init_best_metrics_stats()
     with open(input_jsonl, "r", encoding="utf-8") as fin, open(output_jsonl, "w", encoding="utf-8") as fout:
         for line in fin:
             if not line.strip():
@@ -232,6 +373,8 @@ def score_file(input_jsonl: str, output_jsonl: str) -> Dict[str, Any]:
                 stats["oracle_rank_sum"] += min(h["rank"] for h in oracle_items) + 1
                 stats["oracle_rank_count"] += 1
             scored.sort(key=lambda x: (x["preference_score"], -x["rank"]), reverse=True)
+            if scored:
+                add_best_metrics(best_metrics_stats, scored[0]["score"], gt)
             out = dict(row)
             out["scored_nbest"] = scored
             fout.write(json.dumps(out, ensure_ascii=False) + "\n")
@@ -241,11 +384,13 @@ def score_file(input_jsonl: str, output_jsonl: str) -> Dict[str, Any]:
     stats["average_oracle_rank"] = (
         stats["oracle_rank_sum"] / stats["oracle_rank_count"] if stats["oracle_rank_count"] else 0.0
     )
+    best_metrics = finalize_best_metrics(best_metrics_stats)
+    stats["best_metrics"] = best_metrics
     with open(output_jsonl + ".summary.json", "w", encoding="utf-8") as f:
         json.dump(stats, f, ensure_ascii=False, indent=2)
     metrics_path = os.path.join(os.path.dirname(output_jsonl) or ".", "metrics.txt")
     with open(metrics_path, "w", encoding="utf-8") as f:
-        f.write(format_metrics_text(stats))
+        f.write(format_metrics_report(best_metrics))
     return stats
 
 
