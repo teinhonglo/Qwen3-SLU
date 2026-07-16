@@ -24,9 +24,26 @@ def build_pairs(input_jsonl: str, output_jsonl: str, min_score_margin: float, ma
             if len(candidates) < 2:
                 stats["dropped_no_pair"] += 1
                 continue
-            chosen = candidates[0]
+            if pair_mode == "oracle_vs_top1":
+                top1 = next((c for c in candidates if int(c.get("rank", -1)) == 0), None)
+                oracle = max(
+                    candidates,
+                    key=lambda c: (
+                        float(c.get("preference_score", 0.0)),
+                        -int(c.get("rank", 999999)),
+                    ),
+                )
+                if top1 is None or int(oracle.get("rank", -1)) == 0 or oracle.get("raw", "").strip() == top1.get("raw", "").strip():
+                    stats["dropped_no_pair"] += 1
+                    continue
+                rejected_candidates = [top1]
+            else:
+                oracle = candidates[0]
+                rejected_candidates = list(reversed(candidates[1:]))
+
+            chosen = oracle
             pairs = 0
-            for rejected in reversed(candidates[1:]):
+            for rejected in rejected_candidates:
                 margin = float(chosen.get("preference_score", 0.0)) - float(rejected.get("preference_score", 0.0))
                 if margin <= 0:
                     stats["dropped_tie"] += 1
@@ -65,7 +82,7 @@ def main():
     p.add_argument("--output_jsonl", required=True)
     p.add_argument("--min_score_margin", type=float, default=0.1)
     p.add_argument("--max_pairs_per_sample", type=int, default=1)
-    p.add_argument("--pair_mode", choices=["nbest_only"], default="nbest_only")
+    p.add_argument("--pair_mode", choices=["nbest_only", "oracle_vs_top1"], default="nbest_only")
     args = p.parse_args()
     stats = build_pairs(args.input_jsonl, args.output_jsonl, args.min_score_margin, args.max_pairs_per_sample, args.pair_mode)
     print(json.dumps(stats, ensure_ascii=False, indent=2))
