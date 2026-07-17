@@ -2,7 +2,7 @@
 import argparse
 import json
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 
 def is_plausible(item: Dict[str, Any]) -> bool:
@@ -10,23 +10,73 @@ def is_plausible(item: Dict[str, Any]) -> bool:
     return bool(score.get("valid_json", 0)) and bool(item.get("raw", "").strip())
 
 
+def write_rank_preference_histogram(output_jsonl: str, values: List[Tuple[int, float]], bins: int = 10) -> None:
+    ranks = sorted({rank for rank, _ in values})
+    if not values:
+        hist = {"bins": [], "ranks": [], "counts": {}}
+    else:
+        scores = [score for _, score in values]
+        min_score = min(scores)
+        max_score = max(scores)
+        if min_score == max_score:
+            edges = [min_score, max_score]
+            counts = {str(rank): [0] for rank in ranks}
+            for rank, _ in values:
+                counts[str(rank)][0] += 1
+        else:
+            width = (max_score - min_score) / bins
+            edges = [min_score + width * i for i in range(bins + 1)]
+            counts = {str(rank): [0 for _ in range(bins)] for rank in ranks}
+            for rank, score in values:
+                idx = int((score - min_score) / width)
+                if idx >= bins:
+                    idx = bins - 1
+                counts[str(rank)][idx] += 1
+        hist = {"bins": edges, "ranks": ranks, "counts": counts}
+    with open(output_jsonl + ".rank_preference_hist.json", "w", encoding="utf-8") as f:
+        json.dump(hist, f, ensure_ascii=False, indent=2)
+
+
 def build_pairs(input_jsonl: str, output_jsonl: str, min_score_margin: float, max_pairs_per_sample: int, pair_mode: str) -> Dict[str, Any]:
     os.makedirs(os.path.dirname(output_jsonl) or ".", exist_ok=True)
     stats = {"samples": 0, "pairs": 0, "dropped_no_pair": 0, "dropped_tie": 0}
+    rank_preference_values: List[Tuple[int, float]] = []
     with open(input_jsonl, "r", encoding="utf-8") as fin, open(output_jsonl, "w", encoding="utf-8") as fout:
         for line in fin:
             if not line.strip():
                 continue
             row = json.loads(line)
             stats["samples"] += 1
-            candidates: List[Dict[str, Any]] = [c for c in row.get("scored_nbest", []) if is_plausible(c)]
+            scored_nbest = row.get("scored_nbest", [])
+            for candidate in scored_nbest:
+                rank_preference_values.append(
+                    (int(candidate.get("rank", -1)), float(candidate.get("preference_score", 0.0)))
+                )
+            candidates: List[Dict[str, Any]] = [c for c in scored_nbest if is_plausible(c)]
             candidates.sort(key=lambda x: (float(x.get("preference_score", 0.0)), -int(x.get("rank", 0))), reverse=True)
             if len(candidates) < 2:
                 stats["dropped_no_pair"] += 1
                 continue
-            chosen = candidates[0]
+            if pair_mode == "oracle_vs_top1":
+                top1 = next((c for c in candidates if int(c.get("rank", -1)) == 0), None)
+                oracle = max(
+                    candidates,
+                    key=lambda c: (
+                        float(c.get("preference_score", 0.0)),
+                        -int(c.get("rank", 999999)),
+                    ),
+                )
+                if top1 is None or int(oracle.get("rank", -1)) == 0 or oracle.get("raw", "").strip() == top1.get("raw", "").strip():
+                    stats["dropped_no_pair"] += 1
+                    continue
+                rejected_candidates = [top1]
+            else:
+                oracle = candidates[0]
+                rejected_candidates = list(reversed(candidates[1:]))
+
+            chosen = oracle
             pairs = 0
-            for rejected in reversed(candidates[1:]):
+            for rejected in rejected_candidates:
                 margin = float(chosen.get("preference_score", 0.0)) - float(rejected.get("preference_score", 0.0))
                 if margin <= 0:
                     stats["dropped_tie"] += 1
@@ -56,6 +106,7 @@ def build_pairs(input_jsonl: str, output_jsonl: str, min_score_margin: float, ma
     stats["pair_coverage"] = stats["pairs"] / stats["samples"] if stats["samples"] else 0.0
     with open(output_jsonl + ".summary.json", "w", encoding="utf-8") as f:
         json.dump(stats, f, ensure_ascii=False, indent=2)
+    write_rank_preference_histogram(output_jsonl, rank_preference_values)
     return stats
 
 
@@ -65,7 +116,7 @@ def main():
     p.add_argument("--output_jsonl", required=True)
     p.add_argument("--min_score_margin", type=float, default=0.1)
     p.add_argument("--max_pairs_per_sample", type=int, default=1)
-    p.add_argument("--pair_mode", choices=["nbest_only"], default="nbest_only")
+    p.add_argument("--pair_mode", choices=["nbest_only", "oracle_vs_top1"], default="nbest_only")
     args = p.parse_args()
     stats = build_pairs(args.input_jsonl, args.output_jsonl, args.min_score_margin, args.max_pairs_per_sample, args.pair_mode)
     print(json.dumps(stats, ensure_ascii=False, indent=2))

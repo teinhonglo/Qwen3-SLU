@@ -23,8 +23,8 @@ simpo_train_conf=""  # default: SimPO paper-style train_conf
 
 # SimPO trainer hyperparameters live in conf/*simpo.json.
 # Pair-building settings are pipeline controls for local/build_simpo_pairs.py.
-pair_mode="nbest_only"
-pair_min_score_margin="0.1"
+pair_mode="oracle_vs_top1"
+pair_min_score_margin="0.0"
 pair_max_pairs_per_sample="1"
 # Generate and score test n-best for analysis, but keep pair/training splits to train/dev to avoid test leakage.
 nbest_splits="train dev test"
@@ -44,6 +44,8 @@ stop_stage=1000
 test_sets="test"
 
 . ./local/parse_options.sh
+
+
 . ./path.sh
 
 if [ -z "$src_exp_dir" ] && [ -n "$src_model" ]; then
