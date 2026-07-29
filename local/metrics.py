@@ -232,6 +232,7 @@ def calculate_metrics(predict_file, ground_truth_file):
         "2_intent": init_group_stats(),
         "3plus_intent": init_group_stats(),
     }
+    mer_nonzero_stats = init_group_stats()
     report_detail = {}
 
     for i, (pred_line, gt_line) in enumerate(zip(predict_lines, ground_truth_lines), start=1):
@@ -381,6 +382,27 @@ def calculate_metrics(predict_file, ground_truth_file):
                 intent_group_stats[intent_group]["slot_match_counts"] += slot_match_count
                 intent_group_stats[intent_group]["valid_slotss"] += valid_slots
             slot_match_acc = slot_match_count / valid_slots if valid_slots else 0.0
+
+            if mer != 0:
+                mer_nonzero_stats["total_count"] += 1
+                mer_nonzero_stats["overall_match_count"] += int(pred_semantics == gt_semantics)
+                mer_nonzero_stats["intent_match_count"] += int(pred_intents == gt_intents)
+                for metric_name in (
+                    "slot_tp",
+                    "slot_fp",
+                    "slot_fn",
+                    "explicit_slot_tp",
+                    "explicit_slot_fp",
+                    "explicit_slot_fn",
+                    "implicit_slot_tp",
+                    "implicit_slot_fp",
+                    "implicit_slot_fn",
+                ):
+                    mer_nonzero_stats[metric_name] += report_detail[text_id][metric_name]
+                mer_nonzero_stats["query_mer_errors"] += mer_error
+                mer_nonzero_stats["query_mer_ref_lens"] += mer_ref_len
+                mer_nonzero_stats["slot_match_counts"] += slot_match_count
+                mer_nonzero_stats["valid_slotss"] += valid_slots
             
             success_count += 1
             if intent_group is not None:
@@ -420,6 +442,7 @@ def calculate_metrics(predict_file, ground_truth_file):
     mer = mer_errors / mer_ref_lens if mer_ref_lens else 0.0
     slot_match_accs = slot_match_counts / valid_slotss if valid_slotss else 0.0
     intent_group_metrics = {k: finalize_group_stats(v) for k, v in intent_group_stats.items()}
+    mer_nonzero_metrics = finalize_group_stats(mer_nonzero_stats)
 
     return {
         "total_count": total_count,
@@ -450,7 +473,8 @@ def calculate_metrics(predict_file, ground_truth_file):
         "query_mer_ref_lens": mer_ref_lens,
         "query_mer": mer,
         "slot_match_accs": slot_match_accs,
-        "intent_group_metrics": intent_group_metrics
+        "intent_group_metrics": intent_group_metrics,
+        "mer_nonzero_metrics": mer_nonzero_metrics,
     }, report_detail
 
 
@@ -474,6 +498,17 @@ def main():
     print(f"Implicit Slot P/R/F1:      {r['implicit_slot_precision']:.4f} / {r['implicit_slot_recall']:.4f} / {r['implicit_slot_f1']:.4f}")
     print(f"Query MER:        {r['query_mer']:.4f} ({r['query_mer_errors']}/{r['query_mer_ref_lens']})")
     print(f"Slot Match accuracy:        {r['slot_match_accs']:.4f}")
+    print("-" * 60)
+    mer_nonzero = r["mer_nonzero_metrics"]
+    print("[MER != 0] Evaluation Results")
+    print(f"[MER != 0] Total: {mer_nonzero['total_count']}")
+    print(f"[MER != 0] Overall accuracy: {mer_nonzero['overall_accuracy']:.4f}")
+    print(f"[MER != 0] Intent accuracy:  {mer_nonzero['intent_accuracy']:.4f}")
+    print(f"[MER != 0] Slot P/R/F1:      {mer_nonzero['slot_precision']:.4f} / {mer_nonzero['slot_recall']:.4f} / {mer_nonzero['slot_f1']:.4f}")
+    print(f"[MER != 0] Explicit Slot P/R/F1:      {mer_nonzero['explicit_slot_precision']:.4f} / {mer_nonzero['explicit_slot_recall']:.4f} / {mer_nonzero['explicit_slot_f1']:.4f}")
+    print(f"[MER != 0] Implicit Slot P/R/F1:      {mer_nonzero['implicit_slot_precision']:.4f} / {mer_nonzero['implicit_slot_recall']:.4f} / {mer_nonzero['implicit_slot_f1']:.4f}")
+    print(f"[MER != 0] Query MER:        {mer_nonzero['query_mer']:.4f} ({mer_nonzero['query_mer_errors']}/{mer_nonzero['query_mer_ref_lens']})")
+    print(f"[MER != 0] Slot Match accuracy:        {mer_nonzero['slot_match_accs']:.4f}")
     print("-" * 60)
     for group_name, group_result in r["intent_group_metrics"].items():
         print(f"[{group_name}] Total: {group_result['total_count']}")
