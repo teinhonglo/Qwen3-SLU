@@ -156,6 +156,7 @@ def infer_one(
 
     wav = load_audio(audio_path, sr=sr)
     prefix_text = build_prefix_text(processor, prompt)
+    #asr_wrapper.model.thinker.config._attn_implementation = "eager"
 
     inputs = processor(
         text=[prefix_text],
@@ -255,7 +256,8 @@ def plot_split_attention_heatmap(gen_out, inputs, asr_wrapper, audio_path, targe
     heatmap_matrix = np.zeros((num_gen_steps, total_seq_len))
     for i in range(num_gen_steps):
         step_attn = gen_out.attentions[i][target_layer][0]
-        avg_attn = step_attn.mean(dim=0)[0].cpu().numpy()
+        #avg_attn = step_attn.mean(dim=0)[0].cpu().numpy()
+        avg_attn = step_attn.detach().float().mean(dim=0)[0].cpu().numpy()
         heatmap_matrix[i, :len(avg_attn)] = avg_attn
 
     #3. split heat map

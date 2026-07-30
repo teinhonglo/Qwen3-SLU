@@ -20,7 +20,7 @@
         "save_safetensors": true,
         "ddp_find_unused_parameters": false,
         "remove_unused_columns": false,
-        "gradient_checkpointing": false,
+        "gradient_checkpointing": true,
         "report_to": [
             "wandb"
         ],

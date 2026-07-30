@@ -3,8 +3,8 @@
         "per_device_train_batch_size": 2,
         "per_device_eval_batch_size": 4,
         "gradient_accumulation_steps": 64,
-        "learning_rate": 5e-07,
-        "num_train_epochs": 1,
+        "learning_rate": 0.0005,
+        "num_train_epochs": 25,
         "warmup_ratio": 0.02,
         "save_strategy": "steps",
         "save_steps": 200,
@@ -42,28 +42,10 @@
             "r": 8,
             "lora_alpha": 32,
             "lora_dropout": 0.1,
-            "target_modules": [
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "o_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj"
-            ],
+            "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
             "modules_to_save": []
         },
         "wandb_project": "qwen3-asr-finetuning",
-        "wandb_log_model": "false",
-        "simpo_config": {
-            "beta": 2.5,
-            "gamma_beta_ratio": 0.0,
-            "gamma": null,
-            "length_normalization": true,
-            "response_only_loss_masking": true,
-            "sft_loss_weight": 0.0,
-            "max_response_length": null,
-            "pair_construction_strategy": "nbest_metric_highest_vs_plausible_worse"
-        }
+        "wandb_log_model": "false"
     }
 ]

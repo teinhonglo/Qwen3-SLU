@@ -6,7 +6,7 @@
 set -euo pipefail
 
 # data config (kept aligned with run_macslu.sh)
-json_root="data-json/macslu"
+json_root="data-json/macslu_fixed"
 exp_root="exp/macslu_simpo"
 attention_map_opts=""
 decoding_conf="conf/decoding/basic_decoding.json"
@@ -23,8 +23,8 @@ simpo_train_conf=""  # default: SimPO paper-style train_conf
 
 # SimPO trainer hyperparameters live in conf/*simpo.json.
 # Pair-building settings are pipeline controls for local/build_simpo_pairs.py.
-pair_mode="oracle_vs_top1"
-pair_min_score_margin="0.0"
+pair_mode="nbest_only"
+pair_min_score_margin="0.1"
 pair_max_pairs_per_sample="1"
 # Generate and score test n-best for analysis, but keep pair/training splits to train/dev to avoid test leakage.
 nbest_splits="train dev test"
@@ -44,8 +44,6 @@ stop_stage=1000
 test_sets="test"
 
 . ./local/parse_options.sh
-
-
 . ./path.sh
 
 if [ -z "$src_exp_dir" ] && [ -n "$src_model" ]; then
@@ -127,9 +125,8 @@ if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
 fi
 
 # Stage 1: Use src_exp_dir to generate n-best JSONL under src_exp_dir/<split>/nbest/.
-
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
-    echo "Stage 1: Generate same-audio n-best JSONL from src_exp_dir for: $nbest_splits"
+    echo "Stage 1: Generate n-best JSONL from src_exp_dir for: $nbest_splits"
 
     if [ -z "$src_exp_dir" ]; then
         echo "[ERROR] --src_exp_dir is required for SimPO preference data generation"
@@ -138,22 +135,31 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
 
     for split in $nbest_splits; do
         input_jsonl=${json_root}/${split}.jsonl
+        pred_file=${src_exp_dir}/${split}/predictions.jsonl
+        gt_file=${input_jsonl}
+        
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
         fi
-
-        output_nbest_dir=$(nbest_dir_for_split "$split")
-
-        CUDA_VISIBLE_DEVICES="$gpuid" \
-            python finetuning/qwen3_asr_test.py \
-                $inference_mode \
-                --exp_dir "$src_exp_dir" \
-                --input_jsonl "$input_jsonl" \
-                --output_root "$src_exp_dir" \
-                --device cuda:0 \
-                --decoding_conf "$nbest_decoding_conf" \
-                --output_nbest_jsonl_dir "$output_nbest_dir"
+        
+        if [ ! -f "$pred_file" ]; then
+        
+            output_nbest_dir=$(nbest_dir_for_split "$split")
+            
+            CUDA_VISIBLE_DEVICES="$gpuid" \
+                python finetuning/qwen3_asr_test.py \
+                    $inference_mode \
+                    --exp_dir "$src_exp_dir" \
+                    --input_jsonl "$input_jsonl" \
+                    --output_root "$src_exp_dir" \
+                    --device cuda:0 \
+                    --decoding_conf "$nbest_decoding_conf" \
+                    --output_nbest_jsonl_dir "$output_nbest_dir"
+        else
+            echo "Existed file (Evaluation Only): $pred_file"
+            python local/metrics.py --output_dir ${src_exp_dir}/${split} "$pred_file" "$gt_file" | tee ${src_exp_dir}/${split}/metrics.txt
+        fi
     done
 fi
 

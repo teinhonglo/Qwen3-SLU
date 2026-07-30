@@ -10,6 +10,8 @@ exp_root="exp/macslu"
 download_dir=${data_root}/raw
 extract_root=${data_root}/audio
 audio_dir=${data_root}/audio
+labels_file="data/macslu/labels.txt"
+label_mapping_file="data/macslu/labels_zh_en.txt"
 json_root=data-json/macslu
 inference_mode="--auto_latest_checkpoint"
 prompt_file=""   # 可指定外部 prompt 檔案，空字串則使用 prepare_macslu_jsonl.py 內建 prompt
@@ -150,8 +152,8 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
         python local/plot_macslu_confusion.py \
             --pred_file "$pred_file" \
             --gt_file "$gt_file" \
-            --labels_file "${data_root}/labels.txt" \
-            --label_mapping_file "${data_root}/labels_zh_en.txt" \
+            --labels_file "$labels_file" \
+            --label_mapping_file "$label_mapping_file" \
             --output_dir "$output_dir"
     done
 fi
