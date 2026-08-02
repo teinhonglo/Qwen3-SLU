@@ -182,6 +182,34 @@ def score_key(item: Dict[str, Any]) -> float:
     )
 
 
+def build_ground_truth_candidate(row: Dict[str, Any], gt: Dict[str, Any]) -> Dict[str, Any]:
+    raw = str(row.get("text", "") or "").strip()
+    if not raw:
+        semantics_text = json.dumps(gt.get("semantics", []), ensure_ascii=False)
+        payload = json.dumps(
+            {"asr_text": gt.get("query", ""), "semantics": semantics_text},
+            ensure_ascii=False,
+        )
+        raw = f"language None<asr_text>{payload}"
+
+    parsed = parse_hypothesis(raw)
+    score = calculate_one_prediction_metrics(parsed, gt)
+    score["valid_json"] = parsed["valid_json"]
+    if not score.get("oracle_ema", 0):
+        raise ValueError(
+            f"Ground-truth response is not an oracle for text_id={row.get('text_id', '')!r}"
+        )
+    candidate = {
+        "rank": -1,
+        "raw": raw,
+        "pred_query": parsed["pred_query"],
+        "pred_semantics": parsed["pred_semantics"],
+        "score": score,
+    }
+    candidate["preference_score"] = score_key(candidate)
+    return candidate
+
+
 def format_metrics_report(r: Dict[str, Any]) -> str:
     """Format metrics.txt with the same fields/order as local/metrics.py."""
     lines = [
@@ -377,6 +405,7 @@ def score_file(input_jsonl: str, output_jsonl: str) -> Dict[str, Any]:
                 add_best_metrics(best_metrics_stats, scored[0]["score"], gt)
             out = dict(row)
             out["scored_nbest"] = scored
+            out["ground_truth_candidate"] = build_ground_truth_candidate(row, gt)
             fout.write(json.dumps(out, ensure_ascii=False) + "\n")
             stats["samples"] += 1
     stats["oracle_ema_coverage"] = stats["oracle_hit_samples"] / stats["samples"] if stats["samples"] else 0.0
