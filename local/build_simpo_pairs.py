@@ -10,6 +10,10 @@ def is_plausible(item: Dict[str, Any]) -> bool:
     return bool(score.get("valid_json", 0)) and bool(item.get("raw", "").strip())
 
 
+def is_oracle(item: Dict[str, Any]) -> bool:
+    return bool(item.get("score", {}).get("oracle_ema", 0))
+
+
 def write_rank_preference_histogram(output_jsonl: str, values: List[Tuple[int, float]], bins: int = 10) -> None:
     ranks = sorted({rank for rank, _ in values})
     if not values:
@@ -38,8 +42,21 @@ def write_rank_preference_histogram(output_jsonl: str, values: List[Tuple[int, f
 
 
 def build_pairs(input_jsonl: str, output_jsonl: str, min_score_margin: float, max_pairs_per_sample: int, pair_mode: str) -> Dict[str, Any]:
+    if pair_mode not in {"nbest_only", "nbest_oracle"}:
+        raise ValueError(f"Unsupported pair_mode: {pair_mode}")
+    if max_pairs_per_sample < 1:
+        raise ValueError("max_pairs_per_sample must be at least 1")
     os.makedirs(os.path.dirname(output_jsonl) or ".", exist_ok=True)
-    stats = {"samples": 0, "pairs": 0, "dropped_no_pair": 0, "dropped_tie": 0}
+    stats = {
+        "samples": 0,
+        "pairs": 0,
+        "dropped_no_pair": 0,
+        "dropped_tie": 0,
+        "samples_with_nbest_oracle": 0,
+        "samples_without_nbest_oracle": 0,
+        "pairs_nbest_oracle_chosen": 0,
+        "pairs_ground_truth_chosen": 0,
+    }
     rank_preference_values: List[Tuple[int, float]] = []
     with open(input_jsonl, "r", encoding="utf-8") as fin, open(output_jsonl, "w", encoding="utf-8") as fout:
         for line in fin:
@@ -52,29 +69,33 @@ def build_pairs(input_jsonl: str, output_jsonl: str, min_score_margin: float, ma
                 rank_preference_values.append(
                     (int(candidate.get("rank", -1)), float(candidate.get("preference_score", 0.0)))
                 )
-            candidates: List[Dict[str, Any]] = [c for c in scored_nbest if is_plausible(c)]
-            candidates.sort(key=lambda x: (float(x.get("preference_score", 0.0)), -int(x.get("rank", 0))), reverse=True)
-            if len(candidates) < 2:
-                stats["dropped_no_pair"] += 1
-                continue
-            if pair_mode == "oracle_vs_top1":
-                top1 = next((c for c in candidates if int(c.get("rank", -1)) == 0), None)
-                oracle = max(
-                    candidates,
-                    key=lambda c: (
-                        float(c.get("preference_score", 0.0)),
-                        -int(c.get("rank", 999999)),
-                    ),
-                )
-                if top1 is None or int(oracle.get("rank", -1)) == 0 or oracle.get("raw", "").strip() == top1.get("raw", "").strip():
+            candidates: List[Dict[str, Any]] = sorted(
+                (c for c in scored_nbest if is_plausible(c)),
+                key=lambda x: int(x.get("rank", 999999)),
+            )
+            oracle_candidates = [candidate for candidate in candidates if is_oracle(candidate)]
+            if oracle_candidates:
+                stats["samples_with_nbest_oracle"] += 1
+                chosen = oracle_candidates[0]
+                rejected_candidates = [candidate for candidate in candidates if not is_oracle(candidate)]
+                chosen_source = "nbest_oracle"
+            else:
+                stats["samples_without_nbest_oracle"] += 1
+                if pair_mode == "nbest_only":
                     stats["dropped_no_pair"] += 1
                     continue
-                rejected_candidates = [top1]
-            else:
-                oracle = candidates[0]
-                rejected_candidates = list(reversed(candidates[1:]))
+                chosen = row.get("ground_truth_candidate")
+                if not isinstance(chosen, dict) or not chosen.get("raw") or "preference_score" not in chosen:
+                    raise ValueError(
+                        "Missing scored ground_truth_candidate for "
+                        f"text_id={row.get('text_id', '')!r}; rerun local/score_nbest_oracle.py"
+                    )
+                rejected_candidates = candidates
+                chosen_source = "ground_truth"
 
-            chosen = oracle
+            if not rejected_candidates:
+                stats["dropped_no_pair"] += 1
+                continue
             pairs = 0
             for rejected in rejected_candidates:
                 margin = float(chosen.get("preference_score", 0.0)) - float(rejected.get("preference_score", 0.0))
@@ -95,9 +116,11 @@ def build_pairs(input_jsonl: str, output_jsonl: str, min_score_margin: float, ma
                     "rejected_score": rejected.get("score", {}),
                     "pair_margin": margin,
                     "pair_mode": pair_mode,
+                    "chosen_source": chosen_source,
                 }
                 fout.write(json.dumps(out, ensure_ascii=False) + "\n")
                 stats["pairs"] += 1
+                stats[f"pairs_{chosen_source}_chosen"] += 1
                 pairs += 1
                 if pairs >= max_pairs_per_sample:
                     break
@@ -116,7 +139,7 @@ def main():
     p.add_argument("--output_jsonl", required=True)
     p.add_argument("--min_score_margin", type=float, default=0.1)
     p.add_argument("--max_pairs_per_sample", type=int, default=1)
-    p.add_argument("--pair_mode", choices=["nbest_only", "oracle_vs_top1"], default="nbest_only")
+    p.add_argument("--pair_mode", choices=["nbest_only", "nbest_oracle"], default="nbest_only")
     args = p.parse_args()
     stats = build_pairs(args.input_jsonl, args.output_jsonl, args.min_score_margin, args.max_pairs_per_sample, args.pair_mode)
     print(json.dumps(stats, ensure_ascii=False, indent=2))

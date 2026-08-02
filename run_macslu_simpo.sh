@@ -23,6 +23,7 @@ simpo_train_conf=""  # default: SimPO paper-style train_conf
 
 # SimPO trainer hyperparameters live in conf/*simpo.json.
 # Pair-building settings are pipeline controls for local/build_simpo_pairs.py.
+# nbest_only requires a generated oracle; nbest_oracle falls back to the ground truth.
 pair_mode="nbest_only"
 pair_min_score_margin="0.1"
 pair_max_pairs_per_sample="1"
@@ -163,7 +164,7 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
     done
 fi
 
-# Stage 2: Score each n-best hypothesis under src_exp_dir/<split>/nbest/.
+# Stage 2: Score each n-best hypothesis and the ground-truth fallback candidate.
 if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
     echo "Stage 2: Score n-best with oracle EMA and local/metrics.py metrics for: $score_splits"
 
