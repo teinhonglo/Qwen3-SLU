@@ -167,6 +167,10 @@ def infer_one(
     )
 
     prefix_len = int(inputs["attention_mask"][0].sum().item())
+    vocabulary_mapping = getattr(model, "_macslu_vocabulary_mapping", None)
+    if vocabulary_mapping is not None:
+        from vocabulary_pruning import remap_token_tensor
+        inputs["input_ids"] = remap_token_tensor(inputs["input_ids"], vocabulary_mapping)
     inputs = move_inputs_to_device(inputs, device=device, model_dtype=model_dtype)
 
     gen_kwargs = {
@@ -209,6 +213,10 @@ def infer_one(
         gen_only_ids = output_ids[:, prefix_len:]
     else:
         gen_only_ids = output_ids
+
+    if vocabulary_mapping is not None:
+        from vocabulary_pruning import restore_token_tensor
+        gen_only_ids = restore_token_tensor(gen_only_ids, vocabulary_mapping)
 
     decoded = [x.strip() for x in batch_decode_text(processor, gen_only_ids)]
     ########### Attention Heat map ############
@@ -628,6 +636,14 @@ def main():
             layer_cfg = resolved_decoding.get("layer_lmhead", {})
             layer_index = int(layer_cfg.get("layer_index", -1))
             asr_wrapper.model.set_layer_lmhead_index(layer_index)
+
+    vocabulary_pruning = model_args_conf.get("vocabulary_pruning", {})
+    if vocabulary_pruning.get("enabled", False):
+        from vocabulary_pruning import apply_structural_vocabulary_pruning, load_vocabulary_mapping
+        apply_structural_vocabulary_pruning(
+            asr_wrapper.model,
+            load_vocabulary_mapping(vocabulary_pruning["manifest"]),
+        )
 
     rows = load_jsonl(args.input_jsonl)
     rows_out = []
