@@ -28,7 +28,7 @@
     "sr": 16000,
     "teacher": {
       "model_path": "Qwen/Qwen3-ASR-1.7B",
-      "source_checkpoint": "exp/macslu_fixed/macslu_qwen3_asr_17b_ep20_lora_woemblmhead/checkpoint-2820",
+      "teacher_source_checkpoint": "exp/macslu_fixed/macslu_qwen3_asr_17b_ep20_lora_woemblmhead/checkpoint-2820",
       "exp_dir": "exp/macslu_pruneslu_teacher/macslu_qwen3_asr_17b_pruneslu_teacher",
       "checkpoint_mode": "best"
     },

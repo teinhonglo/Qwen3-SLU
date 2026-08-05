@@ -37,11 +37,11 @@ def test_both_experiment_configs_keep_only_teacher_source_checkpoint():
     ]
     for config_path in configs:
         config = json.loads(Path(config_path).read_text())
-        assert config[1]["teacher"]["source_checkpoint"] == expected
+        assert config[1]["teacher"]["teacher_source_checkpoint"] == expected
         assert "checkpoint_path" not in config[1]["teacher"]
         command = (
             "source local/macslu_distillation_lib.sh; "
-            f"teacher_setting_from_conf '{config_path}' source_checkpoint"
+            f"teacher_setting_from_conf '{config_path}' teacher_source_checkpoint"
         )
         result = subprocess.run(["bash", "-c", command], check=True, text=True,
                                 capture_output=True)
@@ -54,8 +54,8 @@ def test_both_configs_share_vocabulary_and_teacher_source():
         json.loads(Path("conf/macslu_qwen3_asr_06b_pruneslu_kd_kmeans.json").read_text()),
     ]
     expected_source = "exp/macslu_fixed/macslu_qwen3_asr_17b_ep20_lora_woemblmhead/checkpoint-2820"
-    assert configs[0][1]["teacher"]["source_checkpoint"] == expected_source
-    assert configs[1][1]["teacher"]["source_checkpoint"] == expected_source
+    assert configs[0][1]["teacher"]["teacher_source_checkpoint"] == expected_source
+    assert configs[1][1]["teacher"]["teacher_source_checkpoint"] == expected_source
     assert configs[0][1]["vocabulary_pruning"] == configs[1][1]["vocabulary_pruning"]
 
 
@@ -106,7 +106,7 @@ def test_runtime_conf_toggles_vocabulary_pruning(tmp_path):
 def test_full_vocabulary_uses_teacher_source_and_stage2_only_runs_for_pruning():
     for script_path in ("run_macslu_distillation.sh", "run_macslu_distillation_kmeans.sh"):
         script = Path(script_path).read_text()
-        assert 'conf_teacher_source=$(teacher_setting_from_conf "$base_student_train_conf" source_checkpoint)' in script
+        assert 'conf_teacher_source=$(teacher_setting_from_conf "$base_student_train_conf" teacher_source_checkpoint)' in script
         assert 'teacher_for_student="$teacher_source_checkpoint"' in script
         assert 'if [ "$use_vocabulary_pruning" = true ]; then' in script
         assert 'Stage 2: Vocabulary pruning disabled; use teacher_source_checkpoint directly' in script
