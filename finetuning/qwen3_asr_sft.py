@@ -352,6 +352,16 @@ def main():
     processor = asr_wrapper.processor
 
     patch_outer_forward(model)
+    vocabulary_pruning = model_args_conf.get("vocabulary_pruning", {})
+    vocabulary_mapping = None
+    if vocabulary_pruning.get("enabled", False):
+        from vocabulary_pruning import apply_structural_vocabulary_pruning, load_vocabulary_mapping
+        manifest = vocabulary_pruning.get("manifest", "")
+        if not manifest:
+            raise ValueError("vocabulary_pruning.enabled requires vocabulary_pruning.manifest")
+        vocabulary_mapping = load_vocabulary_mapping(manifest)
+        apply_structural_vocabulary_pruning(model, vocabulary_mapping)
+        print(f"[vocabulary-pruning] Structurally pruned embedding and LM head: {manifest}")
     model.generation_config = GenerationConfig.from_model_config(model.config)
     
     init_from_checkpoint = (args_cli.init_from_checkpoint or "").strip()
@@ -406,6 +416,9 @@ def main():
     default_prompt = extract_default_prompt(ds["train"])
 
     collator = DataCollatorForQwen3ASRFinetuning(processor=processor, sampling_rate=sr)
+    if vocabulary_mapping is not None:
+        from vocabulary_pruning import VocabularyRemappingCollator
+        collator = VocabularyRemappingCollator(collator, vocabulary_mapping)
 
     training_args_conf["run_name"] = os.path.basename(args_cli.output_dir)
     if model_args_conf.get("wandb_project"):
