@@ -97,6 +97,7 @@ def run(quantized=False):
     with open(args.train_conf, encoding="utf-8") as f: conf = json.load(f)
     training_conf, model_conf = dict(conf[0]), conf[1]; kd = model_conf["distillation"]
     teacher_conf = model_conf.get("teacher", {})
+    
     vocabulary_pruning = model_conf.get("vocabulary_pruning", {})
     if vocabulary_pruning.get("enabled", False):
         if not teacher_conf.get("exp_dir"):
@@ -107,14 +108,17 @@ def run(quantized=False):
         teacher_path = teacher_conf.get("teacher_source_checkpoint", "")
         if not teacher_path:
             raise ValueError("Full-vocabulary distillation requires teacher.teacher_source_checkpoint")
+            
     if not kd.get("enabled"): raise ValueError("distillation.enabled must be true")
     if not quantized and "quantization" in model_conf:
         raise ValueError("Distillation-only configuration must not contain quantization")
     use_bf16 = torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8
     dtype = torch.bfloat16 if use_bf16 else (torch.float16 if torch.cuda.is_available() else torch.float32)
     student_wrapper, student, processor = load_asr(model_conf["model_path"], dtype)
+    
     teacher_wrapper, teacher, teacher_processor = load_asr(teacher_path, dtype)
     patch_outer_forward(student)
+    
     vocabulary_mapping = None
     if vocabulary_pruning.get("enabled", False):
         from vocabulary_pruning import apply_structural_vocabulary_pruning, load_vocabulary_mapping
@@ -125,6 +129,7 @@ def run(quantized=False):
     if hasattr(teacher, "thinker"):
         patch_outer_forward(teacher)
     freeze_teacher(teacher)
+    
     metadata = {"teacher": model_metadata(teacher, teacher_processor, teacher_path),
                 "student": model_metadata(student, processor, model_conf["model_path"])}
     if metadata["teacher"]["vocabulary_size"] != metadata["student"]["vocabulary_size"]:
@@ -193,6 +198,7 @@ def run(quantized=False):
     os.makedirs(args.output_dir, exist_ok=True); save_json(os.path.join(args.output_dir, "train_conf.json"), conf)
     save_json(os.path.join(args.output_dir, "distillation_runtime_conf.json"), {"seed": args.seed,
               "teacher_path": teacher_path, "distillation": kd, "quantization": schedule})
+    
     processor.save_pretrained(args.output_dir)
     trainer.train(resume_from_checkpoint=args.resume_from or None)
     best = trainer.state.best_model_checkpoint

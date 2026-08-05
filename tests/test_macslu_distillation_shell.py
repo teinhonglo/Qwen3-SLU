@@ -28,7 +28,6 @@ def test_explicit_teacher_checkpoint_must_contain_model_files(tmp_path):
     assert result.returncode != 0
     assert "neither a model/config nor a PEFT adapter" in result.stderr
 
-
 def test_both_experiment_configs_keep_only_teacher_source_checkpoint():
     expected = "exp/macslu_fixed/macslu_qwen3_asr_17b_ep20_lora_woemblmhead/checkpoint-2820"
     configs = [

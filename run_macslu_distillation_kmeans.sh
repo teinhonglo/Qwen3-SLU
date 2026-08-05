@@ -58,6 +58,7 @@ student_exp_dir="$student_exp_root/${student_tag}_${vocabulary_variant}"
 teacher_train_conf="$teacher_exp_dir/runtime_train_conf.json"
 student_train_conf="$student_exp_dir/runtime_train_conf.json"
 
+
 conf_teacher_source=$(teacher_setting_from_conf "$base_student_train_conf" teacher_source_checkpoint)
 conf_teacher_mode=$(teacher_setting_from_conf "$base_student_train_conf" checkpoint_mode)
 
