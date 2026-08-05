@@ -25,7 +25,7 @@ vocabulary_manifest="data-json/macslu/vocabulary/qwen3_asr_macslu_top2000.json"
 teacher_train_conf="conf/macslu_qwen3_asr_17b_pruneslu_teacher.json"
 teacher_source_checkpoint=""
 teacher_exp_root="exp/macslu_pruneslu_teacher"
-teacher_checkpoint_mode="best"
+teacher_checkpoint_mode="latest"
 skip_teacher_train=0
 
 # Student.
@@ -64,7 +64,7 @@ conf_teacher_mode=$(teacher_setting_from_conf "$base_student_train_conf" checkpo
 [ -z "$conf_teacher_mode" ] || teacher_checkpoint_mode="$conf_teacher_mode"
 
 if [ "$use_vocabulary_pruning" = true ]; then
-    teacher_for_student="$teacher_exp_dir/checkpoint-best"
+    teacher_for_student=""
 else
     teacher_for_student="$teacher_source_checkpoint"
 fi

@@ -38,6 +38,7 @@ def test_both_experiment_configs_keep_only_teacher_source_checkpoint():
     for config_path in configs:
         config = json.loads(Path(config_path).read_text())
         assert config[1]["teacher"]["teacher_source_checkpoint"] == expected
+        assert config[1]["teacher"]["checkpoint_mode"] == "latest"
         assert "checkpoint_path" not in config[1]["teacher"]
         command = (
             "source local/macslu_distillation_lib.sh; "
@@ -108,6 +109,7 @@ def test_full_vocabulary_uses_teacher_source_and_stage2_only_runs_for_pruning():
         script = Path(script_path).read_text()
         assert 'conf_teacher_source=$(teacher_setting_from_conf "$base_student_train_conf" teacher_source_checkpoint)' in script
         assert 'teacher_for_student="$teacher_source_checkpoint"' in script
+        assert 'teacher_checkpoint_mode="latest"' in script
         assert 'if [ "$use_vocabulary_pruning" = true ]; then' in script
         assert 'Stage 2: Vocabulary pruning disabled; use teacher_source_checkpoint directly' in script
         assert 'teacher_checkpoint=""' not in script

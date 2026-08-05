@@ -102,7 +102,7 @@ def run(quantized=False):
         if not teacher_conf.get("exp_dir"):
             raise ValueError("Vocabulary-pruned distillation requires teacher.exp_dir")
         teacher_path = resolve_checkpoint(teacher_conf["exp_dir"],
-                                          teacher_conf.get("checkpoint_mode", "best"))
+                                          teacher_conf.get("checkpoint_mode", "latest"))
     else:
         teacher_path = teacher_conf.get("teacher_source_checkpoint", "")
         if not teacher_path:
