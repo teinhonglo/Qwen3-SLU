@@ -1,7 +1,7 @@
 #!/bin/bash
 # SimPO MAC-SLU recipe: generate same-audio n-best hypotheses, score them with
-# oracle/SLU metrics, build chosen/rejected preference pairs, train SimPO, then
-# reuse run_macslu.sh testing/evaluation.
+# oracle/SLU metrics, build chosen/rejected preference pairs, export analysis,
+# train SimPO, then reuse run_macslu.sh testing/evaluation.
 
 set -euo pipefail
 
@@ -31,6 +31,8 @@ pair_max_pairs_per_sample="1"
 nbest_splits="train dev test"
 score_splits="train dev test"
 pair_splits="train dev"
+# Export sample-level n-best/pair analysis for the same splits used to build pairs.
+analysis_splits="train dev"
 
 # training config
 gpuid=0
@@ -83,22 +85,6 @@ conf_tag=$(basename -s .json "$simpo_train_conf")
 exp_base=$exp_root
 exp_dir=${exp_base}/${conf_tag}${suffix}
 
-nbest_dir_for_split() {
-    echo "${src_exp_dir}/$1/nbest"
-}
-
-nbest_jsonl_for_split() {
-    echo "$(nbest_dir_for_split "$1")/$1.jsonl"
-}
-
-scored_jsonl_for_split() {
-    echo "$(nbest_dir_for_split "$1")/scored_nbest.jsonl"
-}
-
-pair_jsonl_for_split() {
-    echo "$(nbest_dir_for_split "$1")/simpo_pairs.jsonl"
-}
-
 if [ "$checkpoint" != "" ]; then
     training_opts="--resume_from $checkpoint --resume 1"
 else
@@ -146,7 +132,7 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
         
         if [ ! -f "$pred_file" ]; then
         
-            output_nbest_dir=$(nbest_dir_for_split "$split")
+            output_nbest_dir="${src_exp_dir}/${split}/nbest"
             
             CUDA_VISIBLE_DEVICES="$gpuid" \
                 python finetuning/qwen3_asr_test.py \
@@ -169,8 +155,8 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
     echo "Stage 2: Score n-best with oracle EMA and local/metrics.py metrics for: $score_splits"
 
     for split in $score_splits; do
-        input_jsonl=$(nbest_jsonl_for_split "$split")
-        output_jsonl=$(scored_jsonl_for_split "$split")
+        input_jsonl="${src_exp_dir}/${split}/nbest/${split}.jsonl"
+        output_jsonl="${src_exp_dir}/${split}/nbest/scored_nbest.jsonl"
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -186,8 +172,8 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     echo "Stage 3: Build SimPO chosen/rejected pairs for: $pair_splits"
 
     for split in $pair_splits; do
-        input_jsonl=$(scored_jsonl_for_split "$split")
-        output_jsonl=$(pair_jsonl_for_split "$split")
+        input_jsonl="${src_exp_dir}/${split}/nbest/scored_nbest.jsonl"
+        output_jsonl="${src_exp_dir}/${split}/nbest/simpo_pairs.jsonl"
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -201,9 +187,32 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     done
 fi
 
-# Stage 4: Run SimPO finetuning from simpo_init_model using train/dev pairs.
+# Stage 4: Export rank-aligned n-best and chosen/rejected pair data for analysis.
 if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
-    echo "Stage 4: SimPO preference finetuning on MAC-SLU"
+    echo "Stage 4: Export SimPO analysis JSONL for: $analysis_splits"
+
+    for split in $analysis_splits; do
+        input_jsonl="${src_exp_dir}/${split}/nbest/scored_nbest.jsonl"
+        pairs_jsonl="${src_exp_dir}/${split}/nbest/simpo_pairs.jsonl"
+        output_jsonl="${src_exp_dir}/${split}/nbest/simpo_analysis.jsonl"
+        if [ ! -f "$input_jsonl" ]; then
+            echo "[ERROR] missing required file: $input_jsonl"
+            exit 1
+        fi
+        if [ ! -f "$pairs_jsonl" ]; then
+            echo "[ERROR] missing required file: $pairs_jsonl"
+            exit 1
+        fi
+        python local/export_simpo_analysis.py \
+            --input_jsonl "$input_jsonl" \
+            --pairs_jsonl "$pairs_jsonl" \
+            --output_jsonl "$output_jsonl"
+    done
+fi
+
+# Stage 5: Run SimPO finetuning from simpo_init_model using train/dev pairs.
+if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
+    echo "Stage 5: SimPO preference finetuning on MAC-SLU"
 
     if [ -z "$simpo_init_model" ]; then
         echo "[ERROR] --src_exp_dir or --simpo_init_model is required so SimPO starts from SFT/instruction-tuned weights"
@@ -224,14 +233,14 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
         python finetuning/qwen3_asr_simpo.py --seed $seed $training_opts \
             "${init_opts[@]}" \
             --train_conf "$simpo_train_conf" \
-            --train_file "$(pair_jsonl_for_split train)" \
-            --eval_file "$(pair_jsonl_for_split dev)" \
+            --train_file "${src_exp_dir}/train/nbest/simpo_pairs.jsonl" \
+            --eval_file "${src_exp_dir}/dev/nbest/simpo_pairs.jsonl" \
             --output_dir "$exp_dir"
 fi
 
-# Stage 5: Reuse run_macslu.sh to run standard test inference/eval/summary.
-if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
-    echo "Stage 5: Reuse run_macslu.sh test/eval/summary"
+# Stage 6: Reuse run_macslu.sh to run standard test inference/eval/summary.
+if [ $stage -le 6 ] && [ $stop_stage -ge 6 ]; then
+    echo "Stage 6: Reuse run_macslu.sh test/eval/summary"
 
     ./run_macslu.sh \
         --stage 2 \
