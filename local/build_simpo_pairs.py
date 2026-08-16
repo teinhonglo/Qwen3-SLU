@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 from typing import Any, Dict, List, Tuple
@@ -12,6 +13,31 @@ def is_plausible(item: Dict[str, Any]) -> bool:
 
 def is_oracle(item: Dict[str, Any]) -> bool:
     return bool(item.get("score", {}).get("oracle_ema", 0))
+
+
+def oracle_balance_keep(row: Dict[str, Any], rank0_is_oracle: bool) -> Tuple[bool, str, float]:
+    """Deterministically downsample easy (rank-0 oracle) examples by intent count."""
+    if not rank0_is_oracle:
+        return True, "rank0_error", 1.0
+
+    semantics = row.get("semantics", [])
+    intent_count = len(semantics) if isinstance(semantics, list) else 0
+    if intent_count == 0:
+        ratio = 0.025
+    elif intent_count == 1:
+        ratio = 0.15
+    elif intent_count == 2:
+        ratio = 0.20
+    else:
+        ratio = 0.40
+
+    sample_key = json.dumps(
+        [row.get("text_id", ""), row.get("audio", ""), row.get("query", "")],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    bucket = int.from_bytes(hashlib.sha256(sample_key.encode("utf-8")).digest()[:8], "big") / 2**64
+    return bucket < ratio, f"rank0_correct_{intent_count}_intents", ratio
 
 
 def write_rank_preference_histogram(output_jsonl: str, values: List[Tuple[int, float]], bins: int = 10) -> None:
@@ -42,7 +68,7 @@ def write_rank_preference_histogram(output_jsonl: str, values: List[Tuple[int, f
 
 
 def build_pairs(input_jsonl: str, output_jsonl: str, min_score_margin: float, max_pairs_per_sample: int, pair_mode: str) -> Dict[str, Any]:
-    if pair_mode not in {"nbest_only", "nbest_oracle"}:
+    if pair_mode not in {"nbest_only", "nbest_oracle", "oracle_balance"}:
         raise ValueError(f"Unsupported pair_mode: {pair_mode}")
     if max_pairs_per_sample < 1:
         raise ValueError("max_pairs_per_sample must be at least 1")
@@ -56,6 +82,8 @@ def build_pairs(input_jsonl: str, output_jsonl: str, min_score_margin: float, ma
         "samples_without_nbest_oracle": 0,
         "pairs_nbest_oracle_chosen": 0,
         "pairs_ground_truth_chosen": 0,
+        "dropped_oracle_balance": 0,
+        "oracle_balance_groups": {},
     }
     rank_preference_values: List[Tuple[int, float]] = []
     with open(input_jsonl, "r", encoding="utf-8") as fin, open(output_jsonl, "w", encoding="utf-8") as fout:
@@ -74,6 +102,7 @@ def build_pairs(input_jsonl: str, output_jsonl: str, min_score_margin: float, ma
                 key=lambda x: int(x.get("rank", 999999)),
             )
             oracle_candidates = [candidate for candidate in candidates if is_oracle(candidate)]
+            rank0_is_oracle = bool(candidates and int(candidates[0].get("rank", -1)) == 0 and is_oracle(candidates[0]))
             if oracle_candidates:
                 stats["samples_with_nbest_oracle"] += 1
                 chosen = oracle_candidates[0]
@@ -92,6 +121,17 @@ def build_pairs(input_jsonl: str, output_jsonl: str, min_score_margin: float, ma
                     )
                 rejected_candidates = candidates
                 chosen_source = "ground_truth"
+
+            if pair_mode == "oracle_balance":
+                keep, ratio_group, keep_ratio = oracle_balance_keep(row, rank0_is_oracle)
+                group_stats = stats["oracle_balance_groups"].setdefault(
+                    ratio_group, {"samples": 0, "kept": 0, "keep_ratio": keep_ratio}
+                )
+                group_stats["samples"] += 1
+                if not keep:
+                    stats["dropped_oracle_balance"] += 1
+                    continue
+                group_stats["kept"] += 1
 
             if not rejected_candidates:
                 stats["dropped_no_pair"] += 1
@@ -139,7 +179,7 @@ def main():
     p.add_argument("--output_jsonl", required=True)
     p.add_argument("--min_score_margin", type=float, default=0.1)
     p.add_argument("--max_pairs_per_sample", type=int, default=1)
-    p.add_argument("--pair_mode", choices=["nbest_only", "nbest_oracle"], default="nbest_only")
+    p.add_argument("--pair_mode", choices=["nbest_only", "nbest_oracle", "oracle_balance"], default="nbest_only")
     args = p.parse_args()
     stats = build_pairs(args.input_jsonl, args.output_jsonl, args.min_score_margin, args.max_pairs_per_sample, args.pair_mode)
     print(json.dumps(stats, ensure_ascii=False, indent=2))

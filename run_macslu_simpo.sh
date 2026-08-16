@@ -24,6 +24,8 @@ simpo_train_conf=""  # default: SimPO paper-style train_conf
 # SimPO trainer hyperparameters live in conf/*simpo.json.
 # Pair-building settings are pipeline controls for local/build_simpo_pairs.py.
 # nbest_only requires a generated oracle; nbest_oracle falls back to the ground truth.
+# oracle_balance also uses GT fallback, while deterministically retaining all rank-0
+# errors and 2.5%/15%/20%/40% of rank-0-correct samples with 0/1/2/3+ intents.
 pair_mode="nbest_only"
 pair_min_score_margin="0.1"
 pair_max_pairs_per_sample="1"
@@ -82,7 +84,8 @@ if [ ! -f "$nbest_decoding_conf" ]; then
 fi
 
 conf_tag=$(basename -s .json "$simpo_train_conf")
-exp_base=$exp_root
+# Keep runs made with different pair construction policies in separate trees.
+exp_base=${exp_root}_${pair_mode}
 exp_dir=${exp_base}/${conf_tag}${suffix}
 
 if [ "$checkpoint" != "" ]; then
