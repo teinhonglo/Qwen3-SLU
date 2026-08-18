@@ -38,6 +38,7 @@ if [ ! -f "$decoding_conf" ]; then
 fi
 
 conf_tag=$(basename -s .json "$train_conf")
+decoding_conf_name=$(basename -s .json "$decoding_conf")
 exp_root=${exp_root}/${conf_tag}${suffix}
 phase1_exp_dir=${exp_root}/phase1_no_single
 phase2_exp_dir=${exp_root}/phase2_no_single_double
@@ -147,7 +148,7 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
     for test_set in $test_sets; do
         test_jsonl=${json_root}/${test_set}.jsonl
 
-        mkdir -p ${phase3_exp_dir}/${test_set}
+        mkdir -p ${phase3_exp_dir}/${test_set}_${decoding_conf_name}
 
         CUDA_VISIBLE_DEVICES="$gpuid" \
             python finetuning/qwen3_asr_test.py \
@@ -165,7 +166,7 @@ if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
     echo "Stage 5: Evaluate MAC-SLU predictions from final curriculum model"
 
     for test_set in $test_sets; do
-        pred_file=${phase3_exp_dir}/${test_set}/predictions.jsonl
+        pred_file=${phase3_exp_dir}/${test_set}_${decoding_conf_name}/predictions.jsonl
         gt_file=${json_root}/${test_set}.jsonl
 
         if [ ! -f "$pred_file" ]; then
@@ -173,8 +174,8 @@ if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
             continue
         fi
 
-        python local/metrics.py --output_dir "${phase3_exp_dir}/${test_set}" "$pred_file" "$gt_file" \
-            | tee "${phase3_exp_dir}/${test_set}/metrics.txt"
+        python local/metrics.py --output_dir "${phase3_exp_dir}/${test_set}_${decoding_conf_name}" "$pred_file" "$gt_file" \
+            | tee "${phase3_exp_dir}/${test_set}_${decoding_conf_name}/metrics.txt"
     done
 fi
 
@@ -182,9 +183,9 @@ if [ $stage -le 6 ] && [ $stop_stage -ge 6 ]; then
     echo "Stage 6: Plot MAC-SLU confusion matrices for final curriculum model"
 
     for test_set in $test_sets; do
-        pred_file=${phase3_exp_dir}/${test_set}/predictions.jsonl
+        pred_file=${phase3_exp_dir}/${test_set}_${decoding_conf_name}/predictions.jsonl
         gt_file=${json_root}/${test_set}.jsonl
-        output_dir=${phase3_exp_dir}/${test_set}
+        output_dir=${phase3_exp_dir}/${test_set}_${decoding_conf_name}
 
         if [ ! -f "$pred_file" ]; then
             echo "[WARNING] prediction file not found: $pred_file"
@@ -209,7 +210,7 @@ if [ $stage -le 7 ] && [ $stop_stage -ge 7 ]; then
     echo "Stage 7: Summary (MAC-SLU curriculum final model)"
 
     for test_set in $test_sets; do
-        metrics_file=${phase3_exp_dir}/${test_set}/metrics.txt
+        metrics_file=${phase3_exp_dir}/${test_set}_${decoding_conf_name}/metrics.txt
         if [ ! -f "$metrics_file" ]; then
             echo "[WARNING] metrics file not found: $metrics_file"
             continue

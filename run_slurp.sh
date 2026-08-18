@@ -11,6 +11,7 @@ json_root="data-json/slurp"
 inference_mode="--auto_latest_checkpoint"
 prompt_file=""   # Optional external prompt file. Empty means using prepare_slurp_jsonl.py default prompt
 attention_map_opts="" # e.g., --save_attention_map --attn_layers all --attn_mode rollout --attn_imgs_dir imgs
+decoding_conf="conf/decoding/basic_decoding.json"
 
 # training config
 nj=4
@@ -32,7 +33,13 @@ if [ ! -f "$train_conf" ]; then
     exit 1
 fi
 
+if [ ! -f "$decoding_conf" ]; then
+    echo "[ERROR] decoding_conf not found: $decoding_conf"
+    exit 1
+fi
+
 conf_tag=$(basename -s .json $train_conf)
+decoding_conf_name=$(basename -s .json "$decoding_conf")
 exp_root=$exp_root/${conf_tag}${suffix}
 
 if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
@@ -74,7 +81,7 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
     for test_set in $test_sets; do
         test_jsonl=${data_dir}/${test_set}.jsonl
 
-        mkdir -p ${exp_dir}/${test_set}
+        mkdir -p ${exp_dir}/${test_set}_${decoding_conf_name}
 
         CUDA_VISIBLE_DEVICES="$gpuid" \
             python finetuning/qwen3_asr_test.py \
@@ -83,6 +90,7 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
                 --input_jsonl $test_jsonl \
                 --output_root $exp_dir \
                 --device cuda:0 \
+                --decoding_conf "$decoding_conf" \
                 $attention_map_opts
     done
 fi
@@ -91,7 +99,7 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     echo "Stage 3: Evaluate SLURP predictions"
 
     for test_set in $test_sets; do
-        pred_file=${exp_root}/${test_set}/predictions.jsonl
+        pred_file=${exp_root}/${test_set}_${decoding_conf_name}/predictions.jsonl
         gt_file=${json_root}/${test_set}.jsonl
 
         if [ ! -f "$pred_file" ]; then
@@ -101,7 +109,7 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
 
         python local/slurp/evaluate_qwen.py \
             "$pred_file" "$gt_file" \
-            --output ${exp_root}/${test_set}/metrics.txt
+            --output ${exp_root}/${test_set}_${decoding_conf_name}/metrics.txt
     done
 fi
 
@@ -109,7 +117,7 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
     echo "Stage 4: Summary (SLURP)"
 
     for test_set in $test_sets; do
-        metrics_file=${exp_root}/${test_set}/metrics.txt
+        metrics_file=${exp_root}/${test_set}_${decoding_conf_name}/metrics.txt
         if [ ! -f "$metrics_file" ]; then
             echo "[WARNING] metrics file not found: $metrics_file"
             continue

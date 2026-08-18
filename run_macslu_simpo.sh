@@ -84,6 +84,7 @@ if [ ! -f "$nbest_decoding_conf" ]; then
 fi
 
 conf_tag=$(basename -s .json "$simpo_train_conf")
+nbest_decoding_conf_name=$(basename -s .json "$nbest_decoding_conf")
 # Keep runs made with different pair construction policies in separate trees.
 exp_base=${exp_root}_${pair_mode}
 exp_dir=${exp_base}/${conf_tag}${suffix}
@@ -125,7 +126,7 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
 
     for split in $nbest_splits; do
         input_jsonl=${json_root}/${split}.jsonl
-        pred_file=${src_exp_dir}/${split}/predictions.jsonl
+        pred_file=${src_exp_dir}/${split}_${nbest_decoding_conf_name}/predictions.jsonl
         gt_file=${input_jsonl}
         
         if [ ! -f "$input_jsonl" ]; then
@@ -135,7 +136,7 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
         
         if [ ! -f "$pred_file" ]; then
         
-            output_nbest_dir="${src_exp_dir}/${split}/nbest"
+            output_nbest_dir="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest"
             
             CUDA_VISIBLE_DEVICES="$gpuid" \
                 python finetuning/qwen3_asr_test.py \
@@ -148,7 +149,7 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
                     --output_nbest_jsonl_dir "$output_nbest_dir"
         else
             echo "Existed file (Evaluation Only): $pred_file"
-            python local/metrics.py --output_dir ${src_exp_dir}/${split} "$pred_file" "$gt_file" | tee ${src_exp_dir}/${split}/metrics.txt
+            python local/metrics.py --output_dir ${src_exp_dir}/${split}_${nbest_decoding_conf_name} "$pred_file" "$gt_file" | tee ${src_exp_dir}/${split}_${nbest_decoding_conf_name}/metrics.txt
         fi
     done
 fi
@@ -158,8 +159,8 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
     echo "Stage 2: Score n-best with oracle EMA and local/metrics.py metrics for: $score_splits"
 
     for split in $score_splits; do
-        input_jsonl="${src_exp_dir}/${split}/nbest/${split}.jsonl"
-        output_jsonl="${src_exp_dir}/${split}/nbest/scored_nbest.jsonl"
+        input_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/${split}.jsonl"
+        output_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -175,8 +176,8 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     echo "Stage 3: Build SimPO chosen/rejected pairs for: $pair_splits"
 
     for split in $pair_splits; do
-        input_jsonl="${src_exp_dir}/${split}/nbest/scored_nbest.jsonl"
-        output_jsonl="${src_exp_dir}/${split}/nbest/simpo_pairs.jsonl"
+        input_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
+        output_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/simpo_pairs.jsonl"
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -195,9 +196,9 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
     echo "Stage 4: Export SimPO analysis JSONL for: $analysis_splits"
 
     for split in $analysis_splits; do
-        input_jsonl="${src_exp_dir}/${split}/nbest/scored_nbest.jsonl"
-        pairs_jsonl="${src_exp_dir}/${split}/nbest/simpo_pairs.jsonl"
-        output_jsonl="${src_exp_dir}/${split}/nbest/simpo_analysis.jsonl"
+        input_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
+        pairs_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/simpo_pairs.jsonl"
+        output_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/simpo_analysis.jsonl"
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -236,8 +237,8 @@ if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
         python finetuning/qwen3_asr_simpo.py --seed $seed $training_opts \
             "${init_opts[@]}" \
             --train_conf "$simpo_train_conf" \
-            --train_file "${src_exp_dir}/train/nbest/simpo_pairs.jsonl" \
-            --eval_file "${src_exp_dir}/dev/nbest/simpo_pairs.jsonl" \
+            --train_file "${src_exp_dir}/train_${nbest_decoding_conf_name}/nbest/simpo_pairs.jsonl" \
+            --eval_file "${src_exp_dir}/dev_${nbest_decoding_conf_name}/nbest/simpo_pairs.jsonl" \
             --output_dir "$exp_dir"
 fi
 

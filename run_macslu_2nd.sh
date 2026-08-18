@@ -6,6 +6,7 @@ set -euo pipefail
 train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead.json"
 output_jsonl_dir="data-json/macslu_2nd"
 corrected_prompt_file="data/macslu/corrected_prompt.txt"
+decoding_conf="conf/decoding/basic_decoding.json"
 
 gpuid=0
 stage=0
@@ -13,6 +14,11 @@ stop_stage=1000
 
 . ./local/parse_options.sh
 . ./path.sh
+
+if [ ! -f "$decoding_conf" ]; then
+    echo "[ERROR] decoding_conf not found: $decoding_conf"
+    exit 1
+fi
 
 conf_tag=$(basename -s .json $train_conf)
 src_exp_dir=exp/macslu/${conf_tag}
@@ -31,6 +37,7 @@ if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
                 --input_jsonl "$input_jsonl" \
                 --output_root "$src_exp_dir" \
                 --device cuda:0 \
+                --decoding_conf "$decoding_conf" \
                 --output_jsonl_dir "$output_jsonl_dir" \
                 --corrected_prompt_file "$corrected_prompt_file"
     done
