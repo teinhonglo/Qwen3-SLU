@@ -351,9 +351,6 @@ def get_jsonl_name(input_jsonl: str) -> str:
 
 def build_output_subdir_name(input_jsonl: str, decoding_mode: str, decoding_conf_path: str) -> str:
     jsonl_name = get_jsonl_name(input_jsonl)
-    if decoding_mode == "basic":
-        return jsonl_name
-
     conf_name = os.path.splitext(os.path.basename(decoding_conf_path))[0] if decoding_conf_path else "decoding"
     return f"{jsonl_name}_{conf_name}"
 

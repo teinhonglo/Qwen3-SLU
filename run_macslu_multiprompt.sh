@@ -39,6 +39,7 @@ if [ ! -f "$decoding_conf" ]; then
 fi
 
 conf_tag=$(basename -s .json "$train_conf")
+decoding_conf_name=$(basename -s .json "$decoding_conf")
 exp_root=${exp_root}/${conf_tag}${suffix}
 
 if [ -n "$checkpoint" ]; then
@@ -81,7 +82,7 @@ if [ "$stage" -le 2 ] && [ "$stop_stage" -ge 2 ]; then
 
     for test_set in $test_sets; do
         test_jsonl=${json_root}/${test_set}.jsonl
-        mkdir -p "${exp_root}/${test_set}"
+        mkdir -p "${exp_root}/${test_set}_${decoding_conf_name}"
 
         CUDA_VISIBLE_DEVICES="$gpuid" \
             python finetuning/qwen3_asr_test.py \
@@ -99,14 +100,14 @@ if [ "$stage" -le 3 ] && [ "$stop_stage" -ge 3 ]; then
     echo "Stage 3: Evaluate MAC-SLU predictions"
 
     for test_set in $test_sets; do
-        pred_file=${exp_root}/${test_set}/predictions.jsonl
+        pred_file=${exp_root}/${test_set}_${decoding_conf_name}/predictions.jsonl
         gt_file=${json_root}/${test_set}.jsonl
         if [ ! -f "$pred_file" ]; then
             echo "[WARNING] prediction file not found: $pred_file"
             continue
         fi
-        python local/metrics.py --output_dir "${exp_root}/${test_set}" "$pred_file" "$gt_file" \
-            | tee "${exp_root}/${test_set}/metrics.txt"
+        python local/metrics.py --output_dir "${exp_root}/${test_set}_${decoding_conf_name}" "$pred_file" "$gt_file" \
+            | tee "${exp_root}/${test_set}_${decoding_conf_name}/metrics.txt"
     done
 fi
 
@@ -114,9 +115,9 @@ if [ "$stage" -le 4 ] && [ "$stop_stage" -ge 4 ]; then
     echo "Stage 4: Plot MAC-SLU confusion matrices"
 
     for test_set in $test_sets; do
-        pred_file=${exp_root}/${test_set}/predictions.jsonl
+        pred_file=${exp_root}/${test_set}_${decoding_conf_name}/predictions.jsonl
         gt_file=${json_root}/${test_set}.jsonl
-        output_dir=${exp_root}/${test_set}
+        output_dir=${exp_root}/${test_set}_${decoding_conf_name}
         if [ ! -f "$pred_file" ]; then
             echo "[WARNING] prediction file not found: $pred_file"
             continue
@@ -138,7 +139,7 @@ if [ "$stage" -le 5 ] && [ "$stop_stage" -ge 5 ]; then
     echo "Stage 5: Summary (multi-prompt MAC-SLU)"
 
     for test_set in $test_sets; do
-        metrics_file=${exp_root}/${test_set}/metrics.txt
+        metrics_file=${exp_root}/${test_set}_${decoding_conf_name}/metrics.txt
         if [ ! -f "$metrics_file" ]; then
             echo "[WARNING] metrics file not found: $metrics_file"
             continue
