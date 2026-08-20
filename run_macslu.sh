@@ -133,7 +133,7 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
 fi
 
 if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
-    echo "Stage 4: Plot MAC-SLU confusion matrices"
+    echo "Stage 4: Plot MAC-SLU evaluation charts"
 
     for test_set in $test_sets; do
         pred_file=${exp_root}/${test_set}_${decoding_conf_name}/predictions.jsonl
@@ -150,7 +150,7 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
             continue
         fi
 
-        python local/plot_macslu_confusion.py \
+        python local/plot_macslu_evaluation.py \
             --pred_file "$pred_file" \
             --gt_file "$gt_file" \
             --labels_file "$labels_file" \
