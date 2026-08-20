@@ -175,22 +175,27 @@ def plot_slot_type_metrics(metrics, output_path, title):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import numpy as np
-
-    slot_types = list(metrics)
+    
+    slot_types = sorted(
+        metrics,
+        key=lambda slot_type: (-metrics[slot_type]["support"], slot_type),
+    )
     x = np.arange(len(slot_types))
+    support_counts = [metrics[slot_type]["support"] for slot_type in slot_types]
     width = 0.25
     figure_width = max(10, len(slot_types) * 0.65)
     fig, ax = plt.subplots(figsize=(figure_width, 6))
-    for offset, field, label in (
-        (-width, "precision", "Precision"),
-        (0, "recall", "Recall"),
-        (width, "f1", "F1"),
+    for offset, field, label, color in (
+        (-width, "precision", "Precision", "#66C2A5"),
+        (0, "recall", "Recall", "#B3B3B3"),
+        (width, "f1", "F1", "#2A9D8F"),
     ):
         ax.bar(
             x + offset,
             [metrics[slot_type][field] for slot_type in slot_types],
             width,
             label=label,
+            color=color,
         )
 
     labels = [
@@ -204,7 +209,25 @@ def plot_slot_type_metrics(metrics, output_path, title):
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=45, ha="right")
     ax.grid(axis="y", alpha=0.3)
-    ax.legend()
+
+    count_ax = ax.twinx()
+    count_line = count_ax.plot(
+        x,
+        support_counts,
+        color="black",
+        marker="o",
+        linewidth=1.5,
+        label="Gold count",
+    )
+    count_ax.set_ylabel("Gold slot count")
+    count_ax.set_ylim(0, max(support_counts) * 1.15 or 1)
+
+    bar_handles, bar_labels = ax.get_legend_handles_labels()
+    ax.legend(
+        bar_handles + count_line,
+        bar_labels + [count_line[0].get_label()],
+        loc="upper right",
+    )
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
