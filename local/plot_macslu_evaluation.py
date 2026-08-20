@@ -653,6 +653,7 @@ def plot_slot_type_metric_charts(output_dir: str, train_file: str) -> None:
 
     with open(metrics_path, "r", encoding="utf-8") as f:
         metrics_by_category = json.load(f)
+        
     training_counts = collect_training_slot_type_counts(load_jsonl(train_file))
 
     plot_specs = (
