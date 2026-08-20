@@ -30,6 +30,7 @@ dependencies = [
   "sox",
   "gradio",
   "flask",
+  "matplotlib",
   "pytz",
 ]
 
