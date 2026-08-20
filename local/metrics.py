@@ -175,7 +175,7 @@ def plot_slot_type_metrics(metrics, output_path, title):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import numpy as np
-
+    
     slot_types = sorted(
         metrics,
         key=lambda slot_type: (-metrics[slot_type]["support"], slot_type),
