@@ -129,6 +129,7 @@ if [ "$stage" -le 4 ] && [ "$stop_stage" -ge 4 ]; then
         python local/plot_macslu_evaluation.py \
             --pred_file "$pred_file" \
             --gt_file "$gt_file" \
+            --train_file "${json_root}/train.jsonl" \
             --labels_file "$labels_file" \
             --label_mapping_file "$label_mapping_file" \
             --output_dir "$output_dir"

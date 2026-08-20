@@ -200,6 +200,7 @@ if [ $stage -le 6 ] && [ $stop_stage -ge 6 ]; then
         python local/plot_macslu_evaluation.py \
             --pred_file "$pred_file" \
             --gt_file "$gt_file" \
+            --train_file "${json_root}/train.jsonl" \
             --labels_file "${data_root}/labels.txt" \
             --label_mapping_file "${data_root}/labels_zh_en.txt" \
             --output_dir "$output_dir"
