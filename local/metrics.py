@@ -4,6 +4,7 @@ import sys
 import re
 import os
 import traceback
+from collections import defaultdict
 
 def normalize_text(text):
     if not isinstance(text, str):
@@ -129,6 +130,41 @@ def collect_slot_set(semantics, slot_key):
     return slot_set
 
 
+def update_slot_type_stats(stats, pred_slot_set, gt_slot_set):
+    """Accumulate exact-value TP/FP/FN counts for every slot type."""
+    slot_types = {slot_type for slot_type, _ in pred_slot_set | gt_slot_set}
+    for slot_type in slot_types:
+        pred_values = {value for key, value in pred_slot_set if key == slot_type}
+        gt_values = {value for key, value in gt_slot_set if key == slot_type}
+        stats[slot_type]["tp"] += len(pred_values & gt_values)
+        stats[slot_type]["fp"] += len(pred_values - gt_values)
+        stats[slot_type]["fn"] += len(gt_values - pred_values)
+
+
+def finalize_slot_type_stats(stats):
+    results = {}
+    for slot_type, counts in stats.items():
+        precision, recall, f1 = slot_mer_metric(
+            counts["tp"], counts["fp"], counts["fn"]
+        )
+        results[slot_type] = {
+            "tp": counts["tp"],
+            "fp": counts["fp"],
+            "fn": counts["fn"],
+            "support": counts["tp"] + counts["fn"],
+            "predicted_count": counts["tp"] + counts["fp"],
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+        }
+    return dict(
+        sorted(
+            results.items(),
+            key=lambda item: (-item[1]["support"], item[0]),
+        )
+    )
+
+
 def get_intent_group(intent_num):
     if intent_num == 0:
         return "0_intent"
@@ -233,6 +269,8 @@ def calculate_metrics(predict_file, ground_truth_file):
         "3plus_intent": init_group_stats(),
     }
     mer_nonzero_stats = init_group_stats()
+    explicit_slot_type_stats = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
+    implicit_slot_type_stats = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
     report_detail = {}
 
     for i, (pred_line, gt_line) in enumerate(zip(predict_lines, ground_truth_lines), start=1):
@@ -295,6 +333,11 @@ def calculate_metrics(predict_file, ground_truth_file):
             # explicit slot (formerly slot)
             pred_explicit_slot_set = collect_slot_set(pred_semantics, "slots")
             gt_explicit_slot_set = collect_slot_set(gt_semantics, "slots")
+            update_slot_type_stats(
+                explicit_slot_type_stats,
+                pred_explicit_slot_set,
+                gt_explicit_slot_set,
+            )
 
             report_detail[text_id]["explicit_slot_tp"] = len(pred_explicit_slot_set & gt_explicit_slot_set)
             report_detail[text_id]["explicit_slot_fp"] = len(pred_explicit_slot_set - gt_explicit_slot_set)
@@ -311,6 +354,11 @@ def calculate_metrics(predict_file, ground_truth_file):
             # implicit slot
             pred_implicit_slot_set = collect_slot_set(pred_semantics, "implicit_slots")
             gt_implicit_slot_set = collect_slot_set(gt_semantics, "implicit_slots")
+            update_slot_type_stats(
+                implicit_slot_type_stats,
+                pred_implicit_slot_set,
+                gt_implicit_slot_set,
+            )
 
             report_detail[text_id]["implicit_slot_tp"] = len(pred_implicit_slot_set & gt_implicit_slot_set)
             report_detail[text_id]["implicit_slot_fp"] = len(pred_implicit_slot_set - gt_implicit_slot_set)
@@ -443,6 +491,18 @@ def calculate_metrics(predict_file, ground_truth_file):
     slot_match_accs = slot_match_counts / valid_slotss if valid_slotss else 0.0
     intent_group_metrics = {k: finalize_group_stats(v) for k, v in intent_group_stats.items()}
     mer_nonzero_metrics = finalize_group_stats(mer_nonzero_stats)
+    explicit_slot_type_metrics = finalize_slot_type_stats(explicit_slot_type_stats)
+    implicit_slot_type_metrics = finalize_slot_type_stats(implicit_slot_type_stats)
+    all_slot_type_stats = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
+    for source_stats in (explicit_slot_type_stats, implicit_slot_type_stats):
+        for slot_type, counts in source_stats.items():
+            for count_name in ("tp", "fp", "fn"):
+                all_slot_type_stats[slot_type][count_name] += counts[count_name]
+    slot_type_metrics = {
+        "all": finalize_slot_type_stats(all_slot_type_stats),
+        "explicit": explicit_slot_type_metrics,
+        "implicit": implicit_slot_type_metrics,
+    }
 
     return {
         "total_count": total_count,
@@ -475,6 +535,7 @@ def calculate_metrics(predict_file, ground_truth_file):
         "slot_match_accs": slot_match_accs,
         "intent_group_metrics": intent_group_metrics,
         "mer_nonzero_metrics": mer_nonzero_metrics,
+        "slot_type_metrics": slot_type_metrics,
     }, report_detail
 
 
@@ -521,8 +582,13 @@ def main():
         print(f"[{group_name}] Slot Match accuracy:        {group_result['slot_match_accs']:.4f}")
         print("-" * 60)
 
+    os.makedirs(args.output_dir, exist_ok=True)
     with open(os.path.join(args.output_dir, "report_details.json"), "w") as write_file:
         json.dump(r_d, write_file, indent=4, ensure_ascii=False)
+
+    slot_type_metrics_path = os.path.join(args.output_dir, "slot_type_metrics.json")
+    with open(slot_type_metrics_path, "w", encoding="utf-8") as write_file:
+        json.dump(r["slot_type_metrics"], write_file, indent=4, ensure_ascii=False)
 
 if __name__ == "__main__":
     main()
