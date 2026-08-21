@@ -597,6 +597,14 @@ def plot_slot_type_metrics(
             color=color,
         )
 
+    mean_f1 = float(np.mean([metrics[slot_type]["f1"] for slot_type in slot_types]))
+    ax.axhline(
+        mean_f1,
+        color="red",
+        linewidth=1.5,
+        label=f"Mean F1 ({mean_f1:.3f})",
+    )
+
     labels = [
         f"{slot_type}\n(n={metrics[slot_type]['support']})"
         for slot_type in slot_types
@@ -676,6 +684,111 @@ def plot_slot_type_metric_charts(output_dir: str, train_file: str) -> None:
             os.path.join(output_dir, filename),
             title,
         )
+
+
+def collect_training_domain_intent_counts(
+    train_rows: Sequence[Dict[str, Any]],
+) -> Counter:
+    """Count joint domain-intent occurrences in training data."""
+    counts: Counter = Counter()
+    for row in train_rows:
+        for frame in get_semantics(row, "semantics"):
+            if not isinstance(frame, dict):
+                continue
+            domain = clean_label(frame.get("domain"))
+            intent = clean_label(frame.get("intent"))
+            if domain and intent:
+                counts[intent_display_label(domain, intent)] += 1
+    return counts
+
+
+def plot_domain_intent_accuracy(
+    count_df,
+    domain_intent_labels: Sequence[str],
+    training_counts: Counter,
+    output_stem: str,
+) -> None:
+    """Plot per-domain-intent accuracy and occurrence counts like slot-type charts."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    support_by_label = {
+        label: int(count_df.loc[label].sum())
+        for label in domain_intent_labels
+        if label in count_df.index and count_df.loc[label].sum() > 0
+    }
+    if not support_by_label:
+        return
+
+    labels = sorted(
+        support_by_label,
+        key=lambda label: (-support_by_label[label], label),
+    )
+    support_counts = [support_by_label[label] for label in labels]
+    train_support_counts = [training_counts.get(label, 0) for label in labels]
+    accuracies = [
+        float(count_df.at[label, label]) / support_by_label[label]
+        for label in labels
+    ]
+
+    x = np.arange(len(labels))
+    figure_width = max(12.0, min(80.0, len(labels) * 0.65))
+    fig, ax = plt.subplots(figsize=(figure_width, 7))
+    ax.bar(x, accuracies, 0.25, label="Accuracy", color="#2A9D8F")
+    mean_accuracy = float(np.mean(accuracies))
+    ax.axhline(
+        mean_accuracy,
+        color="red",
+        linewidth=1.5,
+        label=f"Mean accuracy ({mean_accuracy:.3f})",
+    )
+
+    tick_labels = [
+        f"{label}\n(n={support_by_label[label]})"
+        for label in labels
+    ]
+    ax.set_title("Domain-Intent Accuracy")
+    ax.set_xlabel("Domain-intent (gold support)")
+    ax.set_ylabel("Accuracy")
+    ax.set_ylim(0, 1.05)
+    ax.set_xticks(x)
+    ax.set_xticklabels(tick_labels, rotation=45, ha="right")
+    ax.grid(axis="y", alpha=0.3)
+
+    count_ax = ax.twinx()
+    count_line = count_ax.plot(
+        x,
+        support_counts,
+        color="black",
+        marker="o",
+        linewidth=1.5,
+        label="Gold count",
+    )
+    training_count_line = count_ax.plot(
+        x,
+        train_support_counts,
+        color="black",
+        marker="^",
+        linestyle="--",
+        linewidth=1.5,
+        label="Training count",
+    )
+    count_ax.set_ylabel("Domain-intent count")
+    max_count = max(max(support_counts), max(train_support_counts))
+    count_ax.set_ylim(0, max_count * 1.15 or 1)
+
+    bar_handles, bar_labels = ax.get_legend_handles_labels()
+    count_handles = count_line + training_count_line
+    ax.legend(
+        bar_handles + count_handles,
+        bar_labels + [handle.get_label() for handle in count_handles],
+        loc="upper right",
+    )
+    fig.tight_layout()
+    fig.savefig(f"{output_stem}.png", dpi=300, bbox_inches="tight")
+    fig.savefig(f"{output_stem}.pdf", bbox_inches="tight")
+    fig.savefig(f"{output_stem}.svg", bbox_inches="tight")
+    plt.close(fig)
 
 
 def drop_empty_rows_and_columns(count_df, keep_rows: Optional[Sequence[str]] = None, keep_cols: Optional[Sequence[str]] = None):
@@ -997,6 +1110,13 @@ def main() -> None:
     if not args.skip_plots:
         configure_fonts()
         plot_slot_type_metric_charts(args.output_dir, args.train_file)
+        training_rows = load_jsonl(args.train_file)
+        plot_domain_intent_accuracy(
+            domain_intent_count_df,
+            domain_intent_labels[:-2],
+            collect_training_domain_intent_counts(training_rows),
+            os.path.join(args.output_dir, "domain_intent_accuracy"),
+        )
 
         domain_plot_df = drop_absent_square_labels(
             domain_count_df,
