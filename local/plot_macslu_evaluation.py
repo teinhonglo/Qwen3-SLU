@@ -597,6 +597,14 @@ def plot_slot_type_metrics(
             color=color,
         )
 
+    mean_f1 = float(np.mean([metrics[slot_type]["f1"] for slot_type in slot_types]))
+    ax.axhline(
+        mean_f1,
+        color="red",
+        linewidth=1.5,
+        label=f"Mean F1 ({mean_f1:.3f})",
+    )
+
     labels = [
         f"{slot_type}\n(n={metrics[slot_type]['support']})"
         for slot_type in slot_types
@@ -727,6 +735,13 @@ def plot_domain_intent_accuracy(
     figure_width = max(12.0, min(80.0, len(labels) * 0.65))
     fig, ax = plt.subplots(figsize=(figure_width, 7))
     ax.bar(x, accuracies, 0.25, label="Accuracy", color="#2A9D8F")
+    mean_accuracy = float(np.mean(accuracies))
+    ax.axhline(
+        mean_accuracy,
+        color="red",
+        linewidth=1.5,
+        label=f"Mean accuracy ({mean_accuracy:.3f})",
+    )
 
     tick_labels = [
         f"{label}\n(n={support_by_label[label]})"
