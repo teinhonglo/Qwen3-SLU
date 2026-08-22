@@ -9,7 +9,7 @@ set -euo pipefail
 json_root="data-json/macslu_fixed"
 exp_root="exp/macslu_simpo"
 attention_map_opts=""
-decoding_conf="conf/decoding/basic_decoding.json"
+decoding_conf="conf/decoding/nbest_decoding.json"
 nbest_decoding_conf="conf/decoding/nbest_decoding.json"
 inference_mode="--auto_latest_checkpoint"
 
@@ -26,7 +26,7 @@ simpo_train_conf=""  # default: SimPO paper-style train_conf
 # nbest_only requires a generated oracle; nbest_oracle falls back to the ground truth.
 # oracle_balance also uses GT fallback, while deterministically retaining all rank-0
 # errors and 2.5%/15%/20%/40% of rank-0-correct samples with 0/1/2/3+ intents.
-pair_mode="nbest_only"
+pair_mode="nbest_oracle"
 pair_min_score_margin="0.1"
 pair_max_pairs_per_sample="1"
 # Generate and score test n-best for analysis, but keep pair/training splits to train/dev to avoid test leakage.
@@ -177,7 +177,7 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
 
     for split in $pair_splits; do
         input_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
-        output_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/simpo_pairs.jsonl"
+        output_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl"
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -197,8 +197,8 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
 
     for split in $analysis_splits; do
         input_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
-        pairs_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/simpo_pairs.jsonl"
-        output_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/simpo_analysis.jsonl"
+        pairs_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl"
+        output_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/simpo_analysis_${pair_mode}.jsonl"
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -237,8 +237,8 @@ if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
         python finetuning/qwen3_asr_simpo.py --seed $seed $training_opts \
             "${init_opts[@]}" \
             --train_conf "$simpo_train_conf" \
-            --train_file "${src_exp_dir}/train_${nbest_decoding_conf_name}/nbest/simpo_pairs.jsonl" \
-            --eval_file "${src_exp_dir}/dev_${nbest_decoding_conf_name}/nbest/simpo_pairs.jsonl" \
+            --train_file "${src_exp_dir}/train_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
+            --eval_file "${src_exp_dir}/dev_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
             --output_dir "$exp_dir"
 fi
 

@@ -6,13 +6,13 @@ set -euo pipefail
 # data config
 repo_id="Gatsby1984/MAC_SLU"
 data_root="data/macslu"
-exp_root="exp/macslu"
 download_dir=${data_root}/raw
 extract_root=${data_root}/audio
 audio_dir=${data_root}/audio
 labels_file="data/macslu/labels.txt"
 label_mapping_file="data/macslu/labels_zh_en.txt"
-json_root=data-json/macslu
+json_root="data-json/macslu"
+exp_root="exp/macslu"
 inference_mode="--auto_latest_checkpoint"
 prompt_file=""   # 可指定外部 prompt 檔案，空字串則使用 prepare_macslu_jsonl.py 內建 prompt
 attention_map_opts="" # e.g., --save_attention_map --attn_layers all --attn_mode rollout --attn_imgs_dir imgs

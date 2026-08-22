@@ -154,14 +154,20 @@ class DataCollatorForQwen3ASRSimPO:
             truncation=False,
         )
 
-        prefix_lens = prefix_inputs["attention_mask"].sum(dim=1).tolist()
-        labels = full_inputs["input_ids"].clone()
-        for i, pl in enumerate(prefix_lens):
-            labels[i, :pl] = -100
+        full_lens = full_inputs["attention_mask"].sum(dim=1)
+        prefix_lens = prefix_inputs["attention_mask"].sum(dim=1)
+        response_lens = full_lens - prefix_lens
 
-        pad_id = self.processor.tokenizer.pad_token_id
-        if pad_id is not None:
-            labels[labels == pad_id] = -100
+        if (response_lens <= 0).any():
+            raise ValueError(f"Invalid response lengths: {response_lens.tolist()}")
+
+        # Qwen3-ASR 使用 left padding，因此 response 位於序列最右側。
+        labels = torch.full_like(full_inputs["input_ids"], -100)
+
+        for i, response_len in enumerate(response_lens.tolist()):
+            labels[i, -response_len:] = full_inputs["input_ids"][i, -response_len:]
+        
+        actual_response_lens = (labels != -100).sum(dim=1)
 
         full_inputs["labels"] = labels
         full_inputs["simpo_pair_ids"] = torch.tensor(pair_ids, dtype=torch.long)
@@ -211,6 +217,9 @@ class SimPOTrainer(CastFloatInputsTrainer):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+
+        self.model_accepts_loss_kwargs = False
+
         if not simpo_length_normalization:
             raise ValueError("SimPO length normalization is required and must remain enabled.")
         self.simpo_beta = float(simpo_beta)

@@ -5,8 +5,7 @@ set -euo pipefail
 
 # data config
 src_json_root=data-json/macslu_fixed
-json_root=${src_json_root}_structprompt
-exp_root="exp/macslu_structprompt"
+exp_root="exp/macslu_fixed_structprompt"
 labels_file="data/macslu/labels.txt"
 label_mapping_file="data/macslu/labels_zh_en.txt"
 inference_mode="--auto_latest_checkpoint"
@@ -17,7 +16,7 @@ slu_repeat=2
 # training config
 gpuid=0
 suffix=
-train_conf=conf/macslu_qwen3_asr_06b.json
+train_conf=conf/macslu_qwen3_asr_17b_ep20_lora_woemblmhead.json
 seed=66
 checkpoint=
 
@@ -28,6 +27,8 @@ test_sets="test"
 
 . ./local/parse_options.sh
 . ./path.sh
+
+json_root=${src_json_root}_structprompt
 
 if [ ! -f "$train_conf" ]; then
     echo "[ERROR] train_conf not found: $train_conf"

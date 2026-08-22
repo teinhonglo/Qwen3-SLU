@@ -23,13 +23,13 @@ def oracle_balance_keep(row: Dict[str, Any], rank0_is_oracle: bool) -> Tuple[boo
     semantics = row.get("semantics", [])
     intent_count = len(semantics) if isinstance(semantics, list) else 0
     if intent_count == 0:
-        ratio = 0.025
+        ratio = 0.1
     elif intent_count == 1:
-        ratio = 0.15
+        ratio = 0.05
     elif intent_count == 2:
         ratio = 0.20
     else:
-        ratio = 0.40
+        ratio = 1.00
 
     sample_key = json.dumps(
         [row.get("text_id", ""), row.get("audio", ""), row.get("query", "")],

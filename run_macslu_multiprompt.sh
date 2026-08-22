@@ -5,8 +5,7 @@ set -euo pipefail
 
 # data config
 src_json_root=data-json/macslu_fixed
-json_root=${src_json_root}_multiprompt
-exp_root="exp/macslu_multiprompt"
+exp_root="exp/macslu_fixed_multiprompt"
 labels_file="data/macslu/labels.txt"
 label_mapping_file="data/macslu/labels_zh_en.txt"
 inference_mode="--auto_latest_checkpoint"
@@ -16,7 +15,7 @@ decoding_conf="conf/decoding/basic_decoding.json"
 # training config
 gpuid=0
 suffix=
-train_conf=conf/macslu_qwen3_asr_06b.json
+train_conf=conf/macslu_qwen3_asr_17b_ep20_lora_woemblmhead.json
 seed=66
 checkpoint=
 
@@ -27,6 +26,8 @@ test_sets="test"
 
 . ./local/parse_options.sh
 . ./path.sh
+
+json_root=${src_json_root}_multiprompt
 
 if [ ! -f "$train_conf" ]; then
     echo "[ERROR] train_conf not found: $train_conf"
@@ -63,7 +64,7 @@ if [ "$stage" -le 0 ] && [ "$stop_stage" -ge 0 ]; then
         --src-json-root "$src_json_root" \
         --json-root "$json_root" \
         --splits train dev test \
-        --expand-splits train dev
+        --expand-splits train
 fi
 
 if [ "$stage" -le 1 ] && [ "$stop_stage" -ge 1 ]; then
