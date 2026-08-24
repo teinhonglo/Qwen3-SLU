@@ -88,22 +88,21 @@ fi
 
 conf_tag=$(basename -s .json "$simpo_train_conf")
 nbest_decoding_conf_name=$(basename -s .json "$nbest_decoding_conf")
-# A filesystem-safe tag separates every noisy dataset and experiment.
+
+# Keep noisy JSONL and every downstream artifact isolated by fixed SNR.
 snr_tag=$(printf '%s' "$snr_db" | sed -e 's/^-//; s/\./p/g')
 case "$snr_db" in -*) snr_tag="m${snr_tag}" ;; esac
 if ! [[ "$snr_tag" =~ ^m?[0-9]+(p[0-9]+)?$ ]]; then
     echo "[ERROR] --snr_db must be a single finite decimal number: $snr_db"
     exit 1
 fi
-noisy_tag="noisy_snr${snr_tag}_seed${noise_seed}"
-noisy_root="${json_root}/${noisy_tag}"
-noisy_audio_dir="${noisy_root}/audio"
-artifact_root="${exp_root}_${noisy_tag}/nbest_from_sft"
-noisy_conf_dir="${exp_root}_${noisy_tag}/config"
-noisy_simpo_train_conf="${noisy_conf_dir}/$(basename "$simpo_train_conf")"
-# Keep runs made with different pair construction policies in separate trees.
-exp_base=${exp_root}_${noisy_tag}_${pair_mode}
-exp_dir=${exp_base}/${conf_tag}${suffix}
+
+noise_tag="noisy_snr${snr_tag}"
+noise_audio_dir="${json_root}/audio_${noise_tag}"
+# Keep the clean recipe hierarchy. Noisy artifacts are same-level siblings whose
+# split or experiment directory name has a _${noise_tag} suffix.
+exp_base=${exp_root}_${pair_mode}
+exp_dir=${exp_base}/${conf_tag}${suffix}_${noise_tag}
 
 if [ "$checkpoint" != "" ]; then
     training_opts="--resume_from $checkpoint --resume 1"
@@ -111,41 +110,55 @@ else
     training_opts=""
 fi
 
-# Stage 0: Create noisy training audio/JSONL; clean dev and test remain unchanged.
+# Stage 0: Add tagged JSONL files beside the existing clean train/dev/test JSONL.
 if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
-    echo "Stage 0: Add AISHELL-5 in-car background noise to MAC-SLU train"
-    clean_train_jsonl="${json_root}/train.jsonl"
-    noisy_train_jsonl="${noisy_root}/train.jsonl"
-    if [ ! -f "$clean_train_jsonl" ]; then
-        echo "[ERROR] missing clean train JSONL: $clean_train_jsonl"
-        exit 1
-    fi
+    echo "Stage 0: Prepare ${noise_tag} MAC-SLU JSONL under ${json_root}"
+
+    for split in train dev test; do
+        if [ ! -f "${json_root}/${split}.jsonl" ]; then
+            echo "[ERROR] missing required clean JSONL: ${json_root}/${split}.jsonl"
+            exit 1
+        fi
+    done
+
     if [ ! -d "$noise_dir" ]; then
         echo "[ERROR] noise_dir does not exist: $noise_dir"
         exit 1
     fi
+
+    noisy_train_jsonl="${json_root}/train_${noise_tag}.jsonl"
     if [ -s "$noisy_train_jsonl" ]; then
-        if [ ! -d "$noisy_audio_dir" ]; then
-            echo "[ERROR] noisy JSONL exists but noisy audio directory is missing: $noisy_audio_dir"
+        if [ ! -d "$noise_audio_dir" ]; then
+            echo "[ERROR] noisy train JSONL exists but audio directory is missing: $noise_audio_dir"
             exit 1
         fi
         if [ ! -s "${noisy_train_jsonl}.noise_meta.jsonl" ]; then
-            echo "[ERROR] noisy JSONL exists but metadata sidecar is missing or empty: ${noisy_train_jsonl}.noise_meta.jsonl"
+            echo "[ERROR] noisy train JSONL exists but metadata is missing or empty: ${noisy_train_jsonl}.noise_meta.jsonl"
             exit 1
         fi
-        echo "[SKIP] Existing non-empty noisy train JSONL: $noisy_train_jsonl"
+        echo "[SKIP] Existing noisy train JSONL: $noisy_train_jsonl"
     else
         python local/add_noise_to_jsonl.py \
-            --input_jsonl "$clean_train_jsonl" \
+            --input_jsonl "${json_root}/train.jsonl" \
             --output_jsonl "$noisy_train_jsonl" \
-            --output_audio_dir "$noisy_audio_dir" \
+            --output_audio_dir "$noise_audio_dir" \
             --noise_dir "$noise_dir" \
             --snr_db "$snr_db" \
             --seed "$noise_seed"
     fi
+    
+    # dev/test stay clean. Tagged aliases give inference an isolated output
+    # basename without copying data or changing formal evaluation inputs.
+    for split in dev test; do
+        tagged_jsonl="${json_root}/${split}_${noise_tag}.jsonl"
+        if [ -e "$tagged_jsonl" ] || [ -L "$tagged_jsonl" ]; then
+            rm -f "$tagged_jsonl"
+        fi
+        ln -s "${split}.jsonl" "$tagged_jsonl"
+    done
 fi
 
-# Stage 1: Use the clean SFT checkpoint to generate run-isolated n-best JSONL.
+# Stage 1: Use src_exp_dir to generate n-best JSONL under src_exp_dir/<split>/nbest/.
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
     echo "Stage 1: Generate n-best JSONL from src_exp_dir for: $nbest_splits"
 
@@ -155,12 +168,9 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
     fi
 
     for split in $nbest_splits; do
-        if [ "$split" = train ]; then
-            input_jsonl=${noisy_root}/train.jsonl
-        else
-            input_jsonl=${json_root}/${split}.jsonl
-        fi
-        pred_file=${artifact_root}/${split}_${nbest_decoding_conf_name}/predictions.jsonl
+        tagged_split=${split}_${noise_tag}
+        input_jsonl=${json_root}/${tagged_split}.jsonl
+        pred_file=${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/predictions.jsonl
         gt_file=${input_jsonl}
         
         if [ ! -f "$input_jsonl" ]; then
@@ -169,21 +179,20 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
         fi
         
         if [ ! -f "$pred_file" ]; then
-        
-            output_nbest_dir="${artifact_root}/${split}_${nbest_decoding_conf_name}/nbest"
+            output_nbest_dir="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest"
             
             CUDA_VISIBLE_DEVICES="$gpuid" \
                 python finetuning/qwen3_asr_test.py \
                     $inference_mode \
                     --exp_dir "$src_exp_dir" \
                     --input_jsonl "$input_jsonl" \
-                    --output_root "$artifact_root" \
+                    --output_root "$src_exp_dir" \
                     --device cuda:0 \
                     --decoding_conf "$nbest_decoding_conf" \
                     --output_nbest_jsonl_dir "$output_nbest_dir"
         else
             echo "Existed file (Evaluation Only): $pred_file"
-            python local/metrics.py --output_dir ${artifact_root}/${split}_${nbest_decoding_conf_name} "$pred_file" "$gt_file" | tee ${artifact_root}/${split}_${nbest_decoding_conf_name}/metrics.txt
+            python local/metrics.py --output_dir ${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name} "$pred_file" "$gt_file" | tee ${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/metrics.txt
         fi
     done
 fi
@@ -193,8 +202,10 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
     echo "Stage 2: Score n-best with oracle EMA and local/metrics.py metrics for: $score_splits"
 
     for split in $score_splits; do
-        input_jsonl="${artifact_root}/${split}_${nbest_decoding_conf_name}/nbest/${split}.jsonl"
-        output_jsonl="${artifact_root}/${split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
+        tagged_split=${split}_${noise_tag}
+        input_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/${tagged_split}.jsonl"
+        output_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
+        
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -210,8 +221,9 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     echo "Stage 3: Build SimPO chosen/rejected pairs for: $pair_splits"
 
     for split in $pair_splits; do
-        input_jsonl="${artifact_root}/${split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
-        output_jsonl="${artifact_root}/${split}_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl"
+        tagged_split=${split}_${noise_tag}
+        input_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
+        output_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl"
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -230,9 +242,11 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
     echo "Stage 4: Export SimPO analysis JSONL for: $analysis_splits"
 
     for split in $analysis_splits; do
-        input_jsonl="${artifact_root}/${split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
-        pairs_jsonl="${artifact_root}/${split}_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl"
-        output_jsonl="${artifact_root}/${split}_${nbest_decoding_conf_name}/nbest/simpo_analysis_${pair_mode}.jsonl"
+        tagged_split=${split}_${noise_tag}
+        input_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
+        pairs_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl"
+        output_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/simpo_analysis_${pair_mode}.jsonl"
+        
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -266,17 +280,13 @@ if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
         echo "[ERROR] unsupported simpo_init_checkpoint_mode: $simpo_init_checkpoint_mode (expected latest, best, or none)"
         exit 1
     fi
-
-    mkdir -p "$noisy_conf_dir"
-    if [ ! -f "$noisy_simpo_train_conf" ]; then
-        cp "$simpo_train_conf" "$noisy_simpo_train_conf"
-    fi
+    
     CUDA_VISIBLE_DEVICES=$gpuid \
         python finetuning/qwen3_asr_simpo.py --seed $seed $training_opts \
             "${init_opts[@]}" \
-            --train_conf "$noisy_simpo_train_conf" \
-            --train_file "${artifact_root}/train_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
-            --eval_file "${artifact_root}/dev_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
+            --train_conf "$simpo_train_conf" \
+            --train_file "${src_exp_dir}/train_${noise_tag}_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
+            --eval_file "${src_exp_dir}/dev_${noise_tag}_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
             --output_dir "$exp_dir"
 fi
 
@@ -284,16 +294,13 @@ fi
 if [ $stage -le 6 ] && [ $stop_stage -ge 6 ]; then
     echo "Stage 6: Reuse run_macslu.sh test/eval/summary"
 
-    mkdir -p "$noisy_conf_dir"
-    if [ ! -f "$noisy_simpo_train_conf" ]; then cp "$simpo_train_conf" "$noisy_simpo_train_conf"; fi
-
     ./run_macslu.sh \
         --stage 2 \
         --stop_stage 4 \
         --json_root "$json_root" \
         --exp_root "$exp_base" \
-        --suffix "$suffix" \
-        --train_conf "$noisy_simpo_train_conf" \
+        --suffix "${suffix}_${noise_tag}" \
+        --train_conf "$simpo_train_conf" \
         --gpuid "$gpuid" \
         --test_sets "$test_sets" \
         --inference_mode "$inference_mode" \
