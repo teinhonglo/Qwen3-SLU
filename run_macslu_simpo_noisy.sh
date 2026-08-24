@@ -96,8 +96,7 @@ if ! [[ "$snr_tag" =~ ^m?[0-9]+(p[0-9]+)?$ ]]; then
     exit 1
 fi
 noise_tag="noisy_snr${snr_tag}"
-noise_json_root="${json_root}_${noise_tag}"
-noise_audio_dir="${noise_json_root}/audio"
+noise_audio_dir="${json_root}/audio_${noise_tag}"
 # Keep the clean recipe hierarchy. Noisy artifacts are same-level siblings whose
 # split or experiment directory name has a _${noise_tag} suffix.
 exp_base=${exp_root}_${pair_mode}
@@ -109,9 +108,9 @@ else
     training_opts=""
 fi
 
-# Stage 0: Create a noise-tagged JSONL tree; only train audio is augmented.
+# Stage 0: Add tagged JSONL files beside the existing clean train/dev/test JSONL.
 if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
-    echo "Stage 0: Prepare MAC-SLU JSONL under ${noise_json_root}"
+    echo "Stage 0: Prepare ${noise_tag} MAC-SLU JSONL under ${json_root}"
 
     for split in train dev test; do
         if [ ! -f "${json_root}/${split}.jsonl" ]; then
@@ -124,8 +123,7 @@ if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
         exit 1
     fi
 
-    mkdir -p "$noise_json_root"
-    noisy_train_jsonl="${noise_json_root}/train.jsonl"
+    noisy_train_jsonl="${json_root}/train_${noise_tag}.jsonl"
     if [ -s "$noisy_train_jsonl" ]; then
         if [ ! -d "$noise_audio_dir" ]; then
             echo "[ERROR] noisy train JSONL exists but audio directory is missing: $noise_audio_dir"
@@ -146,26 +144,10 @@ if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
             --seed "$noise_seed"
     fi
 
-    # dev/test stay clean, but live in the same noise-tagged JSONL root so every
-    # downstream split follows exactly the same path convention.
+    # dev/test stay clean. Tagged aliases give inference an isolated output
+    # basename without copying data or changing formal evaluation inputs.
     for split in dev test; do
-        output_jsonl="${noise_json_root}/${split}.jsonl"
-        if [ -s "$output_jsonl" ]; then
-            echo "[SKIP] Existing clean ${split} JSONL copy: $output_jsonl"
-        else
-            tmp_jsonl="${output_jsonl}.tmp.$$"
-            cp "${json_root}/${split}.jsonl" "$tmp_jsonl"
-            mv -f "$tmp_jsonl" "$output_jsonl"
-            echo "[INFO] Copied clean ${split} JSONL to: $output_jsonl"
-        fi
-    done
-
-    # qwen3_asr_test derives its output directory and n-best filename from the
-    # input JSONL basename. Tagged aliases therefore produce same-level paths
-    # such as train_${noise_tag}_${nbest_decoding_conf_name} without changing
-    # the inference program.
-    for split in train dev test; do
-        tagged_jsonl="${noise_json_root}/${split}_${noise_tag}.jsonl"
+        tagged_jsonl="${json_root}/${split}_${noise_tag}.jsonl"
         if [ -e "$tagged_jsonl" ] || [ -L "$tagged_jsonl" ]; then
             rm -f "$tagged_jsonl"
         fi
@@ -184,7 +166,7 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
 
     for split in $nbest_splits; do
         tagged_split=${split}_${noise_tag}
-        input_jsonl=${noise_json_root}/${tagged_split}.jsonl
+        input_jsonl=${json_root}/${tagged_split}.jsonl
         pred_file=${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/predictions.jsonl
         gt_file=${input_jsonl}
         
