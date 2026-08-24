@@ -88,21 +88,20 @@ fi
 
 conf_tag=$(basename -s .json "$simpo_train_conf")
 nbest_decoding_conf_name=$(basename -s .json "$nbest_decoding_conf")
-# Keep noisy JSONL and every downstream artifact isolated by fixed SNR and seed.
+# Keep noisy JSONL and every downstream artifact isolated by fixed SNR.
 snr_tag=$(printf '%s' "$snr_db" | sed -e 's/^-//; s/\./p/g')
 case "$snr_db" in -*) snr_tag="m${snr_tag}" ;; esac
 if ! [[ "$snr_tag" =~ ^m?[0-9]+(p[0-9]+)?$ ]]; then
     echo "[ERROR] --snr_db must be a single finite decimal number: $snr_db"
     exit 1
 fi
-noise_tag="noisy_snr${snr_tag}_seed${noise_seed}"
+noise_tag="noisy_snr${snr_tag}"
 noise_json_root="${json_root}_${noise_tag}"
 noise_audio_dir="${noise_json_root}/audio"
-nbest_root="${src_exp_dir}_${noise_tag}"
-# Keep the clean recipe hierarchy, using same-level sibling roots distinguished
-# only by a _${noise_tag} suffix.
-exp_base=${exp_root}_${pair_mode}_${noise_tag}
-exp_dir=${exp_base}/${conf_tag}${suffix}
+# Keep the clean recipe hierarchy. Noisy artifacts are same-level siblings whose
+# split or experiment directory name has a _${noise_tag} suffix.
+exp_base=${exp_root}_${pair_mode}
+exp_dir=${exp_base}/${conf_tag}${suffix}_${noise_tag}
 
 if [ "$checkpoint" != "" ]; then
     training_opts="--resume_from $checkpoint --resume 1"
@@ -160,6 +159,18 @@ if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
             echo "[INFO] Copied clean ${split} JSONL to: $output_jsonl"
         fi
     done
+
+    # qwen3_asr_test derives its output directory and n-best filename from the
+    # input JSONL basename. Tagged aliases therefore produce same-level paths
+    # such as train_${noise_tag}_${nbest_decoding_conf_name} without changing
+    # the inference program.
+    for split in train dev test; do
+        tagged_jsonl="${noise_json_root}/${split}_${noise_tag}.jsonl"
+        if [ -e "$tagged_jsonl" ] || [ -L "$tagged_jsonl" ]; then
+            rm -f "$tagged_jsonl"
+        fi
+        ln -s "${split}.jsonl" "$tagged_jsonl"
+    done
 fi
 
 # Stage 1: Use src_exp_dir to generate n-best JSONL under src_exp_dir/<split>/nbest/.
@@ -172,8 +183,9 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
     fi
 
     for split in $nbest_splits; do
-        input_jsonl=${noise_json_root}/${split}.jsonl
-        pred_file=${nbest_root}/${split}_${nbest_decoding_conf_name}/predictions.jsonl
+        tagged_split=${split}_${noise_tag}
+        input_jsonl=${noise_json_root}/${tagged_split}.jsonl
+        pred_file=${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/predictions.jsonl
         gt_file=${input_jsonl}
         
         if [ ! -f "$input_jsonl" ]; then
@@ -183,20 +195,20 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
         
         if [ ! -f "$pred_file" ]; then
         
-            output_nbest_dir="${nbest_root}/${split}_${nbest_decoding_conf_name}/nbest"
+            output_nbest_dir="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest"
             
             CUDA_VISIBLE_DEVICES="$gpuid" \
                 python finetuning/qwen3_asr_test.py \
                     $inference_mode \
                     --exp_dir "$src_exp_dir" \
                     --input_jsonl "$input_jsonl" \
-                    --output_root "$nbest_root" \
+                    --output_root "$src_exp_dir" \
                     --device cuda:0 \
                     --decoding_conf "$nbest_decoding_conf" \
                     --output_nbest_jsonl_dir "$output_nbest_dir"
         else
             echo "Existed file (Evaluation Only): $pred_file"
-            python local/metrics.py --output_dir ${nbest_root}/${split}_${nbest_decoding_conf_name} "$pred_file" "$gt_file" | tee ${nbest_root}/${split}_${nbest_decoding_conf_name}/metrics.txt
+            python local/metrics.py --output_dir ${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name} "$pred_file" "$gt_file" | tee ${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/metrics.txt
         fi
     done
 fi
@@ -206,8 +218,9 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
     echo "Stage 2: Score n-best with oracle EMA and local/metrics.py metrics for: $score_splits"
 
     for split in $score_splits; do
-        input_jsonl="${nbest_root}/${split}_${nbest_decoding_conf_name}/nbest/${split}.jsonl"
-        output_jsonl="${nbest_root}/${split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
+        tagged_split=${split}_${noise_tag}
+        input_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/${tagged_split}.jsonl"
+        output_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -223,8 +236,9 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     echo "Stage 3: Build SimPO chosen/rejected pairs for: $pair_splits"
 
     for split in $pair_splits; do
-        input_jsonl="${nbest_root}/${split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
-        output_jsonl="${nbest_root}/${split}_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl"
+        tagged_split=${split}_${noise_tag}
+        input_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
+        output_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl"
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -243,9 +257,10 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
     echo "Stage 4: Export SimPO analysis JSONL for: $analysis_splits"
 
     for split in $analysis_splits; do
-        input_jsonl="${nbest_root}/${split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
-        pairs_jsonl="${nbest_root}/${split}_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl"
-        output_jsonl="${nbest_root}/${split}_${nbest_decoding_conf_name}/nbest/simpo_analysis_${pair_mode}.jsonl"
+        tagged_split=${split}_${noise_tag}
+        input_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
+        pairs_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl"
+        output_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/simpo_analysis_${pair_mode}.jsonl"
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -284,8 +299,8 @@ if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
         python finetuning/qwen3_asr_simpo.py --seed $seed $training_opts \
             "${init_opts[@]}" \
             --train_conf "$simpo_train_conf" \
-            --train_file "${nbest_root}/train_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
-            --eval_file "${nbest_root}/dev_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
+            --train_file "${src_exp_dir}/train_${noise_tag}_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
+            --eval_file "${src_exp_dir}/dev_${noise_tag}_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
             --output_dir "$exp_dir"
 fi
 
@@ -298,7 +313,7 @@ if [ $stage -le 6 ] && [ $stop_stage -ge 6 ]; then
         --stop_stage 4 \
         --json_root "$json_root" \
         --exp_root "$exp_base" \
-        --suffix "$suffix" \
+        --suffix "${suffix}_${noise_tag}" \
         --train_conf "$simpo_train_conf" \
         --gpuid "$gpuid" \
         --test_sets "$test_sets" \
