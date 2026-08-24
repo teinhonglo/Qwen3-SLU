@@ -96,12 +96,13 @@ if ! [[ "$snr_tag" =~ ^m?[0-9]+(p[0-9]+)?$ ]]; then
     exit 1
 fi
 noise_tag="noisy_snr${snr_tag}_seed${noise_seed}"
-noise_json_root="${json_root}/${noise_tag}"
+noise_json_root="${json_root}_${noise_tag}"
 noise_audio_dir="${noise_json_root}/audio"
-nbest_root="${src_exp_dir}/${noise_tag}"
-# Preserve the clean recipe hierarchy and insert one noise_tag directory.
-exp_base=${exp_root}_${pair_mode}
-exp_dir=${exp_base}/${noise_tag}/${conf_tag}${suffix}
+nbest_root="${src_exp_dir}_${noise_tag}"
+# Keep the clean recipe hierarchy, using same-level sibling roots distinguished
+# only by a _${noise_tag} suffix.
+exp_base=${exp_root}_${pair_mode}_${noise_tag}
+exp_dir=${exp_base}/${conf_tag}${suffix}
 
 if [ "$checkpoint" != "" ]; then
     training_opts="--resume_from $checkpoint --resume 1"
@@ -296,7 +297,7 @@ if [ $stage -le 6 ] && [ $stop_stage -ge 6 ]; then
         --stage 2 \
         --stop_stage 4 \
         --json_root "$json_root" \
-        --exp_root "${exp_base}/${noise_tag}" \
+        --exp_root "$exp_base" \
         --suffix "$suffix" \
         --train_conf "$simpo_train_conf" \
         --gpuid "$gpuid" \
