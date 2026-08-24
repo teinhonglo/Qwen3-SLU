@@ -88,6 +88,7 @@ fi
 
 conf_tag=$(basename -s .json "$simpo_train_conf")
 nbest_decoding_conf_name=$(basename -s .json "$nbest_decoding_conf")
+
 # Keep noisy JSONL and every downstream artifact isolated by fixed SNR.
 snr_tag=$(printf '%s' "$snr_db" | sed -e 's/^-//; s/\./p/g')
 case "$snr_db" in -*) snr_tag="m${snr_tag}" ;; esac
@@ -95,6 +96,7 @@ if ! [[ "$snr_tag" =~ ^m?[0-9]+(p[0-9]+)?$ ]]; then
     echo "[ERROR] --snr_db must be a single finite decimal number: $snr_db"
     exit 1
 fi
+
 noise_tag="noisy_snr${snr_tag}"
 noise_audio_dir="${json_root}/audio_${noise_tag}"
 # Keep the clean recipe hierarchy. Noisy artifacts are same-level siblings whose
@@ -118,6 +120,7 @@ if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
             exit 1
         fi
     done
+
     if [ ! -d "$noise_dir" ]; then
         echo "[ERROR] noise_dir does not exist: $noise_dir"
         exit 1
@@ -143,7 +146,7 @@ if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
             --snr_db "$snr_db" \
             --seed "$noise_seed"
     fi
-
+    
     # dev/test stay clean. Tagged aliases give inference an isolated output
     # basename without copying data or changing formal evaluation inputs.
     for split in dev test; do
@@ -176,7 +179,6 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
         fi
         
         if [ ! -f "$pred_file" ]; then
-        
             output_nbest_dir="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest"
             
             CUDA_VISIBLE_DEVICES="$gpuid" \
@@ -203,6 +205,7 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
         tagged_split=${split}_${noise_tag}
         input_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/${tagged_split}.jsonl"
         output_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
+        
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -243,6 +246,7 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
         input_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
         pairs_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl"
         output_jsonl="${src_exp_dir}/${tagged_split}_${nbest_decoding_conf_name}/nbest/simpo_analysis_${pair_mode}.jsonl"
+        
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -276,7 +280,7 @@ if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
         echo "[ERROR] unsupported simpo_init_checkpoint_mode: $simpo_init_checkpoint_mode (expected latest, best, or none)"
         exit 1
     fi
-
+    
     CUDA_VISIBLE_DEVICES=$gpuid \
         python finetuning/qwen3_asr_simpo.py --seed $seed $training_opts \
             "${init_opts[@]}" \
