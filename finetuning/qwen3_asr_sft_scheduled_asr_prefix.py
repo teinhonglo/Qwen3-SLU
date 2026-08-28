@@ -525,7 +525,14 @@ def main():
 
     if training_args_conf["gradient_checkpointing"]:
         model.config.use_cache = False
-        model.gradient_checkpointing_enable()
+        model.enable_input_require_grads()
+
+        try:
+            model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+        except TypeError:
+            model.gradient_checkpointing_enable()
 
     raw_ds = load_dataset(
         "json",
