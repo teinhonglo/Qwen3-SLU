@@ -54,7 +54,6 @@ def patch_outer_forward(model):
         input_features=None,
         feature_attention_mask=None,
         labels=None,
-        use_cache=False,
         **kwargs,
     ):
         return self.thinker.forward(
@@ -63,42 +62,11 @@ def patch_outer_forward(model):
             input_features=input_features,
             feature_attention_mask=feature_attention_mask,
             labels=labels,
-            use_cache=use_cache,
             **kwargs,
         )
 
     cls.forward = forward
     cls._forward_patched = True
-
-
-def configure_gradient_checkpointing(model, gradient_checkpointing_kwargs):
-    """Configure checkpointing for frozen-base LoRA training."""
-    configs = [getattr(model, "config", None)]
-    base_model = getattr(model, "base_model", None)
-    if base_model is not None:
-        configs.append(getattr(base_model, "config", None))
-    thinker = getattr(model, "thinker", None)
-    if thinker is not None:
-        configs.append(getattr(thinker, "config", None))
-        configs.append(getattr(getattr(thinker, "model", None), "config", None))
-
-    for config in configs:
-        if config is None:
-            continue
-        if hasattr(config, "use_cache"):
-            config.use_cache = False
-        thinker_config = getattr(config, "thinker_config", None)
-        if thinker_config is not None and hasattr(thinker_config, "use_cache"):
-            thinker_config.use_cache = False
-
-    # With LoRA the embedding parameters are frozen. Reentrant checkpointing
-    # otherwise sees no grad-requiring input and detaches the checkpoint graph.
-    if hasattr(model, "enable_input_require_grads"):
-        model.enable_input_require_grads()
-
-    model.gradient_checkpointing_enable(
-        gradient_checkpointing_kwargs=gradient_checkpointing_kwargs
-    )
 
 
 _CKPT_RE = re.compile(r"^checkpoint-(\d+)$")
@@ -556,10 +524,15 @@ def main():
         print("Full Finetuning")
 
     if training_args_conf["gradient_checkpointing"]:
-        gradient_checkpointing_kwargs = training_args_conf.setdefault(
-            "gradient_checkpointing_kwargs", {"use_reentrant": False}
-        )
-        configure_gradient_checkpointing(model, gradient_checkpointing_kwargs)
+        model.config.use_cache = False
+        model.enable_input_require_grads()
+
+        try:
+            model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+        except TypeError:
+            model.gradient_checkpointing_enable()
 
     raw_ds = load_dataset(
         "json",
