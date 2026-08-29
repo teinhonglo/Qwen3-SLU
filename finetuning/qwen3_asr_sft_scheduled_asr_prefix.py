@@ -168,7 +168,6 @@ class DataCollatorForQwen3ASRFinetuning:
 def build_generated_asr_conditioning_prefix(target_asr: str) -> str:
     if not isinstance(target_asr, str):
         raise ValueError("text_asr must be a string")
-      
     if TARGET_MARKER not in target_asr:
         raise ValueError(f"text_asr does not contain {TARGET_MARKER!r}")
     header, payload_text = target_asr.split(TARGET_MARKER, 1)
@@ -331,6 +330,25 @@ class ScheduledASRPrefixTrainer(CastFloatInputsTrainer):
             loss = clean_loss
 
         return (loss, clean_outputs) if return_outputs else loss
+      
+    def prediction_step(
+        self,
+        model,
+        inputs,
+        prediction_loss_only,
+        ignore_keys=None,
+    ):
+        # Trainer.prediction_step bypasses compute_loss when labels are not at
+        # the top level. Evaluation always uses the clean branch, so unwrap it
+        # before Trainer checks for labels and calls the model.
+        if "clean" in inputs:
+            inputs = inputs["clean"]
+        return super().prediction_step(
+            model,
+            inputs,
+            prediction_loss_only,
+            ignore_keys=ignore_keys,
+        )
 
 class MakeEveryCheckpointInferableCallback(TrainerCallback):
     def __init__(self, processor, model=None, default_prompt: str = ""):
