@@ -169,7 +169,7 @@ def silence_generate(wrapper, silence_inputs, max_new_tokens: int):
     with torch.inference_mode():
         out = wrapper.model.generate(
             **silence_inputs, max_new_tokens=max_new_tokens, do_sample=False,
-            num_beams=1, return_dict_in_generate=True,
+            num_beams=1,
         )
     prefix_len = silence_inputs["input_ids"].shape[1]
     return out.sequences[:, prefix_len:]
