@@ -314,6 +314,16 @@ class ScheduledASRPrefixTrainer(CastFloatInputsTrainer):
         return_outputs=False,
         num_items_in_batch=None,
     ):
+        # Evaluation unwraps the nested batch to the clean branch before the
+        # base Trainer calls compute_loss again.
+        if "clean" not in inputs:
+            return super().compute_loss(
+                model,
+                inputs,
+                return_outputs=return_outputs,
+                num_items_in_batch=num_items_in_batch,
+            )
+        
         clean_inputs = inputs["clean"]
         generated_inputs = inputs["generated"]
         clean_outputs = model(**clean_inputs)
