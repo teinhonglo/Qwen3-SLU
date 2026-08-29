@@ -204,20 +204,39 @@ class DataCollatorForQwen3ASRFinetuning:
         return full_inputs
 
 
-def build_generated_asr_conditioning_prefix(target_asr: str) -> str:
+def get_generated_asr_value_char_span(target_asr: str):
+    """Return the character span of only the generated ASR JSON value.
+
+    The returned [start, end) span is relative to target_asr.  We include the
+    JSON string quotes in the masked value, while keeping the surrounding
+    output structure (e.g. "asr_text": and "semantics":) supervised.
+    """
     if not isinstance(target_asr, str):
         raise ValueError("text_asr must be a string")
     if TARGET_MARKER not in target_asr:
         raise ValueError(f"text_asr does not contain {TARGET_MARKER!r}")
+
     header, payload_text = target_asr.split(TARGET_MARKER, 1)
     payload = json.loads(payload_text)
     if not isinstance(payload, dict) or "asr_text" not in payload or "semantics" not in payload:
         raise ValueError("text_asr payload must contain asr_text and semantics")
-    asr_only = json.dumps({"asr_text": payload["asr_text"]}, ensure_ascii=False)
-    condition = header + TARGET_MARKER + asr_only[:-1] + ', "semantics": '
-    if not target_asr.startswith(condition):
+
+    key_prefix = '"asr_text": '
+    key_pos = payload_text.find(key_prefix)
+    if key_pos < 0:
+        raise ValueError("text_asr payload does not contain the expected asr_text key")
+
+    value_text = json.dumps(payload["asr_text"], ensure_ascii=False)
+    value_start_in_payload = key_pos + len(key_prefix)
+    if not payload_text.startswith(value_text, value_start_in_payload):
         raise ValueError("text_asr does not use the expected canonical JSON serialization")
-    return condition
+
+    value_end_in_payload = value_start_in_payload + len(value_text)
+    payload_offset = len(header) + len(TARGET_MARKER)
+    return (
+        payload_offset + value_start_in_payload,
+        payload_offset + value_end_in_payload,
+    )
 
 
 @dataclass
@@ -225,7 +244,81 @@ class DataCollatorForQwen3ASRScheduledPrefix:
     processor: Any
     sampling_rate: int = 16000
 
-    def _encode(self, prefix_texts, targets, audios, loss_prefixes=None):
+    def _mask_generated_asr_values(
+        self,
+        labels,
+        full_inputs,
+        full_texts,
+        targets,
+        target_spans,
+        eos,
+    ):
+        """Mask only generated ASR value tokens, independent of padding side."""
+        tokenizer = self.processor.tokenizer
+        audio_token_id = tokenizer.convert_tokens_to_ids(self.processor.audio_token)
+
+        for i, (span_start, span_end) in enumerate(target_spans):
+            if not 0 <= span_start <= span_end <= len(targets[i]):
+                raise ValueError(
+                    f"Invalid generated ASR char span {(span_start, span_end)} "
+                    f"for target length {len(targets[i])}"
+                )
+
+            valid_positions = torch.nonzero(
+                full_inputs["attention_mask"][i].to(dtype=torch.bool),
+                as_tuple=False,
+            ).squeeze(-1)
+            valid_ids = full_inputs["input_ids"][i, valid_positions].tolist()
+
+            # Reconstruct exactly the text tokenized by Qwen3ASRProcessor,
+            # but without recomputing audio features.
+            audio_token_count = sum(token_id == audio_token_id for token_id in valid_ids)
+            expanded_full_text = self.processor.replace_multimodal_special_tokens(
+                [full_texts[i]],
+                iter([audio_token_count]),
+            )[0]
+
+            target_suffix = targets[i] + eos
+            if not expanded_full_text.endswith(target_suffix):
+                raise RuntimeError(
+                    "Unable to align target text with the processor-expanded full sequence"
+                )
+            target_char_offset = len(expanded_full_text) - len(target_suffix)
+            absolute_span_start = target_char_offset + span_start
+            absolute_span_end = target_char_offset + span_end
+
+            tokenized = tokenizer(
+                expanded_full_text,
+                add_special_tokens=True,
+                return_offsets_mapping=True,
+                padding=False,
+                truncation=False,
+            )
+            token_ids = tokenized["input_ids"]
+            offsets = tokenized["offset_mapping"]
+
+            if token_ids != valid_ids:
+                raise RuntimeError(
+                    "Tokenizer alignment mismatch while locating generated ASR tokens"
+                )
+
+            masked_tokens = 0
+            for token_index, (char_start, char_end) in enumerate(offsets):
+                # Special tokens generally have a zero-length offset.
+                if char_end <= char_start:
+                    continue
+                if char_start < absolute_span_end and char_end > absolute_span_start:
+                    labels[i, valid_positions[token_index]] = -100
+                    masked_tokens += 1
+
+            if span_end > span_start and masked_tokens == 0:
+                raise RuntimeError(
+                    "Generated ASR span is non-empty but no tokens were masked"
+                )
+
+        return labels
+
+    def _encode(self, prefix_texts, targets, audios, generated_asr_spans=None):
         eos = self.processor.tokenizer.eos_token or ""
         full_texts = [pfx + target + eos for pfx, target in zip(prefix_texts, targets)]
         full_inputs = self.processor(
@@ -235,23 +328,36 @@ class DataCollatorForQwen3ASRScheduledPrefix:
             padding=True,
             truncation=False,
         )
-        mask_texts = prefix_texts if loss_prefixes is None else [
-            pfx + loss_prefix for pfx, loss_prefix in zip(prefix_texts, loss_prefixes)
-        ]
         prefix_inputs = self.processor(
-            text=mask_texts,
+            text=prefix_texts,
             audio=audios,
             return_tensors="pt",
             padding=True,
             truncation=False,
         )
+
         labels = full_inputs["input_ids"].clone()
         prefix_lens = prefix_inputs["attention_mask"].sum(dim=1).tolist()
+
+        # Always exclude system/user/audio/chat-template prefix tokens from loss.
         labels = mask_leading_valid_tokens(
             labels,
             full_inputs["attention_mask"],
             prefix_lens,
         )
+
+        # For the generated branch, additionally exclude only the generated
+        # ASR value.  The JSON structure and ground-truth semantics stay supervised.
+        if generated_asr_spans is not None:
+            labels = self._mask_generated_asr_values(
+                labels=labels,
+                full_inputs=full_inputs,
+                full_texts=full_texts,
+                targets=targets,
+                target_spans=generated_asr_spans,
+                eos=eos,
+            )
+
         full_inputs["labels"] = labels
         return full_inputs
 
@@ -268,8 +374,8 @@ class DataCollatorForQwen3ASRScheduledPrefix:
             prefix_texts,
             generated_targets,
             audios,
-            loss_prefixes=[
-                build_generated_asr_conditioning_prefix(target) for target in generated_targets
+            generated_asr_spans=[
+                get_generated_asr_value_char_span(target) for target in generated_targets
             ],
         )
         return {"clean": clean, "generated": generated}
