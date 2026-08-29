@@ -118,43 +118,6 @@ def make_preprocess_fn_prefix_only(processor):
 
 
 
-def mask_leading_valid_tokens(
-    labels: torch.Tensor,
-    attention_mask: torch.Tensor,
-    prefix_lens: List[int],
-) -> torch.Tensor:
-    """Mask the first N non-padding tokens for each sample.
-
-    Qwen3-ASR uses left padding by default. Therefore a prefix length cannot be
-    translated to labels[i, :prefix_len]. Instead, locate the valid-token
-    positions from attention_mask and mask the first prefix_len valid tokens.
-    """
-    if labels.shape != attention_mask.shape:
-        raise ValueError(
-            f"labels/attention_mask shape mismatch: {labels.shape} vs {attention_mask.shape}"
-        )
-    if len(prefix_lens) != labels.size(0):
-        raise ValueError(
-            f"prefix_lens batch mismatch: {len(prefix_lens)} vs {labels.size(0)}"
-        )
-
-    for i, prefix_len in enumerate(prefix_lens):
-        prefix_len = int(prefix_len)
-        valid_positions = torch.nonzero(
-            attention_mask[i].to(dtype=torch.bool),
-            as_tuple=False,
-        ).squeeze(-1)
-        if prefix_len < 0 or prefix_len > valid_positions.numel():
-            raise ValueError(
-                f"Invalid prefix_len={prefix_len} for sample {i} with "
-                f"{valid_positions.numel()} valid tokens"
-            )
-        labels[i, valid_positions[:prefix_len]] = -100
-
-    labels[attention_mask == 0] = -100
-    return labels
-
-
 @dataclass
 class DataCollatorForQwen3ASRFinetuning:
     processor: Any
@@ -186,11 +149,12 @@ class DataCollatorForQwen3ASRFinetuning:
 
         prefix_lens = prefix_inputs["attention_mask"].sum(dim=1).tolist()
         labels = full_inputs["input_ids"].clone()
-        labels = mask_leading_valid_tokens(
-            labels,
-            full_inputs["attention_mask"],
-            prefix_lens,
-        )
+        for i, pl in enumerate(prefix_lens):
+            labels[i, :pl] = -100
+
+        pad_id = self.processor.tokenizer.pad_token_id
+        if pad_id is not None:
+            labels[labels == pad_id] = -100
 
         full_inputs["labels"] = labels
         return full_inputs
