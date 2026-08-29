@@ -117,7 +117,6 @@ def make_preprocess_fn_prefix_only(processor):
             # Validation remains clean; only the generated train JSONL is required
             # to carry text_asr.
             "target_asr": target_asr,
-
             "prefix_text": prefix_text,
         }
 
@@ -331,7 +330,7 @@ class ScheduledASRPrefixTrainer(CastFloatInputsTrainer):
             loss = clean_loss
 
         return (loss, clean_outputs) if return_outputs else loss
-
+      
     def prediction_step(
         self,
         model,
@@ -350,7 +349,6 @@ class ScheduledASRPrefixTrainer(CastFloatInputsTrainer):
             prediction_loss_only,
             ignore_keys=ignore_keys,
         )
-
 
 class MakeEveryCheckpointInferableCallback(TrainerCallback):
     def __init__(self, processor, model=None, default_prompt: str = ""):
