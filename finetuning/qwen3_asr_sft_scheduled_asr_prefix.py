@@ -104,6 +104,7 @@ def build_prefix_messages(prompt: str, audio_array):
 def make_preprocess_fn_prefix_only(processor):
     def _preprocess(ex: Dict[str, Any]) -> Dict[str, Any]:
         prompt = ex.get("prompt", "")
+        target_asr = ex.get("text_asr") or ex["text"]
         dummy_audio = None
         prefix_msgs = build_prefix_messages(prompt, dummy_audio)
         prefix_text = processor.apply_chat_template(
@@ -115,8 +116,7 @@ def make_preprocess_fn_prefix_only(processor):
             "target": ex["text"],
             # Validation remains clean; only the generated train JSONL is required
             # to carry text_asr.
-            "target_asr": ex.get("text_asr", ex["text"]),
-
+            "target_asr": target_asr,
             "prefix_text": prefix_text,
         }
 
@@ -166,6 +166,9 @@ class DataCollatorForQwen3ASRFinetuning:
 
 
 def build_generated_asr_conditioning_prefix(target_asr: str) -> str:
+    if not isinstance(target_asr, str):
+        raise ValueError("text_asr must be a string")
+      
     if TARGET_MARKER not in target_asr:
         raise ValueError(f"text_asr does not contain {TARGET_MARKER!r}")
     header, payload_text = target_asr.split(TARGET_MARKER, 1)
