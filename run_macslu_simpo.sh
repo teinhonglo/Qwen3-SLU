@@ -26,6 +26,9 @@ simpo_train_conf=""  # default: SimPO paper-style train_conf
 # nbest_only requires a generated oracle; nbest_oracle falls back to the ground truth.
 # oracle_balance also uses GT fallback, while deterministically retaining all rank-0
 # errors and 2.5%/15%/20%/40% of rank-0-correct samples with 0/1/2/3+ intents.
+# sampled_highest_lowest uses five on-policy samples and selects their score extrema.
+# oracle_sampled_highest_lowest additionally requires a sampled oracle as chosen
+# and a sampled non-oracle as rejected. Neither mode uses ground-truth fallback.
 pair_mode="nbest_oracle"
 pair_min_score_margin="0.1"
 pair_max_pairs_per_sample="1"
@@ -50,6 +53,19 @@ test_sets="test"
 
 . ./local/parse_options.sh
 . ./path.sh
+
+case "$pair_mode" in
+    nbest_only|nbest_oracle|oracle_balance)
+        ;;
+    sampled_highest_lowest|oracle_sampled_highest_lowest)
+        nbest_decoding_conf="conf/decoding/simpo_on_policy_decoding.json"
+        simpo_seed_array=(13 21 42 79 100)
+        ;;
+    *)
+        echo "[ERROR] unsupported pair_mode: $pair_mode"
+        exit 1
+        ;;
+esac
 
 if [ -z "$src_exp_dir" ] && [ -n "$src_model" ]; then
     src_exp_dir="$src_model"
@@ -115,9 +131,9 @@ if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
     fi
 fi
 
-# Stage 1: Use src_exp_dir to generate n-best JSONL under src_exp_dir/<split>/nbest/.
+# Stage 1: Generate beam n-best or SimPO-style on-policy candidate JSONL.
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
-    echo "Stage 1: Generate n-best JSONL from src_exp_dir for: $nbest_splits"
+    echo "Stage 1: Generate candidates for pair_mode=$pair_mode from src_exp_dir for: $nbest_splits"
 
     if [ -z "$src_exp_dir" ]; then
         echo "[ERROR] --src_exp_dir is required for SimPO preference data generation"
@@ -126,37 +142,71 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
 
     for split in $nbest_splits; do
         input_jsonl=${json_root}/${split}.jsonl
-        pred_file=${src_exp_dir}/${split}_${nbest_decoding_conf_name}/predictions.jsonl
-        gt_file=${input_jsonl}
-        
+
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
         fi
-        
-        if [ ! -f "$pred_file" ]; then
-        
-            output_nbest_dir="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest"
-            
-            CUDA_VISIBLE_DEVICES="$gpuid" \
-                python finetuning/qwen3_asr_test.py \
-                    $inference_mode \
-                    --exp_dir "$src_exp_dir" \
-                    --input_jsonl "$input_jsonl" \
-                    --output_root "$src_exp_dir" \
-                    --device cuda:0 \
-                    --decoding_conf "$nbest_decoding_conf" \
-                    --output_nbest_jsonl_dir "$output_nbest_dir"
-        else
-            echo "Existed file (Evaluation Only): $pred_file"
-            python local/metrics.py --output_dir ${src_exp_dir}/${split}_${nbest_decoding_conf_name} "$pred_file" "$gt_file" | tee ${src_exp_dir}/${split}_${nbest_decoding_conf_name}/metrics.txt
-        fi
+
+        case "$pair_mode" in
+        nbest_only|nbest_oracle|oracle_balance)
+            pred_file=${src_exp_dir}/${split}_${nbest_decoding_conf_name}/predictions.jsonl
+            gt_file=${input_jsonl}
+            if [ ! -f "$pred_file" ]; then
+                output_nbest_dir="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest"
+
+                CUDA_VISIBLE_DEVICES="$gpuid" \
+                    python finetuning/qwen3_asr_test.py \
+                        $inference_mode \
+                        --exp_dir "$src_exp_dir" \
+                        --input_jsonl "$input_jsonl" \
+                        --output_root "$src_exp_dir" \
+                        --device cuda:0 \
+                        --decoding_conf "$nbest_decoding_conf" \
+                        --output_nbest_jsonl_dir "$output_nbest_dir"
+            else
+                echo "Existed file (Evaluation Only): $pred_file"
+                python local/metrics.py --output_dir "${src_exp_dir}/${split}_${nbest_decoding_conf_name}" "$pred_file" "$gt_file" | tee "${src_exp_dir}/${split}_${nbest_decoding_conf_name}/metrics.txt"
+            fi
+            ;;
+        sampled_highest_lowest|oracle_sampled_highest_lowest)
+            seed_files=()
+            for sampling_seed in "${simpo_seed_array[@]}"; do
+                seed_root="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/seed_${sampling_seed}"
+                seed_nbest_dir="${seed_root}/nbest"
+                seed_nbest_file="${seed_nbest_dir}/${split}.jsonl"
+                seed_files+=("$seed_nbest_file")
+
+                if [ ! -f "$seed_nbest_file" ]; then
+                    CUDA_VISIBLE_DEVICES="$gpuid" \
+                        python finetuning/qwen3_asr_test.py \
+                            $inference_mode \
+                            --exp_dir "$src_exp_dir" \
+                            --input_jsonl "$input_jsonl" \
+                            --output_root "$seed_root" \
+                            --device cuda:0 \
+                            --decoding_conf "$nbest_decoding_conf" \
+                            --seed "$sampling_seed" \
+                            --output_nbest_jsonl_dir "$seed_nbest_dir"
+                else
+                    echo "Existed seeded sample file: $seed_nbest_file"
+                fi
+            done
+
+            merged_nbest_dir="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest"
+            merged_nbest_file="${merged_nbest_dir}/${split}.jsonl"
+            python local/merge_simpo_on_policy_samples.py \
+                --input_jsonls "${seed_files[@]}" \
+                --seeds "${simpo_seed_array[@]}" \
+                --output_jsonl "$merged_nbest_file"
+            ;;
+        esac
     done
 fi
 
-# Stage 2: Score each n-best hypothesis and the ground-truth fallback candidate.
+# Stage 2: Score each generated candidate with the existing MAC-SLU task metrics.
 if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
-    echo "Stage 2: Score n-best with oracle EMA and local/metrics.py metrics for: $score_splits"
+    echo "Stage 2: Score candidates and calculate n-best oracle EMA for: $score_splits"
 
     for split in $score_splits; do
         input_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/${split}.jsonl"

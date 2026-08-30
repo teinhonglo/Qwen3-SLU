@@ -519,6 +519,8 @@ def parse_args():
                    help="Optional override for decoding.generation.num_return_sequences")
     p.add_argument("--beam_size", type=int, default=None,
                    help="Optional override for decoding.generation.beam_size")
+    p.add_argument("--seed", type=int, default=None,
+                   help="Optional random seed for reproducible stochastic decoding")
     p.add_argument("--corrected_prompt_file", type=str, default="data/macslu/corrected_prompt.txt",
                    help="Correction prompt file path for corrected jsonl")
     p.add_argument("--decoding_conf", type=str, default="conf/decoding/basic_decoding.json",
@@ -625,6 +627,13 @@ def main():
             layer_cfg = resolved_decoding.get("layer_lmhead", {})
             layer_index = int(layer_cfg.get("layer_index", -1))
             asr_wrapper.model.set_layer_lmhead_index(layer_index)
+
+    if args.seed is not None:
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
+        print(f"[info] decoding seed: {args.seed}")
 
     rows = load_jsonl(args.input_jsonl)
     rows_out = []
