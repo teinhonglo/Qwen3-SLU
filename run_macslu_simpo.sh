@@ -11,7 +11,6 @@ exp_root="exp/macslu_simpo"
 attention_map_opts=""
 decoding_conf="conf/decoding/nbest_decoding.json"
 nbest_decoding_conf="conf/decoding/nbest_decoding.json"
-simpo_on_policy_decoding_conf="conf/decoding/simpo_on_policy_decoding.json"
 inference_mode="--auto_latest_checkpoint"
 
 # source model used to create n-best hypotheses and initialize SimPO training
@@ -21,9 +20,6 @@ src_model=""
 simpo_init_model=""
 simpo_init_checkpoint_mode="latest"  # latest, best, or none
 simpo_train_conf=""  # default: SimPO paper-style train_conf
-
-# SimPO paper-style on-policy generation uses five independent sampling seeds.
-simpo_sampling_seeds="13 21 42 79 100"
 
 # SimPO trainer hyperparameters live in conf/*simpo.json.
 # Pair-building settings are pipeline controls for local/build_simpo_pairs.py.
@@ -60,17 +56,10 @@ test_sets="test"
 
 case "$pair_mode" in
     nbest_only|nbest_oracle|oracle_balance)
-        use_simpo_on_policy_sampling=false
-        preference_data_tag=$(basename -s .json "$nbest_decoding_conf")
         ;;
     sampled_highest_lowest|oracle_sampled_highest_lowest)
-        use_simpo_on_policy_sampling=true
-        preference_data_tag="simpo_on_policy"
-        read -r -a simpo_seed_array <<< "$simpo_sampling_seeds"
-        if [ "${#simpo_seed_array[@]}" -ne 5 ]; then
-            echo "[ERROR] simpo_on_policy requires exactly five sampling seeds"
-            exit 1
-        fi
+        nbest_decoding_conf="conf/decoding/simpo_on_policy_decoding.json"
+        simpo_seed_array=(13 21 42 79 100)
         ;;
     *)
         echo "[ERROR] unsupported pair_mode: $pair_mode"
@@ -105,17 +94,13 @@ if [ ! -f "$decoding_conf" ]; then
     exit 1
 fi
 
-if [ "$use_simpo_on_policy_sampling" = false ] && [ ! -f "$nbest_decoding_conf" ]; then
+if [ ! -f "$nbest_decoding_conf" ]; then
     echo "[ERROR] nbest_decoding_conf not found: $nbest_decoding_conf"
     exit 1
 fi
 
-if [ "$use_simpo_on_policy_sampling" = true ] && [ ! -f "$simpo_on_policy_decoding_conf" ]; then
-    echo "[ERROR] simpo_on_policy_decoding_conf not found: $simpo_on_policy_decoding_conf"
-    exit 1
-fi
-
 conf_tag=$(basename -s .json "$simpo_train_conf")
+nbest_decoding_conf_name=$(basename -s .json "$nbest_decoding_conf")
 # Keep runs made with different pair construction policies in separate trees.
 exp_base=${exp_root}_${pair_mode}
 exp_dir=${exp_base}/${conf_tag}${suffix}
@@ -163,11 +148,12 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
             exit 1
         fi
 
-        if [ "$use_simpo_on_policy_sampling" = false ]; then
-            pred_file=${src_exp_dir}/${split}_${preference_data_tag}/predictions.jsonl
+        case "$pair_mode" in
+        nbest_only|nbest_oracle|oracle_balance)
+            pred_file=${src_exp_dir}/${split}_${nbest_decoding_conf_name}/predictions.jsonl
             gt_file=${input_jsonl}
             if [ ! -f "$pred_file" ]; then
-                output_nbest_dir="${src_exp_dir}/${split}_${preference_data_tag}/nbest"
+                output_nbest_dir="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest"
 
                 CUDA_VISIBLE_DEVICES="$gpuid" \
                     python finetuning/qwen3_asr_test.py \
@@ -180,12 +166,13 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
                         --output_nbest_jsonl_dir "$output_nbest_dir"
             else
                 echo "Existed file (Evaluation Only): $pred_file"
-                python local/metrics.py --output_dir "${src_exp_dir}/${split}_${preference_data_tag}" "$pred_file" "$gt_file" | tee "${src_exp_dir}/${split}_${preference_data_tag}/metrics.txt"
+                python local/metrics.py --output_dir "${src_exp_dir}/${split}_${nbest_decoding_conf_name}" "$pred_file" "$gt_file" | tee "${src_exp_dir}/${split}_${nbest_decoding_conf_name}/metrics.txt"
             fi
-        else
+            ;;
+        sampled_highest_lowest|oracle_sampled_highest_lowest)
             seed_files=()
             for sampling_seed in "${simpo_seed_array[@]}"; do
-                seed_root="${src_exp_dir}/${split}_${preference_data_tag}/seed_${sampling_seed}"
+                seed_root="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/seed_${sampling_seed}"
                 seed_nbest_dir="${seed_root}/nbest"
                 seed_nbest_file="${seed_nbest_dir}/${split}.jsonl"
                 seed_files+=("$seed_nbest_file")
@@ -198,7 +185,7 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
                             --input_jsonl "$input_jsonl" \
                             --output_root "$seed_root" \
                             --device cuda:0 \
-                            --decoding_conf "$simpo_on_policy_decoding_conf" \
+                            --decoding_conf "$nbest_decoding_conf" \
                             --seed "$sampling_seed" \
                             --output_nbest_jsonl_dir "$seed_nbest_dir"
                 else
@@ -206,13 +193,14 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
                 fi
             done
 
-            merged_nbest_dir="${src_exp_dir}/${split}_${preference_data_tag}/nbest"
+            merged_nbest_dir="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest"
             merged_nbest_file="${merged_nbest_dir}/${split}.jsonl"
             python local/merge_simpo_on_policy_samples.py \
                 --input_jsonls "${seed_files[@]}" \
                 --seeds "${simpo_seed_array[@]}" \
                 --output_jsonl "$merged_nbest_file"
-        fi
+            ;;
+        esac
     done
 fi
 
@@ -221,8 +209,8 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
     echo "Stage 2: Score candidates and calculate n-best oracle EMA for: $score_splits"
 
     for split in $score_splits; do
-        input_jsonl="${src_exp_dir}/${split}_${preference_data_tag}/nbest/${split}.jsonl"
-        output_jsonl="${src_exp_dir}/${split}_${preference_data_tag}/nbest/scored_nbest.jsonl"
+        input_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/${split}.jsonl"
+        output_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -238,8 +226,8 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     echo "Stage 3: Build SimPO chosen/rejected pairs for: $pair_splits"
 
     for split in $pair_splits; do
-        input_jsonl="${src_exp_dir}/${split}_${preference_data_tag}/nbest/scored_nbest.jsonl"
-        output_jsonl="${src_exp_dir}/${split}_${preference_data_tag}/nbest/simpo_pairs_${pair_mode}.jsonl"
+        input_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
+        output_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl"
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -258,9 +246,9 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
     echo "Stage 4: Export SimPO analysis JSONL for: $analysis_splits"
 
     for split in $analysis_splits; do
-        input_jsonl="${src_exp_dir}/${split}_${preference_data_tag}/nbest/scored_nbest.jsonl"
-        pairs_jsonl="${src_exp_dir}/${split}_${preference_data_tag}/nbest/simpo_pairs_${pair_mode}.jsonl"
-        output_jsonl="${src_exp_dir}/${split}_${preference_data_tag}/nbest/simpo_analysis_${pair_mode}.jsonl"
+        input_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/scored_nbest.jsonl"
+        pairs_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl"
+        output_jsonl="${src_exp_dir}/${split}_${nbest_decoding_conf_name}/nbest/simpo_analysis_${pair_mode}.jsonl"
         if [ ! -f "$input_jsonl" ]; then
             echo "[ERROR] missing required file: $input_jsonl"
             exit 1
@@ -299,8 +287,8 @@ if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
         python finetuning/qwen3_asr_simpo.py --seed $seed $training_opts \
             "${init_opts[@]}" \
             --train_conf "$simpo_train_conf" \
-            --train_file "${src_exp_dir}/train_${preference_data_tag}/nbest/simpo_pairs_${pair_mode}.jsonl" \
-            --eval_file "${src_exp_dir}/dev_${preference_data_tag}/nbest/simpo_pairs_${pair_mode}.jsonl" \
+            --train_file "${src_exp_dir}/train_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
+            --eval_file "${src_exp_dir}/dev_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
             --output_dir "$exp_dir"
 fi
 
