@@ -9,7 +9,7 @@ set -euo pipefail
 json_root="data-json/macslu_fixed"
 exp_root="exp/macslu_simpo"
 attention_map_opts=""
-decoding_conf="conf/decoding/nbest_decoding.json"
+decoding_conf="conf/decoding/basic_decoding.json"
 nbest_decoding_conf="conf/decoding/nbest_decoding.json"
 inference_mode="--auto_latest_checkpoint"
 

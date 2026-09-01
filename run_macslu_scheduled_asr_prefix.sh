@@ -56,31 +56,6 @@ else
     training_opts=""
 fi
 
-if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
-    echo "Stage 0: Download MAC-SLU and prepare jsonl"
-
-    prep_cmd=(
-        python local/prepare_macslu_jsonl.py
-        --repo-id "$repo_id"
-        --download-dir "$download_dir"
-        --extract-root "$extract_root"
-        --jsonl-root "$json_root"
-        --splits train dev test
-    )
-
-    if [ -n "$prompt_file" ]; then
-        prep_cmd+=(--prompt-file "$prompt_file")
-    fi
-
-    "${prep_cmd[@]}"
-
-    python local/count_macslu_intent_distribution.py \
-        --jsonl-root "$json_root" \
-        --splits train dev test \
-        --output-txt "${json_root}/intent_distribution.txt" \
-        --output-json "${json_root}/intent_distribution.json"
-fi
-
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
     echo "Stage 1: Generate scheduled-ASR-prefix ASR targets"
 

@@ -150,7 +150,11 @@ class DataCollatorForQwen3ASRFinetuning:
         prefix_lens = prefix_inputs["attention_mask"].sum(dim=1).tolist()
         labels = full_inputs["input_ids"].clone()
         for i, pl in enumerate(prefix_lens):
-            labels[i, :pl] = -100
+            nonz_idx = torch.nonzero(
+                full_inputs["attention_mask"][i],
+                as_tuple=False,
+            )[0].item()
+            labels[i, nonz_idx:nonz_idx + int(pl)] = -100
 
         pad_id = self.processor.tokenizer.pad_token_id
         if pad_id is not None:

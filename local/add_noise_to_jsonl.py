@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import soundfile as sf
 import torch
 import torchaudio
 
@@ -22,7 +23,11 @@ def load_mono(path: Path, description: str) -> Tuple[torch.Tensor, int]:
     if not path.is_file():
         raise FileNotFoundError(f"{description} audio does not exist: {path}")
     try:
-        waveform, sample_rate = torchaudio.load(str(path))
+        # SoundFile returns [time, channel]. Convert it to torchaudio's
+        # [channel, time] convention so the remaining tensor pipeline is
+        # unchanged and does not depend on TorchCodec/FFmpeg for WAV I/O.
+        audio, sample_rate = sf.read(str(path), dtype="float32", always_2d=True)
+        waveform = torch.from_numpy(audio.T).contiguous()
     except Exception as exc:
         raise RuntimeError(f"failed to read {description} audio {path}: {exc}") from exc
     if waveform.ndim != 2 or waveform.shape[0] == 0 or waveform.shape[1] == 0:
@@ -112,7 +117,14 @@ def augment(args: argparse.Namespace) -> Dict[str, int]:
                 mixed = mixed * peak_scale
                 stem = clean_path.stem or "audio"
                 noisy_path = audio_dir / f"{count:08d}_{stem}.wav"
-                torchaudio.save(str(noisy_path), mixed, clean_sr)
+                # SoundFile expects [time, channel]. PCM_16 matches the common
+                # WAV output used by torchaudio.save while avoiding TorchCodec.
+                sf.write(
+                    str(noisy_path),
+                    mixed.detach().cpu().transpose(0, 1).contiguous().numpy(),
+                    clean_sr,
+                    subtype="PCM_16",
+                )
                 original_audio = row["audio"]
                 row["audio"] = str(noisy_path.resolve())
                 meta = {
