@@ -26,6 +26,7 @@ import random
 
 import librosa
 import torch
+import torch.nn.functional as F
 from datasets import load_dataset
 from qwen_asr import Qwen3ASRModel
 from transformers import (GenerationConfig, Trainer, TrainerCallback,
@@ -204,39 +205,29 @@ class DataCollatorForQwen3ASRFinetuning:
         return full_inputs
 
 
-def get_generated_asr_value_char_span(target_asr: str):
-    """Return the character span of only the generated ASR JSON value.
+def get_semantics_char_start(target: str) -> int:
+    """Return the character index where the semantics field starts.
 
-    The returned [start, end) span is relative to target_asr.  We include the
-    JSON string quotes in the masked value, while keeping the surrounding
-    output structure (e.g. "asr_text": and "semantics":) supervised.
+    The returned index is relative to the target string and points to the
+    beginning of the top-level "semantics" key.  Everything from this point
+    through EOS is treated as semantic supervision.
     """
-    if not isinstance(target_asr, str):
-        raise ValueError("text_asr must be a string")
-    if TARGET_MARKER not in target_asr:
-        raise ValueError(f"text_asr does not contain {TARGET_MARKER!r}")
+    if not isinstance(target, str):
+        raise ValueError("target must be a string")
+    if TARGET_MARKER not in target:
+        raise ValueError(f"target does not contain {TARGET_MARKER!r}")
 
-    header, payload_text = target_asr.split(TARGET_MARKER, 1)
+    header, payload_text = target.split(TARGET_MARKER, 1)
     payload = json.loads(payload_text)
     if not isinstance(payload, dict) or "asr_text" not in payload or "semantics" not in payload:
-        raise ValueError("text_asr payload must contain asr_text and semantics")
+        raise ValueError("target payload must contain asr_text and semantics")
 
-    key_prefix = '"asr_text": '
+    key_prefix = '"semantics": '
     key_pos = payload_text.find(key_prefix)
     if key_pos < 0:
-        raise ValueError("text_asr payload does not contain the expected asr_text key")
+        raise ValueError("target payload does not contain the expected semantics key")
 
-    value_text = json.dumps(payload["asr_text"], ensure_ascii=False)
-    value_start_in_payload = key_pos + len(key_prefix)
-    if not payload_text.startswith(value_text, value_start_in_payload):
-        raise ValueError("text_asr does not use the expected canonical JSON serialization")
-
-    value_end_in_payload = value_start_in_payload + len(value_text)
-    payload_offset = len(header) + len(TARGET_MARKER)
-    return (
-        payload_offset + value_start_in_payload,
-        payload_offset + value_end_in_payload,
-    )
+    return len(header) + len(TARGET_MARKER) + key_pos
 
 
 @dataclass
@@ -244,48 +235,44 @@ class DataCollatorForQwen3ASRScheduledPrefix:
     processor: Any
     sampling_rate: int = 16000
 
-    def _mask_generated_asr_values(
+    def _build_semantic_suffix_mask(
         self,
-        labels,
         full_inputs,
         full_texts,
         targets,
-        target_spans,
         eos,
     ):
-        """Mask only generated ASR value tokens, independent of padding side."""
+        """Mark the semantic suffix, including EOS, for each sample."""
         tokenizer = self.processor.tokenizer
         audio_token_id = tokenizer.convert_tokens_to_ids(self.processor.audio_token)
+        semantic_mask = torch.zeros_like(
+            full_inputs["attention_mask"],
+            dtype=torch.bool,
+        )
 
-        for i, (span_start, span_end) in enumerate(target_spans):
-            if not 0 <= span_start <= span_end <= len(targets[i]):
-                raise ValueError(
-                    f"Invalid generated ASR char span {(span_start, span_end)} "
-                    f"for target length {len(targets[i])}"
-                )
-
+        for i, target in enumerate(targets):
             valid_positions = torch.nonzero(
                 full_inputs["attention_mask"][i].to(dtype=torch.bool),
                 as_tuple=False,
             ).squeeze(-1)
             valid_ids = full_inputs["input_ids"][i, valid_positions].tolist()
 
-            # Reconstruct exactly the text tokenized by Qwen3ASRProcessor,
-            # but without recomputing audio features.
             audio_token_count = sum(token_id == audio_token_id for token_id in valid_ids)
             expanded_full_text = self.processor.replace_multimodal_special_tokens(
                 [full_texts[i]],
                 iter([audio_token_count]),
             )[0]
 
-            target_suffix = targets[i] + eos
+            target_suffix = target + eos
             if not expanded_full_text.endswith(target_suffix):
                 raise RuntimeError(
                     "Unable to align target text with the processor-expanded full sequence"
                 )
+
             target_char_offset = len(expanded_full_text) - len(target_suffix)
-            absolute_span_start = target_char_offset + span_start
-            absolute_span_end = target_char_offset + span_end
+            absolute_semantic_start = (
+                target_char_offset + get_semantics_char_start(target)
+            )
 
             tokenized = tokenizer(
                 expanded_full_text,
@@ -299,26 +286,27 @@ class DataCollatorForQwen3ASRScheduledPrefix:
 
             if token_ids != valid_ids:
                 raise RuntimeError(
-                    "Tokenizer alignment mismatch while locating generated ASR tokens"
+                    "Tokenizer alignment mismatch while locating semantic suffix"
                 )
 
-            masked_tokens = 0
+            first_semantic_token = None
             for token_index, (char_start, char_end) in enumerate(offsets):
-                # Special tokens generally have a zero-length offset.
                 if char_end <= char_start:
                     continue
-                if char_start < absolute_span_end and char_end > absolute_span_start:
-                    labels[i, valid_positions[token_index]] = -100
-                    masked_tokens += 1
+                if char_end > absolute_semantic_start:
+                    first_semantic_token = token_index
+                    break
 
-            if span_end > span_start and masked_tokens == 0:
-                raise RuntimeError(
-                    "Generated ASR span is non-empty but no tokens were masked"
-                )
+            if first_semantic_token is None:
+                raise RuntimeError("Unable to locate semantic suffix tokens")
 
-        return labels
+            # Mark the full suffix rather than only character-overlapping tokens
+            # so that EOS and any trailing special token remain semantic targets.
+            semantic_mask[i, valid_positions[first_semantic_token:]] = True
 
-    def _encode(self, prefix_texts, targets, audios, generated_asr_spans=None):
+        return semantic_mask
+
+    def _encode(self, prefix_texts, targets, audios, semantic_only=False):
         eos = self.processor.tokenizer.eos_token or ""
         full_texts = [pfx + target + eos for pfx, target in zip(prefix_texts, targets)]
         full_inputs = self.processor(
@@ -346,19 +334,21 @@ class DataCollatorForQwen3ASRScheduledPrefix:
             prefix_lens,
         )
 
-        # For the generated branch, additionally exclude only the generated
-        # ASR value.  The JSON structure and ground-truth semantics stay supervised.
-        if generated_asr_spans is not None:
-            labels = self._mask_generated_asr_values(
-                labels=labels,
-                full_inputs=full_inputs,
-                full_texts=full_texts,
-                targets=targets,
-                target_spans=generated_asr_spans,
-                eos=eos,
-            )
+        semantic_mask = self._build_semantic_suffix_mask(
+            full_inputs=full_inputs,
+            full_texts=full_texts,
+            targets=targets,
+            eos=eos,
+        )
+
+        # In the generated-ASR branch, the ASR hypothesis remains in input_ids
+        # as conditioning context.  Only the downstream semantic suffix is
+        # supervised, so generated ASR tokens can never become training targets.
+        if semantic_only:
+            labels[~semantic_mask] = -100
 
         full_inputs["labels"] = labels
+        full_inputs["semantic_mask"] = semantic_mask
         return full_inputs
 
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Dict[str, torch.Tensor]]:
@@ -374,9 +364,7 @@ class DataCollatorForQwen3ASRScheduledPrefix:
             prefix_texts,
             generated_targets,
             audios,
-            generated_asr_spans=[
-                get_generated_asr_value_char_span(target) for target in generated_targets
-            ],
+            semantic_only=True,
         )
         return {"clean": clean, "generated": generated}
 
@@ -454,6 +442,32 @@ class ScheduledASRPrefixTrainer(CastFloatInputsTrainer):
             progress - self.schedule_start_ratio
         ) / span
 
+    @staticmethod
+    def _masked_causal_ce_sum(logits, labels, token_mask):
+        """Return summed causal CE and token count over token_mask."""
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        shift_mask = token_mask[..., 1:].to(dtype=torch.bool)
+        shift_mask = shift_mask & shift_labels.ne(-100)
+
+        flat_mask = shift_mask.reshape(-1)
+        selected_indices = torch.nonzero(flat_mask, as_tuple=False).squeeze(-1)
+        token_count = int(selected_indices.numel())
+        if token_count == 0:
+            return logits.sum() * 0.0, 0
+
+        flat_logits = shift_logits.reshape(-1, shift_logits.size(-1))
+        flat_labels = shift_labels.reshape(-1)
+        selected_logits = flat_logits.index_select(0, selected_indices)
+        selected_labels = flat_labels.index_select(0, selected_indices)
+
+        loss_sum = F.cross_entropy(
+            selected_logits.float(),
+            selected_labels,
+            reduction="sum",
+        )
+        return loss_sum, token_count
+
     def compute_loss(
         self,
         model,
@@ -464,27 +478,80 @@ class ScheduledASRPrefixTrainer(CastFloatInputsTrainer):
         # Evaluation unwraps the nested batch to the clean branch before the
         # base Trainer calls compute_loss again.
         if "clean" not in inputs:
+            inputs = dict(inputs)
+            inputs.pop("semantic_mask", None)
             return super().compute_loss(
                 model,
                 inputs,
                 return_outputs=return_outputs,
                 num_items_in_batch=num_items_in_batch,
             )
-        
-        clean_inputs = inputs["clean"]
-        generated_inputs = inputs["generated"]
+
+        clean_inputs = dict(inputs["clean"])
+        generated_inputs = dict(inputs["generated"])
+
+        clean_labels = clean_inputs.pop("labels")
+        clean_semantic_mask = clean_inputs.pop("semantic_mask").to(dtype=torch.bool)
+        generated_labels = generated_inputs.pop("labels")
+        generated_semantic_mask = generated_inputs.pop("semantic_mask").to(dtype=torch.bool)
+
+        # One clean forward always provides the ASR loss and clean-semantics loss.
+        # The generated branch is only forwarded when it has non-zero weight.
         clean_outputs = model(**clean_inputs)
-        clean_loss = clean_outputs.loss
+
+        clean_valid_mask = clean_labels.ne(-100)
+        asr_mask = clean_valid_mask & ~clean_semantic_mask
+        clean_semantic_mask = clean_valid_mask & clean_semantic_mask
+
+        asr_loss_sum, asr_count = self._masked_causal_ce_sum(
+            clean_outputs.logits,
+            clean_labels,
+            asr_mask,
+        )
+        clean_sem_loss_sum, clean_sem_count = self._masked_causal_ce_sum(
+            clean_outputs.logits,
+            clean_labels,
+            clean_semantic_mask,
+        )
+
         generated_weight = self.generated_loss_weight()
+        generated_sem_loss_sum = clean_sem_loss_sum.detach() * 0.0
+        generated_sem_count = clean_sem_count
 
         if generated_weight > 0.0:
             generated_outputs = model(**generated_inputs)
-            loss = (
-                (1.0 - generated_weight) * clean_loss
-                + generated_weight * generated_outputs.loss
+            generated_valid_mask = generated_labels.ne(-100)
+            generated_semantic_mask = (
+                generated_valid_mask & generated_semantic_mask
             )
-        else:
-            loss = clean_loss
+            generated_sem_loss_sum, generated_sem_count = self._masked_causal_ce_sum(
+                generated_outputs.logits,
+                generated_labels,
+                generated_semantic_mask,
+            )
+
+        # Keep ASR supervision at full strength.  Only semantic conditioning is
+        # interpolated from clean ASR context to generated ASR context:
+        #
+        #   L = [sum L_asr
+        #        + (1-w) sum L_sem(clean)
+        #        + w sum L_sem(generated)]
+        #       / [N_asr + (1-w) N_sem(clean) + w N_sem(generated)]
+        #
+        # At w=0 this is exactly the ordinary clean SFT token-average loss.
+        denominator = (
+            asr_count
+            + (1.0 - generated_weight) * clean_sem_count
+            + generated_weight * generated_sem_count
+        )
+        if denominator <= 0:
+            raise RuntimeError("Scheduled ASR loss has no supervised tokens")
+
+        loss = (
+            asr_loss_sum
+            + (1.0 - generated_weight) * clean_sem_loss_sum
+            + generated_weight * generated_sem_loss_sum
+        ) / denominator
 
         return (loss, clean_outputs) if return_outputs else loss
       
@@ -499,7 +566,10 @@ class ScheduledASRPrefixTrainer(CastFloatInputsTrainer):
         # the top level. Evaluation always uses the clean branch, so unwrap it
         # before Trainer checks for labels and calls the model.
         if "clean" in inputs:
-            inputs = inputs["clean"]
+            inputs = dict(inputs["clean"])
+        else:
+            inputs = dict(inputs)
+        inputs.pop("semantic_mask", None)
         return super().prediction_step(
             model,
             inputs,
