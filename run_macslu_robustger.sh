@@ -52,7 +52,6 @@ eval_suffix="/n10_${noise_tag}"
 run_dir="${exp_root}/${eval_conf_name}${eval_suffix}"
 feature_root="${run_dir}/features"
 model_dir="${run_dir}/model"
-eval_output_dir="${run_dir}/test_${nbest_conf_name}"
 
 run_macslu_eval_opts=(
     --json_root "$json_root"
