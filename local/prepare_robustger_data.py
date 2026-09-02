@@ -15,7 +15,6 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 from qwen_asr import Qwen3ASRModel
 
@@ -292,7 +291,10 @@ def main() -> None:
     if len(nbest_rows) != len(clean_rows):
         raise ValueError("N-best and clean JSONL row counts differ")
 
-    device = torch.device(args.device if args.device != "cuda" or torch.cuda.is_available() else "cpu")
+    if args.device.startswith("cuda") and not torch.cuda.is_available():
+        device = torch.device("cpu")
+    else:
+        device = torch.device(args.device)
     sbert = AutoModel.from_pretrained(config["sbert_model"]).to(device).eval()
     sbert_tokenizer = AutoTokenizer.from_pretrained(config["sbert_model"])
     discovered_dim = int(sbert.config.hidden_size)
@@ -358,8 +360,12 @@ def main() -> None:
                 noise_dim,
             ).numpy()
 
-            noisy_vector = audio_embedding(asr, str(noisy["audio"]), str(noisy.get("prompt", "")))
-            clean_vector = audio_embedding(asr, str(clean["audio"]), str(clean.get("prompt", "")))
+            if not noisy.get("audio") or not clean.get("audio"):
+                raise ValueError(f"Missing clean/noisy audio path at text_id={key}")
+            # Match build_audio_topk_semantics.py default: audio-only embedding;
+            # the row-level SLU prompt must not become an audio signal shortcut.
+            noisy_vector = audio_embedding(asr, str(noisy["audio"]), "")
+            clean_vector = audio_embedding(asr, str(clean["audio"]), "")
             if noisy_vector.shape[0] != audio_dim or clean_vector.shape[0] != audio_dim:
                 raise ValueError(
                     f"Qwen3 audio dimension mismatch at text_id={key}: "
