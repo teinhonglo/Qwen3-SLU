@@ -37,11 +37,12 @@ run_dir="${exp_root}/${test_set}_${nbest_conf_name}"
 nbest_dir="${run_dir}/nbest"
 nbest_file="${nbest_dir}/${test_set}.jsonl"
 existing_nbest_file="${src_exp_dir}/${test_set}_${nbest_conf_name}/nbest/${test_set}.jsonl"
-prediction_file="${run_dir}/predictions.jsonl"
+rerank_dir="${src_exp_dir}/${test_set}_${nbest_conf_name}/rerank"
+prediction_file="${rerank_dir}/predictions.jsonl"
 
 if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
     echo "Stage 0: Validate clean-test reranker inputs"
-    mkdir -p "$nbest_dir"
+    mkdir -p "$nbest_dir" "$rerank_dir"
 fi
 
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
@@ -93,8 +94,8 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
         exit 1
     fi
     python local/metrics.py \
-        --output_dir "$run_dir" \
+        --output_dir "$rerank_dir" \
         "$prediction_file" \
         "${json_root}/${test_set}.jsonl" \
-        | tee "${run_dir}/metrics.txt"
+        | tee "${rerank_dir}/metrics.txt"
 fi
