@@ -15,6 +15,7 @@ src_exp_dir="exp/macslu_fixed/macslu_qwen3_asr_17b_ep20_lora_woemblmhead"
 inference_mode="--auto_latest_checkpoint"
 nbest_decoding_conf="conf/decoding/nbest_decoding.json"
 robustger_conf="conf/robustger_qwen3_06b.json"
+eval_train_conf="conf/macslu_qwen3_asr_17b_ep20_lora_woemblmhead.json"
 gpuid=0
 seed=66
 stage=0
@@ -46,6 +47,17 @@ nbest_conf_name=$(basename -s .json "$nbest_decoding_conf")
 run_dir="${exp_root}/n10_${noise_tag}"
 feature_root="${run_dir}/features"
 model_dir="${run_dir}/model"
+eval_output_dir="${run_dir}/test_${nbest_conf_name}"
+
+run_macslu_eval_opts=(
+    --json_root "$json_root"
+    --eval_output_dir "$eval_output_dir"
+    --train_conf "$eval_train_conf"
+    --gpuid "$gpuid"
+    --test_sets "$test_sets"
+    --inference_mode "$inference_mode"
+    --decoding_conf "$nbest_decoding_conf"
+)
 
 if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
     echo "Stage 0: Prepare noisy train/dev/test at SNR=${snr_db} dB"
@@ -164,37 +176,16 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
 fi
 
 if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
-    echo "Stage 5: Evaluate RobustGER on noisy test against clean references"
-    prediction_file="${run_dir}/test_${nbest_conf_name}/predictions.jsonl"
-    if [ ! -s "$prediction_file" ]; then
-        echo "[ERROR] prediction file not found: $prediction_file"
-        exit 1
-    fi
-    python local/metrics.py \
-        --output_dir "${run_dir}/test_${nbest_conf_name}" \
-        "$prediction_file" \
-        "${json_root}/test.jsonl" \
-        | tee "${run_dir}/test_${nbest_conf_name}/metrics.txt"
+    echo "Stage 5: Evaluate RobustGER via run_macslu.sh"
+    ./run_macslu.sh --stage 3 --stop_stage 3 "${run_macslu_eval_opts[@]}"
 fi
 
 if [ $stage -le 6 ] && [ $stop_stage -ge 6 ]; then
-    echo "Stage 6: Plot RobustGER evaluation charts"
-    prediction_file="${run_dir}/test_${nbest_conf_name}/predictions.jsonl"
-    if [ -s "$prediction_file" ] && [ -f "${json_root}/test.jsonl" ]; then
-        python local/plot_macslu_evaluation.py \
-            --pred_file "$prediction_file" \
-            --gt_file "${json_root}/test.jsonl" \
-            --train_file "${json_root}/train.jsonl" \
-            --labels_file "data/macslu/labels.txt" \
-            --label_mapping_file "data/macslu/labels_zh_en.txt" \
-            --output_dir "${run_dir}/test_${nbest_conf_name}"
-    fi
+    echo "Stage 6: Plot RobustGER evaluation via run_macslu.sh"
+    ./run_macslu.sh --stage 4 --stop_stage 4 "${run_macslu_eval_opts[@]}"
 fi
 
 if [ $stage -le 7 ] && [ $stop_stage -ge 7 ]; then
-    echo "Stage 7: Summary"
-    metrics_file="${run_dir}/test_${nbest_conf_name}/metrics.txt"
-    if [ -f "$metrics_file" ]; then
-        cat "$metrics_file"
-    fi
+    echo "Stage 7: Summarize RobustGER evaluation via run_macslu.sh"
+    ./run_macslu.sh --stage 5 --stop_stage 5 "${run_macslu_eval_opts[@]}"
 fi
