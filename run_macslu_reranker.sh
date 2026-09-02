@@ -11,10 +11,11 @@ src_exp_dir="exp/macslu_fixed/macslu_qwen3_asr_17b_ep20_lora_woemblmhead"
 inference_mode="--auto_latest_checkpoint"
 nbest_decoding_conf="conf/decoding/nbest_decoding.json"
 reranker_model="Qwen/Qwen3-Reranker-0.6B"
+eval_train_conf="conf/macslu_qwen3_asr_17b_ep20_lora_woemblmhead.json"
 test_set="test"
 gpuid=0
 stage=0
-stop_stage=3
+stop_stage=5
 
 . ./local/parse_options.sh
 . ./path.sh
@@ -39,6 +40,16 @@ nbest_file="${nbest_dir}/${test_set}.jsonl"
 existing_nbest_file="${src_exp_dir}/${test_set}_${nbest_conf_name}/nbest/${test_set}.jsonl"
 rerank_dir="${src_exp_dir}/${test_set}_${nbest_conf_name}/rerank"
 prediction_file="${rerank_dir}/predictions.jsonl"
+
+run_macslu_eval_opts=(
+    --json_root "$json_root"
+    --eval_output_dir "$rerank_dir"
+    --train_conf "$eval_train_conf"
+    --gpuid "$gpuid"
+    --test_sets "$test_set"
+    --inference_mode "$inference_mode"
+    --decoding_conf "$nbest_decoding_conf"
+)
 
 if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
     echo "Stage 0: Validate clean-test reranker inputs"
@@ -88,14 +99,16 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
 fi
 
 if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
-    echo "Stage 3: Evaluate clean-test reranker predictions"
-    if [ ! -s "$prediction_file" ]; then
-        echo "[ERROR] reranker prediction file not found: $prediction_file"
-        exit 1
-    fi
-    python local/metrics.py \
-        --output_dir "$rerank_dir" \
-        "$prediction_file" \
-        "${json_root}/${test_set}.jsonl" \
-        | tee "${rerank_dir}/metrics.txt"
+    echo "Stage 3: Evaluate clean-test reranker predictions via run_macslu.sh"
+    ./run_macslu.sh --stage 3 --stop_stage 3 "${run_macslu_eval_opts[@]}"
+fi
+
+if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
+    echo "Stage 4: Plot clean-test reranker evaluation via run_macslu.sh"
+    ./run_macslu.sh --stage 4 --stop_stage 4 "${run_macslu_eval_opts[@]}"
+fi
+
+if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
+    echo "Stage 5: Summarize clean-test reranker evaluation via run_macslu.sh"
+    ./run_macslu.sh --stage 5 --stop_stage 5 "${run_macslu_eval_opts[@]}"
 fi
