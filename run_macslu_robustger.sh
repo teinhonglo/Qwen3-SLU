@@ -126,7 +126,7 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
             echo "[ERROR] missing N-best file: $nbest_file"
             exit 1
         fi
-        python local/prepare_robustger_data.py \
+        CUDA_VISIBLE_DEVICES="$gpuid" python local/prepare_robustger_data.py \
             --nbest_jsonl "$nbest_file" \
             --clean_jsonl "${json_root}/${split}.jsonl" \
             --noisy_jsonl "${json_root}/${tagged_split}.jsonl" \
@@ -138,7 +138,7 @@ fi
 
 if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     echo "Stage 3: Train full RobustGER adapter and MINE on RTX 3090"
-    python finetuning/train_qwen3_robustger.py \
+    CUDA_VISIBLE_DEVICES="$gpuid" python finetuning/train_qwen3_robustger.py \
         --train_conf "$robustger_conf" \
         --train_file "${feature_root}/train/manifest.jsonl" \
         --eval_file "${feature_root}/dev/manifest.jsonl" \
@@ -155,7 +155,7 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
         echo "[ERROR] RobustGER checkpoint not found: ${model_dir}/adapter-best.pt"
         exit 1
     fi
-    python finetuning/test_qwen3_robustger.py \
+    CUDA_VISIBLE_DEVICES="$gpuid" python finetuning/test_qwen3_robustger.py \
         --manifest "${test_feature_dir}/manifest.jsonl" \
         --checkpoint "${model_dir}/adapter-best.pt" \
         --config "$robustger_conf" \
