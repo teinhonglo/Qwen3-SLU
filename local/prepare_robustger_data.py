@@ -52,14 +52,18 @@ def candidate_text(candidate: Any) -> str:
 
 
 def build_h2t_input(candidates: Sequence[str]) -> str:
+    """Use the instruction template reported in the RobustGER paper."""
+    if not candidates:
+        raise ValueError("RobustGER requires at least one N-best hypothesis")
     sections = [
-        "You are a MAC-SLU correction model.",
-        "Given the N-best hypotheses produced by an ASR system, generate the clean MAC-SLU result.",
-        "Use all hypotheses as evidence. Output only the target format used by the project.",
-        "",
+        "Below is the best-hypotheses transcribed from speech recognition system. "
+        "Please try to revise it using the words which are only included into "
+        "other-hypothesis, and write the response for the true transcription.",
+        "### Best-hypothesis:",
+        candidates[0].strip(),
+        "### Other-hypothesis:",
     ]
-    for index, candidate in enumerate(candidates, 1):
-        sections.extend([f"### Hypothesis {index}", candidate.strip(), ""])
+    sections.extend(candidate.strip() for candidate in candidates[1:])
     sections.append("### Response:")
     return "\n".join(sections)
 
@@ -67,9 +71,6 @@ def build_h2t_input(candidates: Sequence[str]) -> str:
 def mean_pool(hidden: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     weights = mask.unsqueeze(-1).to(hidden.dtype)
     return (hidden * weights).sum(dim=1) / weights.sum(dim=1).clamp_min(1.0)
-
-
-@torch.inference_mode()
 
 
 @torch.inference_mode()
@@ -324,6 +325,12 @@ def main() -> None:
     noise_dim = int(config["noise_dim"])
     audio_dim = int(config["audio_dim"])
     expected_slots = n_best * (n_best - 1)
+    configured_slots = int(config["adapter_prompt_length"])
+    if configured_slots != expected_slots:
+        raise ValueError(
+            "RobustGER adapter_prompt_length must equal N*(N-1): "
+            f"configured={configured_slots}, expected={expected_slots}"
+        )
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "manifest.jsonl"
@@ -448,6 +455,7 @@ def main() -> None:
     meta = {
         "n_best": n_best,
         "language_noise_slots": expected_slots,
+        "adapter_prompt_length": configured_slots,
         "noise_dim": noise_dim,
         "audio_dim": audio_dim,
         "sbert_model": config["sbert_model"],
