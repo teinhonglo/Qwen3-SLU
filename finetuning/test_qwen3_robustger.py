@@ -6,9 +6,14 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
 import numpy as np
 import torch
-from transformers import AutoTokenizer
+from transformers import AutoConfig, AutoTokenizer
 
 from finetuning.qwen3_robustger_model import RobustGERForCausalLM
 from local.score_nbest_oracle import parse_hypothesis
@@ -23,7 +28,7 @@ def read_manifest(path: Path) -> List[Dict[str, Any]]:
 
 
 def load_model(config: Dict[str, Any], checkpoint: Path, device: torch.device):
-    base_config = __import__("transformers").AutoConfig.from_pretrained(config["base_model"])
+    base_config = AutoConfig.from_pretrained(config["base_model"])
     base_config.robustger_noise_dim = int(config["noise_dim"])
     base_config.robustger_adapter_prompt_length = int(config["adapter_prompt_length"])
     base_config.robustger_adapter_start_layer = int(config["adapter_start_layer"])
