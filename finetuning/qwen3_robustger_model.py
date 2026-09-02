@@ -60,6 +60,7 @@ class RobustGERQwen3Attention(Qwen3Attention):
     ):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
+        noise_embedding = kwargs.pop("noise_embedding", None)
 
         # Keep the Qwen3 attention path unchanged for the original sequence.
         query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
@@ -89,7 +90,6 @@ class RobustGERQwen3Attention(Qwen3Attention):
 
         self.last_noise_states = None
         if self.has_robustger_adapter:
-            noise_embedding = kwargs.get("noise_embedding")
             if noise_embedding is None:
                 raise ValueError(
                     "RobustGER attention requires noise_embedding for every forward pass"
