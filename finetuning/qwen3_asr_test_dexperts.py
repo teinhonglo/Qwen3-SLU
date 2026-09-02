@@ -123,22 +123,32 @@ def main():
 
     schema_path = args.schema_path or cfg.get('schema_path', '')
     schema = SLUSchema(schema_path) if (args.use_dexperts and schema_path and os.path.isfile(schema_path)) else None
-    if args.use_dexperts and schema is None:
-        warnings.warn('schema missing; continue without schema mask')
 
     exp_cfg = cfg.get('experts', {}) if isinstance(cfg, dict) else {}
     di_path = args.domain_intent_expert_path or exp_cfg.get('domain_intent', {}).get('path', '')
     sk_path = args.slot_key_expert_path or exp_cfg.get('slot_key', {}).get('path', '')
-    di_alpha = float(exp_cfg.get('domain_intent', {}).get('alpha', 1.0)); sk_alpha = float(exp_cfg.get('slot_key', {}).get('alpha', 1.0))
+    di_alpha = float(exp_cfg.get('domain_intent', {}).get('alpha', 0.0))
+    sk_alpha = float(exp_cfg.get('slot_key', {}).get('alpha', 0.0))
+    schema_cfg = cfg.get('schema_constraint', {}) if isinstance(cfg, dict) else {}
+    legacy_schema_mask = bool(cfg.get('schema_mask', True)) if isinstance(cfg, dict) else True
+    schema_mode = str(
+        schema_cfg.get('mode', 'hard' if legacy_schema_mask else 'off')
+    ).lower()
+    schema_strength = float(schema_cfg.get('strength', 1.0))
+    if args.disable_schema_mask:
+        schema_mode = 'off'
+    if args.use_dexperts and schema_mode != 'off' and schema is None:
+        warnings.warn('schema missing; continue without schema constraint')
     gr = float(cfg.get('grounding', {}).get('strength', 1.0)) if isinstance(cfg, dict) else 1.0
-    di_expert = ExpertLM(path=di_path, device=args.device) if args.use_dexperts else None
-    sk_expert = ExpertLM(path=sk_path, device=args.device) if args.use_dexperts else None
+    di_expert = ExpertLM(path=di_path, device=args.device) if (args.use_dexperts and di_alpha != 0.0) else None
+    sk_expert = ExpertLM(path=sk_path, device=args.device) if (args.use_dexperts and sk_alpha != 0.0) else None
     tok = asr_wrapper.processor.tokenizer if hasattr(asr_wrapper.processor, 'tokenizer') else asr_wrapper.processor
 
     if args.use_dexperts:
         print(f"[DExperts] domain_intent expert path: {di_path or '<empty>'}")
         print(f"[DExperts] slot_key expert path: {sk_path or '<empty>'}")
         print(f"[DExperts] schema path: {schema_path or '<empty>'}")
+        print(f"[DExperts] schema constraint: mode={schema_mode}, strength={schema_strength}")
         print(f"[DExperts] domain_intent loaded: {bool(di_expert and di_expert.model is not None)}")
         print(f"[DExperts] slot_key loaded: {bool(sk_expert and sk_expert.model is not None)}")
         try:
@@ -158,12 +168,26 @@ def main():
         except Exception as exc:
             warnings.warn(f"Unable to validate tokenizer vocab alignment: {exc}")
 
-    logits_processor = StateAwareDExpertsLogitsProcessor(tok, schema=schema, domain_intent_expert=di_expert, slot_key_expert=sk_expert, alpha_domain_intent=di_alpha, alpha_slot_key=sk_alpha, grounding_strength=gr, enable_schema_mask=not args.disable_schema_mask, enable_grounding=not args.disable_grounding) if args.use_dexperts else None
+    logits_processor = StateAwareDExpertsLogitsProcessor(
+        tok,
+        schema=schema,
+        domain_intent_expert=di_expert,
+        slot_key_expert=sk_expert,
+        alpha_domain_intent=di_alpha,
+        alpha_slot_key=sk_alpha,
+        grounding_strength=gr,
+        enable_schema_mask=not args.disable_schema_mask,
+        schema_constraint_mode=schema_mode,
+        schema_constraint_strength=schema_strength,
+        enable_grounding=not args.disable_grounding,
+    ) if args.use_dexperts else None
 
     rows = load_jsonl(args.input_jsonl)
     rows_out = []
     jsonl_name = get_jsonl_name(args.input_jsonl)
     for i, row in enumerate(rows, 1):
+        if logits_processor is not None:
+            logits_processor.reset()
         pred_raw = infer_one(asr_wrapper, row.get('audio', ''), row.get('prompt', ''), sr, max_new_tokens, do_sample, temperature, top_p, logits_processor=logits_processor)
         pred_json = try_parse_score_dict(pred_raw)
         pred_query = pred_json.get('asr_text', 'FAILED')
@@ -179,11 +203,14 @@ def main():
             print("[DExperts] decode summary:")
             print(
                 "[DExperts] steps={steps}, state_domain={state_domain}, state_intent={state_intent}, "
-                "state_slots_key={state_slots_key}, state_slots_value={state_slots_value}".format(**dbg)
+                "state_slots_key={state_slots_key}, state_implicit_slots_key={state_implicit_slots_key}, "
+                "state_slots_value={state_slots_value}".format(**dbg)
             )
             print(
                 "[DExperts] di_applied={di_applied}, di_skipped_shape={di_skipped_shape}, "
-                "sk_applied={sk_applied}, sk_skipped_shape={sk_skipped_shape}, changed_max={changed_max}".format(**dbg)
+                "sk_applied={sk_applied}, sk_skipped_shape={sk_skipped_shape}, "
+                "schema_applied={schema_applied}, schema_no_candidates={schema_no_candidates}, "
+                "schema_prefix_miss={schema_prefix_miss}, changed_max={changed_max}".format(**dbg)
             )
 
 
