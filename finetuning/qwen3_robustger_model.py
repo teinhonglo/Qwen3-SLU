@@ -259,7 +259,7 @@ class RobustGERForCausalLM(Qwen3ForCausalLM):
 
         noise_dim = int(getattr(config, "robustger_noise_dim", 384))
         prompt_length = int(
-            getattr(config, "robustger_adapter_prompt_length", 90)
+            getattr(config, "robustger_adapter_prompt_length", 20)
         )
         start_layer = int(getattr(config, "robustger_adapter_start_layer", 2))
 
