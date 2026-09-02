@@ -22,8 +22,8 @@ if [ ! -f "$nbest_decoding_conf" ]; then
     echo "[ERROR] N-best decoding config not found: $nbest_decoding_conf"
     exit 1
 fi
-if [ ! -f "\${json_root}/\${test_set}.jsonl" ]; then
-    echo "[ERROR] clean test JSONL not found: \${json_root}/\${test_set}.jsonl"
+if [ ! -f "${json_root}/${test_set}.jsonl" ]; then
+    echo "[ERROR] clean test JSONL not found: ${json_root}/${test_set}.jsonl"
     exit 1
 fi
 if [ ! -d "$src_exp_dir" ]; then
@@ -32,10 +32,10 @@ if [ ! -d "$src_exp_dir" ]; then
 fi
 
 nbest_conf_name=$(basename -s .json "$nbest_decoding_conf")
-run_dir="\${exp_root}/\${test_set}_\${nbest_conf_name}"
-nbest_dir="\${run_dir}/nbest"
-nbest_file="\${nbest_dir}/\${test_set}.jsonl"
-prediction_file="\${run_dir}/predictions.jsonl"
+run_dir="${exp_root}/${test_set}_${nbest_conf_name}"
+nbest_dir="${run_dir}/nbest"
+nbest_file="${nbest_dir}/${test_set}.jsonl"
+prediction_file="${run_dir}/predictions.jsonl"
 
 if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
     echo "Stage 0: Validate clean-test reranker inputs"
@@ -50,7 +50,7 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
         CUDA_VISIBLE_DEVICES="$gpuid" python finetuning/qwen3_asr_test.py \
             $inference_mode \
             --exp_dir "$src_exp_dir" \
-            --input_jsonl "\${json_root}/\${test_set}.jsonl" \
+            --input_jsonl "${json_root}/${test_set}.jsonl" \
             --output_root "$run_dir" \
             --device cuda:0 \
             --decoding_conf "$nbest_decoding_conf" \
@@ -89,6 +89,6 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     python local/metrics.py \
         --output_dir "$run_dir" \
         "$prediction_file" \
-        "\${json_root}/\${test_set}.jsonl" \
-        | tee "\${run_dir}/metrics.txt"
+        "${json_root}/${test_set}.jsonl" \
+        | tee "${run_dir}/metrics.txt"
 fi
