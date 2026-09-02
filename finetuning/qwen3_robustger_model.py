@@ -57,7 +57,7 @@ class RobustGERQwen3Attention(Qwen3Attention):
                 self.adapter_prompt_length, config.hidden_size
             )
             self.gating_factor = nn.Parameter(
-                torch.zeros(1, 1, self.num_heads, 1)
+                torch.zeros(1, 1, self.config.num_attention_heads, 1)
             )
 
             # Official RobustGER maps the 384-dim language-noise embedding
@@ -79,7 +79,7 @@ class RobustGERQwen3Attention(Qwen3Attention):
             self.key_gating_factor = nn.Parameter(
                 torch.zeros(
                     1,
-                    self.num_heads,
+                    self.config.num_attention_heads,
                     self.adapter_prompt_length,
                     self.head_dim,
                 )
@@ -87,7 +87,7 @@ class RobustGERQwen3Attention(Qwen3Attention):
             self.value_gating_factor = nn.Parameter(
                 torch.zeros(
                     1,
-                    self.num_heads,
+                    self.config.num_attention_heads,
                     self.adapter_prompt_length,
                     self.head_dim,
                 )
@@ -226,13 +226,13 @@ class RobustGERQwen3Attention(Qwen3Attention):
             ek_norm = self.projection_rms_key(ek).view(
                 hidden_states.shape[0],
                 self.adapter_prompt_length,
-                self.num_heads,
+                self.config.num_attention_heads,
                 self.head_dim,
             ).transpose(1, 2)
             ev_norm = self.projection_rms_value(ev).view(
                 hidden_states.shape[0],
                 self.adapter_prompt_length,
-                self.num_heads,
+                self.config.num_attention_heads,
                 self.head_dim,
             ).transpose(1, 2)
             adapter_key = adapter_key + ek_norm * self.key_gating_factor.to(ek_norm.dtype)
