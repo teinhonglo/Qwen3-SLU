@@ -1,6 +1,6 @@
 #!/bin/bash
 # Full RobustGER MAC-SLU recipe:
-# clean data -> noisy train/dev/test -> N-best (N=10) -> SBERT/audio features
+# clean data -> noisy train/dev/test -> N-best (N=5) -> SBERT/audio features
 # -> two-stage RobustGER adapter training -> noisy test H2T evaluation.
 #
 # The existing run_macslu_simpo_noisy.sh is intentionally left unchanged.
@@ -13,7 +13,7 @@ snr_db=5
 noise_seed=42
 src_exp_dir="exp/macslu_fixed/macslu_qwen3_asr_17b_ep20_lora_woemblmhead"
 inference_mode="--auto_latest_checkpoint"
-nbest_decoding_conf="conf/decoding/nbest_decoding.json"
+nbest_decoding_conf="conf/decoding/nbest_decoding_robustger.json"
 robustger_conf="conf/robustger_qwen3_06b.json"
 eval_train_conf="conf/macslu_qwen3_asr_17b_ep20_lora_woemblmhead.json"
 gpuid=0
@@ -48,7 +48,7 @@ eval_conf_name=$(basename -s .json "$eval_train_conf")
 # run_macslu.sh appends <train-conf-name><suffix> to --exp_root.
 # Keep RobustGER predictions under that exact evaluation directory so all
 # existing metrics/plot/summary stages can be reused unchanged.
-eval_suffix="/n10_${noise_tag}"
+eval_suffix="/n5_${noise_tag}"
 run_dir="${exp_root}/${eval_conf_name}${eval_suffix}"
 feature_root="${run_dir}/features"
 model_dir="${run_dir}/model"
@@ -99,7 +99,7 @@ if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
 fi
 
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
-    echo "Stage 1: Generate N-best hypotheses (N=10) for noisy train/dev/test"
+    echo "Stage 1: Generate N-best hypotheses (N=5) for noisy train/dev/test"
     if [ ! -d "$src_exp_dir" ]; then
         echo "[ERROR] source ASR experiment not found: $src_exp_dir"
         exit 1
