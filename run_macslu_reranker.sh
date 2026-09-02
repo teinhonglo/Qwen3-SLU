@@ -1,7 +1,8 @@
 #!/bin/bash
 # Clean-test Qwen3-Reranker control.
-# This script generates clean-test N-best hypotheses, reranks them as text,
-# and evaluates the selected candidate. It never creates noisy data.
+# This script reuses existing clean-test N-best hypotheses when available,
+# otherwise generates them, then reranks them as text and evaluates the
+# selected candidate. It never creates noisy data.
 set -euo pipefail
 
 json_root="data-json/macslu_fixed"
@@ -35,6 +36,7 @@ nbest_conf_name=$(basename -s .json "$nbest_decoding_conf")
 run_dir="${exp_root}/${test_set}_${nbest_conf_name}"
 nbest_dir="${run_dir}/nbest"
 nbest_file="${nbest_dir}/${test_set}.jsonl"
+existing_nbest_file="${src_exp_dir}/${test_set}_${nbest_conf_name}/nbest/${test_set}.jsonl"
 prediction_file="${run_dir}/predictions.jsonl"
 
 if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
@@ -43,10 +45,14 @@ if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
 fi
 
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
-    echo "Stage 1: Generate clean-test N-best hypotheses (N=10)"
-    if [ -s "$nbest_file" ]; then
-        echo "[SKIP] Existing clean-test N-best file: $nbest_file"
+    echo "Stage 1: Reuse or generate clean-test N-best hypotheses (N=10)"
+    if [ -s "$existing_nbest_file" ]; then
+        nbest_file="$existing_nbest_file"
+        echo "[REUSE] Existing clean-test N-best file: $nbest_file"
+    elif [ -s "$nbest_file" ]; then
+        echo "[SKIP] Existing reranker N-best file: $nbest_file"
     else
+        echo "[INFO] Existing source N-best file not found. Generate: $nbest_file"
         CUDA_VISIBLE_DEVICES="$gpuid" python finetuning/qwen3_asr_test.py \
             $inference_mode \
             --exp_dir "$src_exp_dir" \
