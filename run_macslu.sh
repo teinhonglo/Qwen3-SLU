@@ -16,6 +16,7 @@ exp_root="exp/macslu"
 inference_mode="--auto_latest_checkpoint"
 prompt_file=""   # 可指定外部 prompt 檔案，空字串則使用 prepare_macslu_jsonl.py 內建 prompt
 attention_map_opts="" # e.g., --save_attention_map --attn_layers all --attn_mode rollout --attn_imgs_dir imgs
+evaluation_output_dir="" # Optional direct output directory for evaluation stages 3-5.
 decoding_conf="conf/decoding/basic_decoding.json"
 
 # training config
@@ -120,7 +121,8 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     echo "Stage 3: Evaluate MAC-SLU predictions"
 
     for test_set in $test_sets; do
-        pred_file=${exp_root}/${test_set}_${decoding_conf_name}/predictions.jsonl
+        output_dir=${evaluation_output_dir:-${exp_root}/${test_set}_${decoding_conf_name}}
+        pred_file=${output_dir}/predictions.jsonl
         gt_file=${json_root}/${test_set}.jsonl
 
         if [ ! -f "$pred_file" ]; then
@@ -128,7 +130,7 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
             continue
         fi
 
-        python local/metrics.py --output_dir ${exp_root}/${test_set}_${decoding_conf_name} "$pred_file" "$gt_file" | tee ${exp_root}/${test_set}_${decoding_conf_name}/metrics.txt
+        python local/metrics.py --output_dir "$output_dir" "$pred_file" "$gt_file" | tee "${output_dir}/metrics.txt"
     done
 fi
 
@@ -136,9 +138,9 @@ if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
     echo "Stage 4: Plot MAC-SLU evaluation charts"
 
     for test_set in $test_sets; do
-        pred_file=${exp_root}/${test_set}_${decoding_conf_name}/predictions.jsonl
+        output_dir=${evaluation_output_dir:-${exp_root}/${test_set}_${decoding_conf_name}}
+        pred_file=${output_dir}/predictions.jsonl
         gt_file=${json_root}/${test_set}.jsonl
-        output_dir=${exp_root}/${test_set}_${decoding_conf_name}
 
         if [ ! -f "$pred_file" ]; then
             echo "[WARNING] prediction file not found: $pred_file"
@@ -164,7 +166,8 @@ if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
     echo "Stage 5: Summary (MAC-SLU)"
 
     for test_set in $test_sets; do
-        metrics_file=${exp_root}/${test_set}_${decoding_conf_name}/metrics.txt
+        output_dir=${evaluation_output_dir:-${exp_root}/${test_set}_${decoding_conf_name}}
+        metrics_file=${output_dir}/metrics.txt
         if [ ! -f "$metrics_file" ]; then
             echo "[WARNING] metrics file not found: $metrics_file"
             continue
