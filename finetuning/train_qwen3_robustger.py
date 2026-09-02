@@ -3,7 +3,7 @@
 
 The loop follows Algorithm 1 from RobustGER:
 1. update MINE on language-noise versus clean/noisy audio pairs;
-2. update only the RobustGER adapter/tuner with H2T CE minus the joint MI term.
+2. update only the RobustGER adapter with H2T CE plus the joint MI term.
 """
 
 import argparse
@@ -130,51 +130,67 @@ class H2TCollator:
 
 
 class MINE(nn.Module):
-    """MINE statistic network with raw-E_LN projection for stage 1."""
+    """Official RobustGER MINE statistic network with Qwen3 input adapters."""
 
-    def __init__(self, hidden_dim: int, audio_dim: int, raw_noise_dim: int):
+    def __init__(
+        self,
+        tuned_language_dim: int,
+        audio_dim: int,
+        raw_noise_dim: int,
+        raw_language_dim: int = 4096,
+        mine_hidden_dim: int = 1024,
+        mine_mid_dim: int = 256,
+    ):
         super().__init__()
-        mine_hidden = max(hidden_dim // 4, 128)
-        self.raw_prefix = nn.Linear(raw_noise_dim, hidden_dim, bias=False)
-        self.language = nn.Linear(hidden_dim, mine_hidden, bias=False)
-        self.audio = nn.Linear(audio_dim, mine_hidden, bias=False)
-        self.combine = nn.Linear(mine_hidden, max(mine_hidden // 4, 32), bias=False)
-        self.score = nn.Linear(max(mine_hidden // 4, 32), 1, bias=False)
+        self.prefix = nn.Linear(raw_noise_dim, raw_language_dim, bias=False)
+        self.raw_proj1 = nn.Linear(raw_language_dim, mine_hidden_dim, bias=False)
+        self.tuned_proj1 = nn.Linear(tuned_language_dim, mine_hidden_dim, bias=False)
+        self.proj2 = nn.Linear(audio_dim, mine_hidden_dim, bias=False)
+        self.proj3 = nn.Linear(mine_hidden_dim, mine_mid_dim, bias=False)
+        self.proj4 = nn.Linear(mine_mid_dim, 1, bias=False)
 
-    def forward(self, language: torch.Tensor, audio: torch.Tensor, raw: bool) -> torch.Tensor:
+    def forward(
+        self,
+        language: torch.Tensor,
+        audio: torch.Tensor,
+        raw: bool,
+    ) -> torch.Tensor:
         language = language.float()
         audio = audio.float()
         if raw:
-            language = self.raw_prefix(language)
-        if language.ndim == 3:
-            language = language.mean(dim=1)
+            language = self.prefix(language)
+            language = self.raw_proj1(language.mean(dim=1))
+        else:
+            if language.ndim == 3:
+                language = language.mean(dim=1)
+            language = self.tuned_proj1(language)
         if audio.ndim == 3:
             audio = audio.mean(dim=1)
-        language = F.silu(self.language(language))
-        audio = F.silu(self.audio(audio))
-        hidden = F.silu(self.combine(language + audio))
-        return self.score(hidden).squeeze(-1)
-
-
-def mine_bound(
-    mine: MINE,
-    language_noise: torch.Tensor,
-    noisy_audio: torch.Tensor,
-    clean_audio: torch.Tensor,
-) -> torch.Tensor:
-    """Donsker-Varadhan joint-minus-marginal estimate used in stage 1."""
-    joint = mine(-language_noise, noisy_audio, raw=True)
-    marginal = mine(-language_noise, clean_audio, raw=True)
-    return joint.mean() - (torch.logsumexp(marginal, dim=0) - math.log(marginal.numel()))
+        language = F.silu(language)
+        audio = F.silu(self.proj2(audio))
+        hidden = F.silu(self.proj3(language + audio))
+        return torch.sigmoid(self.proj4(hidden)).squeeze(-1)
 
 
 def build_model(config: Dict[str, Any], device: torch.device) -> RobustGERForCausalLM:
+    expected_slots = int(config["n_best"]) * (int(config["n_best"]) - 1)
+    configured_slots = int(config["adapter_prompt_length"])
+    if configured_slots != expected_slots:
+        raise ValueError(
+            "RobustGER adapter_prompt_length must equal N*(N-1): "
+            f"configured={configured_slots}, expected={expected_slots}"
+        )
+
     base_config = AutoConfig.from_pretrained(config["base_model"])
     base_config.robustger_noise_dim = int(config["noise_dim"])
-    base_config.robustger_adapter_prompt_length = int(config["adapter_prompt_length"])
+    base_config.robustger_adapter_prompt_length = configured_slots
     base_config.robustger_adapter_start_layer = int(config["adapter_start_layer"])
     base_config._attn_implementation = "eager"
-    dtype = torch.float16 if device.type == "cuda" and config["dtype"] == "float16" else torch.float32
+    dtype = (
+        torch.float16
+        if device.type == "cuda" and config["dtype"] == "float16"
+        else torch.float32
+    )
     model = RobustGERForCausalLM.from_pretrained(
         config["base_model"],
         config=base_config,
@@ -184,7 +200,9 @@ def build_model(config: Dict[str, Any], device: torch.device) -> RobustGERForCau
     return model
 
 
-def cross_entropy_from_logits(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+def cross_entropy_from_logits(
+    logits: torch.Tensor, labels: torch.Tensor
+) -> torch.Tensor:
     shift_logits = logits[:, :-1, :].contiguous().float()
     shift_labels = labels[:, 1:].contiguous()
     return F.cross_entropy(
@@ -251,12 +269,26 @@ def save_checkpoint(
                 "noise_dim": config["noise_dim"],
                 "adapter_prompt_length": config["adapter_prompt_length"],
                 "adapter_start_layer": config["adapter_start_layer"],
+                "mine_raw_dim": config["mine_raw_dim"],
+                "mine_hidden_dim": config["mine_hidden_dim"],
+                "mine_mid_dim": config["mine_mid_dim"],
                 "eval_loss": eval_loss,
             },
             handle,
             ensure_ascii=False,
             indent=2,
         )
+
+
+def apply_warmup(
+    optimizer: torch.optim.Optimizer,
+    base_lr: float,
+    micro_step: int,
+    warmup_steps: int,
+) -> None:
+    scale = min(1.0, float(micro_step + 1) / float(max(warmup_steps, 1)))
+    for parameter_group in optimizer.param_groups:
+        parameter_group["lr"] = base_lr * scale
 
 
 def parse_args() -> argparse.Namespace:
@@ -305,13 +337,17 @@ def main() -> None:
     )
 
     model = build_model(config, device)
-    hidden_dim = int(model.config.hidden_size)
     mine = MINE(
-        hidden_dim=hidden_dim,
+        tuned_language_dim=int(model.config.hidden_size),
         audio_dim=int(config["audio_dim"]),
         raw_noise_dim=int(config["noise_dim"]),
+        raw_language_dim=int(config["mine_raw_dim"]),
+        mine_hidden_dim=int(config["mine_hidden_dim"]),
+        mine_mid_dim=int(config["mine_mid_dim"]),
     ).to(device)
-    model_params = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    model_params = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
     optimizer = torch.optim.AdamW(
         model_params,
         lr=float(config["learning_rate"]),
@@ -326,30 +362,46 @@ def main() -> None:
     best_eval = float("inf")
     global_step = 0
     grad_accumulation = int(config["gradient_accumulation_steps"])
+    warmup_steps = max(
+        1, int(len(train_loader) * float(config["warmup_ratio"]))
+    )
 
     for epoch in range(int(config["epochs"])):
         model.train()
         mine.train()
         for batch_index, batch in enumerate(train_loader):
+            micro_step = epoch * len(train_loader) + batch_index
             language_noise = batch["language_noise"].to(device)
             noisy_audio = batch["noisy_audio"].to(device)
             clean_audio = batch["clean_audio"].to(device)
 
-            # Algorithm 1, stage 1: only MINE is updated.
+            # Algorithm 1, stage 1: update only MINE with official signs.
             for parameter in mine.parameters():
                 parameter.requires_grad = True
             for parameter in model.parameters():
                 parameter.requires_grad = False
             if batch_index % grad_accumulation == 0:
                 optimizer_m.zero_grad(set_to_none=True)
-            loss_m = -mine_bound(mine, language_noise, noisy_audio, clean_audio)
+            apply_warmup(
+                optimizer_m,
+                float(config["mine_learning_rate"]),
+                micro_step,
+                warmup_steps,
+            )
+            loss_m = (
+                -mine(-language_noise, noisy_audio, raw=True).mean()
+                + mine(-language_noise, clean_audio, raw=True).mean()
+            )
+            loss_m_stage1 = loss_m
             (loss_m / grad_accumulation).backward()
-            if (batch_index + 1) % grad_accumulation == 0 or batch_index + 1 == len(train_loader):
+            if (
+                (batch_index + 1) % grad_accumulation == 0
+                or batch_index + 1 == len(train_loader)
+            ):
                 clip_grad_norm_(mine.parameters(), 1.0)
                 optimizer_m.step()
 
-            # Algorithm 1, stage 2: update adapter/tuner, with MINE frozen but
-            # differentiable with respect to the tuned language embedding.
+            # Algorithm 1, stage 2: update adapter with H2T CE plus MINE.
             for parameter in mine.parameters():
                 parameter.requires_grad = False
             model.freeze_base_parameters()
@@ -358,6 +410,12 @@ def main() -> None:
             labels = batch["labels"].to(device)
             if batch_index % grad_accumulation == 0:
                 optimizer.zero_grad(set_to_none=True)
+            apply_warmup(
+                optimizer,
+                float(config["learning_rate"]),
+                micro_step,
+                warmup_steps,
+            )
             with torch.autocast(
                 device_type=device.type,
                 dtype=torch.float16,
@@ -370,11 +428,21 @@ def main() -> None:
                     use_cache=False,
                 )
                 loss_ce = cross_entropy_from_logits(outputs.logits, labels)
-                tuned = torch.stack(model._last_noise_states, dim=0).mean(dim=0)
-                joint_mi = mine(-tuned, noisy_audio, raw=False).mean()
-                loss = loss_ce - float(config["lambda_mi"]) * joint_mi
+                if not model._last_noise_states:
+                    raise RuntimeError(
+                        "RobustGER adapter produced no intermediate noise states"
+                    )
+                loss_m_terms = [
+                    -mine(-state, noisy_audio, raw=False).mean()
+                    for state in model._last_noise_states
+                ]
+                loss_m = torch.stack(loss_m_terms).mean()
+                loss = loss_ce + float(config["lambda_mi"]) * loss_m
             scaler.scale(loss / grad_accumulation).backward()
-            if (batch_index + 1) % grad_accumulation == 0 or batch_index + 1 == len(train_loader):
+            if (
+                (batch_index + 1) % grad_accumulation == 0
+                or batch_index + 1 == len(train_loader)
+            ):
                 scaler.unscale_(optimizer)
                 clip_grad_norm_(model_params, 1.0)
                 scaler.step(optimizer)
@@ -385,7 +453,7 @@ def main() -> None:
                 print(
                     f"[INFO] epoch={epoch + 1} step={global_step} "
                     f"loss={loss.item():.4f} ce={loss_ce.item():.4f} "
-                    f"mine={joint_mi.item():.4f} mine_stage1={loss_m.item():.4f}"
+                    f"mine={loss_m.item():.4f} mine_stage1={loss_m_stage1.item():.4f}"
                 )
 
         eval_loss = evaluate(model, eval_loader, device)
