@@ -105,11 +105,10 @@ def rows_to_examples_decode_prefix(rows):
                 end_idx = _find_key_value_delimiter(suffix_text)
                 target_text = suffix_text if end_idx < 0 else suffix_text[:end_idx]
 
-                if "implicit_slots" in target_text:
-                    break
-
                 if not target_text.strip() or "implicit_slots" in target_text:
-                    t += 1
+                    # Skip this non-slot-key boundary, but keep scanning so
+                    # later semantic frames still contribute expert examples.
+                    t += max(end_idx, 1)
                     continue
                 slot_key_rows.append(
                     {

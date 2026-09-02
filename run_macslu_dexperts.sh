@@ -16,6 +16,7 @@ suffix=
 train_conf=conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead.json
 seed=66
 expert_train_conf=conf/expert/qwen3_text_expert_17b.json
+enable_experts=0  # 0: schema-only; 1: train experts (also set nonzero alpha in decoding config)
 
 # stage
 stage=0
@@ -60,35 +61,47 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
 fi
 
 if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
-    echo "Stage 2: Build DExperts expert corpora"
-    python local/build_macslu_dexperts_data.py \
-        --train_jsonl ${json_root}/train.jsonl \
-        --dev_jsonl ${json_root}/dev.jsonl \
-        --output_dir ${dexperts_root}
+    if [ "$enable_experts" = "1" ]; then
+        echo "Stage 2: Build DExperts expert corpora"
+        python local/build_macslu_dexperts_data.py \
+            --train_jsonl ${json_root}/train.jsonl \
+            --dev_jsonl ${json_root}/dev.jsonl \
+            --output_dir ${dexperts_root}
+    else
+        echo "Stage 2: Skip expert corpora (schema-only decoding)"
+    fi
 fi
 
 if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
-    echo "Stage 3: Train domain-intent expert"
-    CUDA_VISIBLE_DEVICES=$gpuid \
-        python finetuning/train_expert_lm.py \
-            --train_jsonl ${dexperts_root}/domain_intent_train.jsonl \
-            --dev_jsonl ${dexperts_root}/domain_intent_dev.jsonl \
-            --train_conf ${expert_train_conf} \
-            --output_dir ${expert_exp_root}/domain_intent
+    if [ "$enable_experts" = "1" ]; then
+        echo "Stage 3: Train domain-intent expert"
+        CUDA_VISIBLE_DEVICES=$gpuid \
+            python finetuning/train_expert_lm.py \
+                --train_jsonl ${dexperts_root}/domain_intent_train.jsonl \
+                --dev_jsonl ${dexperts_root}/domain_intent_dev.jsonl \
+                --train_conf ${expert_train_conf} \
+                --output_dir ${expert_exp_root}/domain_intent
+    else
+        echo "Stage 3: Skip domain-intent expert (schema-only decoding)"
+    fi
 fi
 
 if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
-    echo "Stage 4: Train slot-key expert"
-    CUDA_VISIBLE_DEVICES=$gpuid \
-        python finetuning/train_expert_lm.py \
-            --train_jsonl ${dexperts_root}/slot_key_train.jsonl \
-            --dev_jsonl ${dexperts_root}/slot_key_dev.jsonl \
-            --train_conf ${expert_train_conf} \
-            --output_dir ${expert_exp_root}/slot_key
+    if [ "$enable_experts" = "1" ]; then
+        echo "Stage 4: Train slot-key expert"
+        CUDA_VISIBLE_DEVICES=$gpuid \
+            python finetuning/train_expert_lm.py \
+                --train_jsonl ${dexperts_root}/slot_key_train.jsonl \
+                --dev_jsonl ${dexperts_root}/slot_key_dev.jsonl \
+                --train_conf ${expert_train_conf} \
+                --output_dir ${expert_exp_root}/slot_key
+    else
+        echo "Stage 4: Skip slot-key expert (schema-only decoding)"
+    fi
 fi
 
 if [ $stage -le 6 ] && [ $stop_stage -ge 6 ]; then
-    echo "Stage 6: DExperts inference on MAC-SLU test"
+    echo "Stage 6: Schema-constrained inference on MAC-SLU test"
 
     for test_set in $test_sets; do
         test_jsonl=${json_root}/${test_set}.jsonl

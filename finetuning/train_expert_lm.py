@@ -183,19 +183,53 @@ def main():
 
     def to_dataset(rows):
         return Dataset.from_list(
-            [{"text": f"{r['input_text']}{r['target_text'])}"} for r in rows]
+            [
+                {
+                    "input_text": r["input_text"],
+                    "text": f"{r['input_text']}{r['target_text']}",
+                }
+                for r in rows
+            ]
         )
 
     train_ds = to_dataset(load_rows(args.train_jsonl))
     dev_ds = to_dataset(load_rows(args.dev_jsonl))
 
     def preprocess(batch):
-        out = tokenizer(batch["text"], truncation=True, max_length=int(model_args_conf.get("max_length", 256)), padding="max_length")
-        out["labels"] = out["input_ids"].copy()
+        max_length = int(model_args_conf.get("max_length", 256))
+        out = tokenizer(
+            batch["text"],
+            truncation=True,
+            max_length=max_length,
+            padding="max_length",
+        )
+        prefix_ids = tokenizer(
+            batch["input_text"],
+            truncation=True,
+            max_length=max_length,
+            padding=False,
+        )["input_ids"]
+        labels = []
+        for input_ids, attention_mask, prefix in zip(
+            out["input_ids"], out["attention_mask"], prefix_ids
+        ):
+            prefix_len = min(len(prefix), len(input_ids))
+            row_labels = list(input_ids)
+            row_labels[:prefix_len] = [-100] * prefix_len
+            row_labels = [
+                label if mask else -100
+                for label, mask in zip(row_labels, attention_mask)
+            ]
+            labels.append(row_labels)
+        out["labels"] = labels
         return out
 
-    train_ds = train_ds.map(preprocess, batched=True, remove_columns=["text"])
-    dev_ds = dev_ds.map(preprocess, batched=True, remove_columns=["text"])
+    train_ds = train_ds.map(
+        preprocess, batched=True, remove_columns=["text", "input_text"]
+    )
+    dev_ds = dev_ds.map(
+        preprocess, batched=True, remove_columns=["text", "input_text"]
+    )
 
     has_cuda = torch.cuda.is_available()
     use_bf16 = has_cuda and torch.cuda.get_device_capability(0)[0] >= 8
