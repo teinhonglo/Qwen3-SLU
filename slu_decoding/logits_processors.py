@@ -14,6 +14,7 @@ from .state_parser import (
     STATE_SLOTS_VALUE,
     parse_state,
 )
+from .token_trie import TokenIDTrie
 
 import re
 
@@ -51,6 +52,7 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
             )
         self.schema_constraint_strength = float(schema_constraint_strength)
         self.enable_grounding = enable_grounding
+        self._schema_trie_cache = {}
         self.debug_stats = {}
         self.reset()
         print(
@@ -62,6 +64,9 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
         )
 
     def reset(self):
+        self._active_label_start = None
+        self._active_label_context = None
+        self._active_label_includes_quote = False
         self.debug_stats = {
             "steps": 0,
             "state_domain": 0,
@@ -78,10 +83,6 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
             "schema_prefix_miss": 0,
             "changed_max": 0,
         }
-
-    def _encode_first_token(self, text):
-        token_ids = self.tok.encode(text, add_special_tokens=False)
-        return int(token_ids[0]) if token_ids else None
 
     def _schema_allowed_strings(self, state):
         if self.schema is None:
@@ -100,46 +101,134 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
             )
         return []
 
-    def _schema_next_token_ids(self, state, allowed):
-        """Return the next token IDs that keep the active label schema-valid.
+    def _encode(self, text):
+        return [
+            int(token_id)
+            for token_id in self.tok.encode(text, add_special_tokens=False)
+        ]
 
-        The continuation is recomputed from the decoded label prefix at every
-        generation step.  This makes multi-token labels work without assuming
-        that a complete Domain/Intent/Slot name is a single tokenizer token.
-        """
-        prefix = state.active_label_prefix
-        next_ids = set()
-        matched = False
+    def _quote_tokenizations(self, quote):
+        variants = [self._encode(quote)]
+        if quote == '\\"':
+            variants.append(self._encode("\\") + self._encode('"'))
+        return [variant for variant in variants if variant]
+
+    def _get_schema_trie(self, state, allowed, include_open_quote):
+        cache_key = (
+            state.state_name,
+            state.current_domain,
+            state.current_intent,
+            state.active_label_quote,
+            bool(include_open_quote),
+            tuple(allowed),
+        )
+        cached = self._schema_trie_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        trie = TokenIDTrie()
+        quote = state.active_label_quote
+        quote_tokenizations = self._quote_tokenizations(quote)
         for label in allowed:
-            if (
-                state.active_label_quote == '\\"'
-                and prefix.endswith("\\")
-                and label == prefix[:-1]
-            ):
-                # The tokenizer may split the escaped closing quote into ``\\``
-                # and ``"``.  Once the slash has been generated, only the quote
-                # is a valid continuation.
-                matched = True
-                token_id = self._encode_first_token('"')
-                if token_id is not None:
-                    next_ids.add(token_id)
-                continue
-            if not label.startswith(prefix):
-                continue
-            matched = True
-            remainder = label[len(prefix) :]
-            continuation = remainder if remainder else state.active_label_quote
-            token_id = self._encode_first_token(continuation)
-            if token_id is not None:
-                next_ids.add(token_id)
-        return next_ids, matched
+            if include_open_quote:
+                whole_text = f"{quote}{label}{quote}"
+            else:
+                whole_text = f"{label}{quote}"
+            trie.insert(self._encode(whole_text))
+            label_ids = self._encode(label)
+            for closing_quote_ids in quote_tokenizations:
+                if include_open_quote:
+                    for opening_quote_ids in quote_tokenizations:
+                        trie.insert(
+                            opening_quote_ids + label_ids + closing_quote_ids
+                        )
+                else:
+                    trie.insert(label_ids + closing_quote_ids)
 
-    def _apply_schema_constraint(self, logits, state):
+        self._schema_trie_cache[cache_key] = trie
+        return trie
+
+    def _decode_ids(self, token_ids):
+        if token_ids.ndim == 1:
+            token_ids = token_ids.unsqueeze(0)
+        if hasattr(self.tok, "batch_decode"):
+            return self.tok.batch_decode(
+                token_ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )[0]
+        if hasattr(self.tok, "tokenizer") and hasattr(
+            self.tok.tokenizer, "batch_decode"
+        ):
+            return self.tok.tokenizer.batch_decode(
+                token_ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )[0]
+        return self.tok.decode(token_ids[0], skip_special_tokens=True)
+
+    def _find_active_label_start(self, input_ids, state, max_depth):
+        generated = input_ids[0][self.base_prefix_len :]
+        generated_len = int(generated.shape[0])
+        min_start = max(0, generated_len - max(int(max_depth), 1))
+        targets = (
+            (state.active_label_prefix, False),
+            (f"{state.active_label_quote}{state.active_label_prefix}", True),
+        )
+        for target, includes_quote in targets:
+            if not target:
+                continue
+            for start in range(generated_len - 1, min_start - 1, -1):
+                if self._decode_ids(generated[start:]) == target:
+                    return self.base_prefix_len + start, includes_quote
+        return None, False
+
+    def _schema_next_token_ids(self, input_ids, state, allowed):
+        context = (
+            state.state_name,
+            state.current_domain,
+            state.current_intent,
+            state.active_label_quote,
+        )
+        if self._active_label_context != context:
+            self._active_label_start = None
+            self._active_label_context = context
+            self._active_label_includes_quote = False
+
+        if self._active_label_start is None:
+            if state.active_label_prefix == "":
+                self._active_label_start = int(input_ids.shape[1])
+            else:
+                # Usually the processor observes the empty label immediately
+                # after the opening quote.  This fallback also supports a
+                # tokenizer token that contains the quote and first label piece.
+                label_trie = self._get_schema_trie(state, allowed, False)
+                quoted_trie = self._get_schema_trie(state, allowed, True)
+                max_depth = max(label_trie.max_depth, quoted_trie.max_depth)
+                start, includes_quote = self._find_active_label_start(
+                    input_ids, state, max_depth
+                )
+                if start is None:
+                    return None
+                self._active_label_start = start
+                self._active_label_includes_quote = includes_quote
+
+        trie = self._get_schema_trie(
+            state, allowed, self._active_label_includes_quote
+        )
+        prefix_ids = input_ids[0][self._active_label_start :].tolist()
+        return trie.next_token_ids(prefix_ids)
+
+    def _apply_schema_constraint(self, logits, input_ids, state):
         if (
             self.schema_constraint_mode == "off"
             or self.schema is None
             or not state.active_label
         ):
+            if not state.active_label:
+                self._active_label_start = None
+                self._active_label_context = None
+                self._active_label_includes_quote = False
             return logits
 
         allowed = self._schema_allowed_strings(state)
@@ -147,8 +236,8 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
             self.debug_stats["schema_no_candidates"] += 1
             return logits
 
-        next_ids, matched = self._schema_next_token_ids(state, allowed)
-        if not matched or not next_ids:
+        next_ids = self._schema_next_token_ids(input_ids, state, allowed)
+        if next_ids is None or not next_ids:
             # A generated prefix cannot be repaired by a next-token mask.  Keep
             # base decoding alive instead of turning every logit into -inf.
             self.debug_stats["schema_prefix_miss"] += 1
@@ -249,7 +338,7 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
                 self.debug_stats["sk_applied"] += 1
             elif z is not None:
                 self.debug_stats["sk_skipped_shape"] += 1
-        out = self._apply_schema_constraint(out, state)
+        out = self._apply_schema_constraint(out, input_ids, state)
 
         if self.enable_grounding and state.state_name == STATE_SLOTS_VALUE:
             asr_text = ""

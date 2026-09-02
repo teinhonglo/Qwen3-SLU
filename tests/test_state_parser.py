@@ -8,6 +8,7 @@ from slu_decoding.state_parser import (
     STATE_SLOTS_VALUE,
     parse_state,
 )
+from slu_decoding.token_trie import TokenIDTrie
 
 
 class StateParserTest(unittest.TestCase):
@@ -76,6 +77,26 @@ class StateParserTest(unittest.TestCase):
         self.assertEqual(intent_state.state_name, STATE_INTENT)
         self.assertEqual(intent_state.current_domain, "地图")
         self.assertEqual(intent_state.active_label_prefix, "导")
+
+
+class TokenIDTrieTest(unittest.TestCase):
+    def test_returns_children_for_shared_token_prefix(self):
+        trie = TokenIDTrie()
+        trie.insert([10, 20, 30])
+        trie.insert([10, 20, 40])
+        trie.insert([10, 50])
+
+        self.assertEqual(trie.next_token_ids([]), {10})
+        self.assertEqual(trie.next_token_ids([10]), {20, 50})
+        self.assertEqual(trie.next_token_ids([10, 20]), {30, 40})
+
+    def test_distinguishes_terminal_and_missing_prefix(self):
+        trie = TokenIDTrie()
+        trie.insert([1, 2])
+
+        self.assertEqual(trie.next_token_ids([1, 2]), set())
+        self.assertIsNone(trie.next_token_ids([9]))
+        self.assertEqual(trie.max_depth, 2)
 
 
 if __name__ == "__main__":
