@@ -13,6 +13,10 @@ import random
 from pathlib import Path
 from typing import Any, Dict, List
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+import sys
+sys.path.insert(0, str(PROJECT_ROOT))
+
 import numpy as np
 import torch
 import torch.nn as nn
