@@ -1,0 +1,21 @@
+{
+  "base_model": "Qwen/Qwen3-0.6B-Base",
+  "audio_model": "Qwen/Qwen3-ASR-0.6B",
+  "sbert_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+  "n_best": 10,
+  "noise_dim": 384,
+  "audio_dim": 1280,
+  "adapter_prompt_length": 90,
+  "adapter_start_layer": 1,
+  "epochs": 2,
+  "batch_size": 4,
+  "gradient_accumulation_steps": 8,
+  "learning_rate": 0.0005,
+  "mine_learning_rate": 0.00005,
+  "weight_decay": 0.02,
+  "lambda_mi": 0.5,
+  "max_length": 4096,
+  "max_new_tokens": 256,
+  "dtype": "float16",
+  "seed": 66
+}
