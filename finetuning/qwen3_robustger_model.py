@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Qwen3 implementation of the RobustGER adapter and language-noise tuner.
 
-The base Qwen3 model stays frozen.  Each selected decoder layer receives the
+The base Qwen3 model stays frozen. Each selected decoder layer receives the
 paper's N-best language-noise embedding through a zero-initialized denoising
 gate and a zero-initialized LLaMA-Adapter-style attention gate.
 """
@@ -13,10 +13,8 @@ from torch import nn
 from transformers.models.qwen3.modeling_qwen3 import (
     Qwen3Attention,
     Qwen3ForCausalLM,
-    Qwen3RMSNorm,
     apply_rotary_pos_emb,
     eager_attention_forward,
-    repeat_kv,
 )
 
 
@@ -63,6 +61,7 @@ class RobustGERQwen3Attention(Qwen3Attention):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
+        # Keep the Qwen3 attention path unchanged for the original sequence.
         query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
         key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
@@ -90,7 +89,7 @@ class RobustGERQwen3Attention(Qwen3Attention):
 
         self.last_noise_states = None
         if self.has_robustger_adapter:
-            noise_embedding = kwargs.pop("noise_embedding", None)
+            noise_embedding = kwargs.get("noise_embedding")
             if noise_embedding is None:
                 raise ValueError(
                     "RobustGER attention requires noise_embedding for every forward pass"
@@ -114,6 +113,7 @@ class RobustGERQwen3Attention(Qwen3Attention):
             tuner_dtype = self.language_noise_tuner.weight.dtype
             tuned_noise = self.language_noise_tuner(noise_embedding.to(tuner_dtype))
             self.last_noise_states = tuned_noise
+
             adapter_states = self.adapter_wte.weight.unsqueeze(0).expand(
                 hidden_states.shape[0], -1, -1
             ).to(tuner_dtype)
@@ -125,11 +125,12 @@ class RobustGERQwen3Attention(Qwen3Attention):
                 -1,
                 self.head_dim,
             )
-            adapter_key = self.k_norm(self.k_proj(adapter_states).view(adapter_shape)).transpose(1, 2)
+            adapter_key = self.k_norm(
+                self.k_proj(adapter_states).view(adapter_shape)
+            ).transpose(1, 2)
             adapter_value = self.v_proj(adapter_states).view(adapter_shape).transpose(1, 2)
-            adapter_key = repeat_kv(adapter_key, self.num_key_value_groups)
-            adapter_value = repeat_kv(adapter_value, self.num_key_value_groups)
 
+            # eager_attention_forward performs the QKV-group repetition itself.
             adapter_output, _ = eager_attention_forward(
                 self,
                 query_states,
