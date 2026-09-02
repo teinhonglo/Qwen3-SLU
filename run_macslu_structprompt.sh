@@ -11,7 +11,6 @@ label_mapping_file="data/macslu/labels_zh_en.txt"
 inference_mode="--auto_latest_checkpoint"
 attention_map_opts="" # e.g., --save_attention_map --attn_layers all --attn_mode rollout --attn_imgs_dir imgs
 decoding_conf="conf/decoding/basic_decoding.json"
-slu_repeat=2
 
 # training config
 gpuid=0
@@ -50,7 +49,7 @@ else
 fi
 
 if [ "$stage" -le 0 ] && [ "$stop_stage" -ge 0 ]; then
-    echo "Stage 0: Prepare structure-aware multi-prompt MAC-SLU jsonl"
+    echo "Stage 0: Prepare PICD-style SLU + PII + CDI MAC-SLU jsonl"
     for split in train dev test; do
         if [ ! -f "${src_json_root}/${split}.jsonl" ]; then
             echo "[ERROR] Required source jsonl not found: ${src_json_root}/${split}.jsonl"
@@ -67,7 +66,7 @@ if [ "$stage" -le 0 ] && [ "$stop_stage" -ge 0 ]; then
 fi
 
 if [ "$stage" -le 1 ] && [ "$stop_stage" -ge 1 ]; then
-    echo "Stage 1: Finetuning on structure-aware multi-prompt MAC-SLU"
+    echo "Stage 1: Finetuning on PICD-style SLU + PII + CDI MAC-SLU"
     CUDA_VISIBLE_DEVICES=$gpuid \
         python finetuning/qwen3_asr_sft.py --seed "$seed" "${training_opts[@]}" \
             --train_conf "$train_conf" \
@@ -122,7 +121,7 @@ if [ "$stage" -le 4 ] && [ "$stop_stage" -ge 4 ]; then
 fi
 
 if [ "$stage" -le 5 ] && [ "$stop_stage" -ge 5 ]; then
-    echo "Stage 5: Summary (structure-aware multi-prompt MAC-SLU)"
+    echo "Stage 5: Summary (PICD-style SLU + PII + CDI MAC-SLU)"
     for test_set in $test_sets; do
         metrics_file=${exp_root}/${test_set}_${decoding_conf_name}/metrics.txt
         if [ ! -f "$metrics_file" ]; then
