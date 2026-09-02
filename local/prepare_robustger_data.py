@@ -70,6 +70,60 @@ def mean_pool(hidden: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
 
 
 @torch.inference_mode()
+
+
+@torch.inference_mode()
+def batch_sentence_embeddings(
+    texts: Sequence[str],
+    tokenizer,
+    model,
+    device: torch.device,
+) -> List[torch.Tensor]:
+    batch = tokenizer(
+        list(texts),
+        padding=True,
+        truncation=True,
+        max_length=512,
+        return_tensors="pt",
+    )
+    batch = {key: value.to(device) for key, value in batch.items()}
+    hidden = model(**batch).last_hidden_state
+    pooled = mean_pool(hidden, batch["attention_mask"]).float().cpu()
+    return [pooled[index] for index in range(len(texts))]
+
+
+@torch.inference_mode()
+def batch_token_embeddings(
+    texts: Sequence[str],
+    tokenizer,
+    model,
+    device: torch.device,
+    dimension: int,
+) -> List[Tuple[List[int], torch.Tensor]]:
+    batch = tokenizer(
+        list(texts),
+        add_special_tokens=False,
+        padding=True,
+        truncation=True,
+        max_length=512,
+        return_tensors="pt",
+    )
+    batch = {key: value.to(device) for key, value in batch.items()}
+    hidden = model(**batch).last_hidden_state.float().cpu()
+    input_ids = batch["input_ids"].cpu()
+    attention = batch["attention_mask"].cpu()
+    output = []
+    for index in range(len(texts)):
+        length = int(attention[index].sum().item())
+        ids = input_ids[index, :length].tolist()
+        embeddings = hidden[index, :length]
+        if embeddings.ndim != 2:
+            embeddings = torch.empty((0, dimension), dtype=torch.float32)
+        output.append((ids, embeddings))
+    return output
+
+
+@torch.inference_mode()
 def sentence_embedding(
     text: str,
     tokenizer,
@@ -174,11 +228,8 @@ def language_noise_embedding(
     parsed = [parse_hypothesis(candidate) for candidate in candidates]
     queries = [str(item.get("pred_query", "")) for item in parsed]
 
-    utterance = [sentence_embedding(query, tokenizer, sbert, device) for query in queries]
-    token_data = [
-        token_embeddings(query, tokenizer, sbert, device, dimension)
-        for query in queries
-    ]
+    utterance = batch_sentence_embeddings(queries, tokenizer, sbert, device)
+    token_data = batch_token_embeddings(queries, tokenizer, sbert, device, dimension)
 
     pair_features = []
     for i in range(len(queries)):
@@ -297,6 +348,8 @@ def main() -> None:
         device = torch.device(args.device)
     sbert = AutoModel.from_pretrained(config["sbert_model"]).to(device).eval()
     sbert_tokenizer = AutoTokenizer.from_pretrained(config["sbert_model"])
+    if sbert_tokenizer.pad_token_id is None:
+        sbert_tokenizer.pad_token = sbert_tokenizer.eos_token
     discovered_dim = int(sbert.config.hidden_size)
     if discovered_dim != noise_dim:
         raise ValueError(
