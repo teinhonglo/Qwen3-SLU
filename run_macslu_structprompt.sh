@@ -62,7 +62,7 @@ if [ "$stage" -le 0 ] && [ "$stop_stage" -ge 0 ]; then
         --json-root "$json_root" \
         --splits train dev test \
         --expand-splits train \
-        --slu-repeat "$slu_repeat"
+        --seed "$seed"
 fi
 
 if [ "$stage" -le 1 ] && [ "$stop_stage" -ge 1 ]; then
