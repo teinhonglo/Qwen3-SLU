@@ -44,14 +44,20 @@ if ! [[ "$snr_tag" =~ ^m?[0-9]+(p[0-9]+)?$ ]]; then
 fi
 noise_tag="noisy_snr${snr_tag}"
 nbest_conf_name=$(basename -s .json "$nbest_decoding_conf")
-run_dir="${exp_root}/n10_${noise_tag}"
+eval_conf_name=$(basename -s .json "$eval_train_conf")
+# run_macslu.sh appends <train-conf-name><suffix> to --exp_root.
+# Keep RobustGER predictions under that exact evaluation directory so all
+# existing metrics/plot/summary stages can be reused unchanged.
+eval_suffix="/n10_${noise_tag}"
+run_dir="${exp_root}/${eval_conf_name}${eval_suffix}"
 feature_root="${run_dir}/features"
 model_dir="${run_dir}/model"
 eval_output_dir="${run_dir}/test_${nbest_conf_name}"
 
 run_macslu_eval_opts=(
     --json_root "$json_root"
-    --eval_output_dir "$eval_output_dir"
+    --exp_root "$exp_root"
+    --suffix "$eval_suffix"
     --train_conf "$eval_train_conf"
     --gpuid "$gpuid"
     --test_sets "$test_sets"
