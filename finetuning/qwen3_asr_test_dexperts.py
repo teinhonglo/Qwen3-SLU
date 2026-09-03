@@ -194,7 +194,11 @@ def main():
         try:
             pred_semantics = json.loads(pred_json['semantics'])
         except Exception:
-            print(f"[WARNING] Processing failed for {row.get('text_id', f'line{i}')}: {pred_json}")
+            print(
+                f"[WARNING] Processing failed for "
+                f"{row.get('text_id', f'line{i}')}: {pred_json}; "
+                f"pred_raw={pred_raw!r}"
+            )
             pred_semantics = [{'FAILED': pred_json}]
         rows_out.append({'text_id': str(row.get('text_id', f'line{i}')), 'query': row.get('query', ''), 'audio': row.get('audio', ''), 'text': row.get('text', ''), 'semantics': row.get('semantics', []), 'pred_json': pred_json, 'pred_query': pred_query, 'pred_raw': pred_raw, 'pred_semantics': pred_semantics})
 
@@ -210,7 +214,9 @@ def main():
                 "[DExperts] di_applied={di_applied}, di_skipped_shape={di_skipped_shape}, "
                 "sk_applied={sk_applied}, sk_skipped_shape={sk_skipped_shape}, "
                 "schema_applied={schema_applied}, schema_no_candidates={schema_no_candidates}, "
-                "schema_prefix_miss={schema_prefix_miss}, changed_max={changed_max}".format(**dbg)
+                "schema_prefix_miss={schema_prefix_miss}, structure_applied={structure_applied}, "
+                "structure_prefix_miss={structure_prefix_miss}, eos_forced={eos_forced}, "
+                "changed_max={changed_max}".format(**dbg)
             )
 
 
