@@ -60,27 +60,104 @@ def build_prefix_text(processor, prompt: str) -> str:
     return prefix_text
 
 
-def build_gold_asr_assistant_prefix(query: str, target_text: str = "") -> str:
+def build_gold_asr_token_aligned_inputs(
+    processor,
+    wav,
+    prompt: str,
+    target_text: str,
+    query: str,
+):
     """
-    Build the assistant-side prefix for Gold-ASR-Prefix Oracle decoding.
+    Build an oracle prompt whose token IDs are an exact prefix of the
+    teacher-forced training sequence.
 
-    The current MAC-SLU target format is:
-        language None<asr_text>{"asr_text": "...", "semantics": "[...]"}
-
-    Prefer the exact prefix from the ground-truth target so serialization stays
-    identical to training. Fall back to reconstructing it from the gold query.
+    We must not tokenize an arbitrary character-level prefix independently:
+    BPE tokenization at the cut point can differ from the full training target.
+    Instead, tokenize the full target first, then keep only the longest token
+    prefix shared with the desired gold-ASR character prefix. This preserves
+    the exact token history seen under teacher forcing while leaking no
+    semantic-label content.
     """
     marker = '"semantics": "'
-    if target_text and marker in target_text:
-        return target_text.split(marker, 1)[0] + marker
+    if not target_text or marker not in target_text:
+        raise ValueError(
+            "Gold-ASR-Prefix Oracle requires row['text'] in the current MAC-SLU "
+            'format containing \'"semantics": "\'.'
+        )
 
-    language_prefix = "language None<asr_text>"
-    m = re.match(r"^(language\s+.+?<asr_text>)", target_text or "", flags=re.DOTALL)
-    if m:
-        language_prefix = m.group(1)
+    semantic_value_start = target_text.index(marker) + len(marker)
+    desired_assistant_prefix = target_text[:semantic_value_start]
+    base_prefix_text = build_prefix_text(processor, prompt)
 
+    # Tokenize the complete teacher-forced sequence exactly as in training.
+    full_inputs = processor(
+        text=[base_prefix_text + target_text],
+        audio=[wav],
+        return_tensors="pt",
+        padding=True,
+        truncation=False,
+    )
+    full_ids = full_inputs["input_ids"][0]
+
+    # Expand the audio placeholder in the desired character-level prefix using
+    # the exact number of audio tokens already determined by the processor.
+    audio_token_id = processor.tokenizer.convert_tokens_to_ids(processor.audio_token)
+    num_audio_tokens = int((full_ids == audio_token_id).sum().item())
+    expanded_prefix_text = processor.replace_multimodal_special_tokens(
+        [base_prefix_text + desired_assistant_prefix],
+        iter([num_audio_tokens]),
+    )[0]
+    prefix_tokenized = processor.tokenizer(
+        [expanded_prefix_text],
+        return_tensors="pt",
+        padding=True,
+        truncation=False,
+    )
+    prefix_ids = prefix_tokenized["input_ids"][0]
+
+    # The independently tokenized character prefix may differ at its final BPE
+    # token. Keep only token IDs that are exactly identical to the full target.
+    common_len = 0
+    max_common = min(int(full_ids.numel()), int(prefix_ids.numel()))
+    while common_len < max_common and int(full_ids[common_len]) == int(prefix_ids[common_len]):
+        common_len += 1
+
+    if common_len <= 0:
+        raise RuntimeError("Unable to find a token-aligned Gold-ASR prefix.")
+
+    full_inputs["input_ids"] = full_inputs["input_ids"][:, :common_len]
+    if "attention_mask" in full_inputs:
+        full_inputs["attention_mask"] = full_inputs["attention_mask"][:, :common_len]
+
+    # Recover the exact assistant-side string represented by the forced token
+    # prefix so the existing JSON parser can consume prefix + generated suffix.
+    forced_text = processor.tokenizer.decode(
+        full_inputs["input_ids"][0],
+        skip_special_tokens=False,
+        clean_up_tokenization_spaces=False,
+    )
+    language_match = re.match(r"^(language\s+.+?<asr_text>)", target_text, flags=re.DOTALL)
+    language_prefix = language_match.group(1) if language_match else "language None<asr_text>"
+    assistant_start = forced_text.rfind(language_prefix)
+    if assistant_start < 0:
+        raise RuntimeError(
+            "Token-aligned oracle prefix no longer contains the assistant target prefix."
+        )
+    forced_assistant_prefix = forced_text[assistant_start:]
+
+    # Sanity checks: the forced prefix must be a literal prefix of the gold
+    # target and must already contain the complete gold ASR query.
+    if not target_text.startswith(forced_assistant_prefix):
+        raise RuntimeError(
+            "Decoded token-aligned oracle prefix is not a prefix of row['text']."
+        )
     query_json = json.dumps(str(query), ensure_ascii=False)
-    return f'{language_prefix}{{"asr_text": {query_json}, "semantics": "'
+    if query_json not in forced_assistant_prefix:
+        raise RuntimeError(
+            "Token-aligned oracle prefix does not contain the complete gold query."
+        )
+
+    return full_inputs, forced_assistant_prefix
 
 
 def move_inputs_to_device(inputs: Dict[str, Any], device: str, model_dtype: torch.dtype):
@@ -159,7 +236,8 @@ def infer_one(
     asr_wrapper,
     audio_path: str,
     prompt: str = "",
-    assistant_prefix: str = "",
+    gold_target_text: str = "",
+    gold_query: str = "",
     sr: int = 16000,
     max_new_tokens: int = 256,
     do_sample: bool = False,
@@ -179,17 +257,26 @@ def infer_one(
     model_dtype = getattr(model, "dtype", torch.float16)
 
     wav = load_audio(audio_path, sr=sr)
-    prefix_text = build_prefix_text(processor, prompt) + (assistant_prefix or "")
+    forced_assistant_prefix = ""
+    if decoding_mode == "gold_asr_prefix_oracle":
+        inputs, forced_assistant_prefix = build_gold_asr_token_aligned_inputs(
+            processor=processor,
+            wav=wav,
+            prompt=prompt,
+            target_text=gold_target_text,
+            query=gold_query,
+        )
+    else:
+        prefix_text = build_prefix_text(processor, prompt)
+        inputs = processor(
+            text=[prefix_text],
+            audio=[wav],
+            return_tensors="pt",
+            padding=True,
+            truncation=False,
+        )
+
     #asr_wrapper.model.thinker.config._attn_implementation = "eager"
-
-    inputs = processor(
-        text=[prefix_text],
-        audio=[wav],
-        return_tensors="pt",
-        padding=True,
-        truncation=False,
-    )
-
     prefix_len = int(inputs["attention_mask"][0].sum().item())
     inputs = move_inputs_to_device(inputs, device=device, model_dtype=model_dtype)
 
@@ -235,8 +322,8 @@ def infer_one(
         gen_only_ids = output_ids
 
     decoded = [x.strip() for x in batch_decode_text(processor, gen_only_ids)]
-    if assistant_prefix:
-        decoded = [assistant_prefix + x for x in decoded]
+    if forced_assistant_prefix:
+        decoded = [forced_assistant_prefix + x for x in decoded]
     ########### Attention Heat map ############
     #print(gen_out)
     #plot_split_attention_heatmap(gen_out, inputs, asr_wrapper, audio_path, target_layer=-1, output_root=output_root)
@@ -677,18 +764,12 @@ def main():
             print(f"[skip] line {i}: no audio field")
             continue
 
-        assistant_prefix = ""
-        if effective_mode == "gold_asr_prefix_oracle":
-            assistant_prefix = build_gold_asr_assistant_prefix(
-                query=query,
-                target_text=row.get("text", ""),
-            )
-
         pred_raw = infer_one(
             asr_wrapper=asr_wrapper,
             audio_path=audio_path,
             prompt=prompt,
-            assistant_prefix=assistant_prefix,
+            gold_target_text=row.get("text", "") if effective_mode == "gold_asr_prefix_oracle" else "",
+            gold_query=query if effective_mode == "gold_asr_prefix_oracle" else "",
             sr=sr,
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,
