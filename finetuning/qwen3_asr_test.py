@@ -60,7 +60,7 @@ def build_prefix_text(processor, prompt: str) -> str:
     return prefix_text
 
 
-def build_gold_asr_token_aligned_inputs(
+def build_gold_asr_oracle_inputs(
     processor,
     wav,
     prompt: str,
@@ -68,96 +68,115 @@ def build_gold_asr_token_aligned_inputs(
     query: str,
 ):
     """
-    Build an oracle prompt whose token IDs are an exact prefix of the
-    teacher-forced training sequence.
+    Build Gold-ASR-Prefix Oracle inputs as:
+        processed(prefix_text + audio) + gold generated-token prefix
 
-    We must not tokenize an arbitrary character-level prefix independently:
-    BPE tokenization at the cut point can differ from the full training target.
-    Instead, tokenize the full target first, then keep only the longest token
-    prefix shared with the desired gold-ASR character prefix. This preserves
-    the exact token history seen under teacher forcing while leaking no
-    semantic-label content.
+    The gold generated-token prefix is taken from the exact teacher-forced
+    target token sequence used in training. It is NOT inserted into prefix_text.
     """
     marker = '"semantics": "'
     if not target_text or marker not in target_text:
         raise ValueError(
-            "Gold-ASR-Prefix Oracle requires row['text'] in the current MAC-SLU "
-            'format containing \'"semantics": "\'.'
+            "Gold-ASR-Prefix Oracle requires row['text'] containing "
+            '\"semantics\": \".'
         )
 
-    semantic_value_start = target_text.index(marker) + len(marker)
-    desired_assistant_prefix = target_text[:semantic_value_start]
-    base_prefix_text = build_prefix_text(processor, prompt)
+    prefix_text = build_prefix_text(processor, prompt)
 
-    # Tokenize the complete teacher-forced sequence exactly as in training.
+    # 1) Normal inference context: prefix_text + audio only.
+    base_inputs = processor(
+        text=[prefix_text],
+        audio=[wav],
+        return_tensors="pt",
+        padding=True,
+        truncation=False,
+    )
+    base_len = int(base_inputs["attention_mask"][0].sum().item())
+
+    # 2) Exact teacher-forced sequence from training:
+    #    processor(text=prefix_text + target_text, audio=audio).
     full_inputs = processor(
-        text=[base_prefix_text + target_text],
+        text=[prefix_text + target_text],
         audio=[wav],
         return_tensors="pt",
         padding=True,
         truncation=False,
     )
     full_ids = full_inputs["input_ids"][0]
+    base_ids = base_inputs["input_ids"][0]
 
-    # Expand the audio placeholder in the desired character-level prefix using
-    # the exact number of audio tokens already determined by the processor.
-    audio_token_id = processor.tokenizer.convert_tokens_to_ids(processor.audio_token)
-    num_audio_tokens = int((full_ids == audio_token_id).sum().item())
-    expanded_prefix_text = processor.replace_multimodal_special_tokens(
-        [base_prefix_text + desired_assistant_prefix],
-        iter([num_audio_tokens]),
-    )[0]
-    prefix_tokenized = processor.tokenizer(
-        [expanded_prefix_text],
+    if full_ids.numel() < base_len or not torch.equal(full_ids[:base_len], base_ids[:base_len]):
+        raise RuntimeError(
+            "Training-style full input does not share the same processed "
+            "prefix_text + audio token prefix as normal inference."
+        )
+
+    # 3) Desired gold generated-text prefix: everything through the opening
+    #    semantics quote. Tokenize it in the same processor context, then keep
+    #    only token IDs that are also an exact prefix of the full target.
+    semantic_value_start = target_text.index(marker) + len(marker)
+    desired_target_prefix = target_text[:semantic_value_start]
+    desired_inputs = processor(
+        text=[prefix_text + desired_target_prefix],
+        audio=[wav],
         return_tensors="pt",
         padding=True,
         truncation=False,
     )
-    prefix_ids = prefix_tokenized["input_ids"][0]
+    desired_ids = desired_inputs["input_ids"][0]
 
-    # The independently tokenized character prefix may differ at its final BPE
-    # token. Keep only token IDs that are exactly identical to the full target.
-    common_len = 0
-    max_common = min(int(full_ids.numel()), int(prefix_ids.numel()))
-    while common_len < max_common and int(full_ids[common_len]) == int(prefix_ids[common_len]):
-        common_len += 1
+    full_generated_ids = full_ids[base_len:]
+    desired_generated_ids = desired_ids[base_len:]
 
-    if common_len <= 0:
-        raise RuntimeError("Unable to find a token-aligned Gold-ASR prefix.")
+    forced_len = 0
+    max_forced = min(
+        int(full_generated_ids.numel()),
+        int(desired_generated_ids.numel()),
+    )
+    while (
+        forced_len < max_forced
+        and int(full_generated_ids[forced_len]) == int(desired_generated_ids[forced_len])
+    ):
+        forced_len += 1
 
-    full_inputs["input_ids"] = full_inputs["input_ids"][:, :common_len]
-    if "attention_mask" in full_inputs:
-        full_inputs["attention_mask"] = full_inputs["attention_mask"][:, :common_len]
+    if forced_len <= 0:
+        raise RuntimeError("Unable to construct a gold generated-token prefix.")
 
-    # Recover the exact assistant-side string represented by the forced token
-    # prefix so the existing JSON parser can consume prefix + generated suffix.
-    forced_text = processor.tokenizer.decode(
-        full_inputs["input_ids"][0],
-        skip_special_tokens=False,
+    forced_ids = full_generated_ids[:forced_len].unsqueeze(0)
+
+    # The actual oracle model input is explicitly:
+    #   [processed prefix_text + audio tokens] + [gold generated tokens]
+    oracle_inputs = dict(base_inputs)
+    oracle_inputs["input_ids"] = torch.cat(
+        [base_inputs["input_ids"], forced_ids],
+        dim=1,
+    )
+    oracle_inputs["attention_mask"] = torch.cat(
+        [
+            base_inputs["attention_mask"],
+            torch.ones(
+                (1, forced_len),
+                dtype=base_inputs["attention_mask"].dtype,
+                device=base_inputs["attention_mask"].device,
+            ),
+        ],
+        dim=1,
+    )
+
+    forced_generated_text = processor.tokenizer.decode(
+        forced_ids[0],
+        skip_special_tokens=True,
         clean_up_tokenization_spaces=False,
     )
-    language_match = re.match(r"^(language\s+.+?<asr_text>)", target_text, flags=re.DOTALL)
-    language_prefix = language_match.group(1) if language_match else "language None<asr_text>"
-    assistant_start = forced_text.rfind(language_prefix)
-    if assistant_start < 0:
-        raise RuntimeError(
-            "Token-aligned oracle prefix no longer contains the assistant target prefix."
-        )
-    forced_assistant_prefix = forced_text[assistant_start:]
 
-    # Sanity checks: the forced prefix must be a literal prefix of the gold
-    # target and must already contain the complete gold ASR query.
-    if not target_text.startswith(forced_assistant_prefix):
+    # This mode is only valid if the complete gold ASR query is already part
+    # of the forced generated-token prefix.
+    if str(query) not in forced_generated_text:
         raise RuntimeError(
-            "Decoded token-aligned oracle prefix is not a prefix of row['text']."
-        )
-    query_json = json.dumps(str(query), ensure_ascii=False)
-    if query_json not in forced_assistant_prefix:
-        raise RuntimeError(
-            "Token-aligned oracle prefix does not contain the complete gold query."
+            "Gold generated-token prefix does not contain the complete gold query."
         )
 
-    return full_inputs, forced_assistant_prefix
+    return oracle_inputs, forced_generated_text
 
 
 def move_inputs_to_device(inputs: Dict[str, Any], device: str, model_dtype: torch.dtype):
@@ -259,7 +278,7 @@ def infer_one(
     wav = load_audio(audio_path, sr=sr)
     forced_assistant_prefix = ""
     if decoding_mode == "gold_asr_prefix_oracle":
-        inputs, forced_assistant_prefix = build_gold_asr_token_aligned_inputs(
+        inputs, forced_assistant_prefix = build_gold_asr_oracle_inputs(
             processor=processor,
             wav=wav,
             prompt=prompt,
