@@ -60,6 +60,29 @@ def build_prefix_text(processor, prompt: str) -> str:
     return prefix_text
 
 
+def build_gold_asr_assistant_prefix(query: str, target_text: str = "") -> str:
+    """
+    Build the assistant-side prefix for Gold-ASR-Prefix Oracle decoding.
+
+    The current MAC-SLU target format is:
+        language None<asr_text>{"asr_text": "...", "semantics": "[...]"}
+
+    Prefer the exact prefix from the ground-truth target so serialization stays
+    identical to training. Fall back to reconstructing it from the gold query.
+    """
+    marker = '"semantics": "'
+    if target_text and marker in target_text:
+        return target_text.split(marker, 1)[0] + marker
+
+    language_prefix = "language None<asr_text>"
+    m = re.match(r"^(language\s+.+?<asr_text>)", target_text or "", flags=re.DOTALL)
+    if m:
+        language_prefix = m.group(1)
+
+    query_json = json.dumps(str(query), ensure_ascii=False)
+    return f'{language_prefix}{{"asr_text": {query_json}, "semantics": "'
+
+
 def move_inputs_to_device(inputs: Dict[str, Any], device: str, model_dtype: torch.dtype):
     new_inputs = {}
     for k, v in inputs.items():
@@ -136,6 +159,7 @@ def infer_one(
     asr_wrapper,
     audio_path: str,
     prompt: str = "",
+    assistant_prefix: str = "",
     sr: int = 16000,
     max_new_tokens: int = 256,
     do_sample: bool = False,
@@ -155,7 +179,7 @@ def infer_one(
     model_dtype = getattr(model, "dtype", torch.float16)
 
     wav = load_audio(audio_path, sr=sr)
-    prefix_text = build_prefix_text(processor, prompt)
+    prefix_text = build_prefix_text(processor, prompt) + (assistant_prefix or "")
     #asr_wrapper.model.thinker.config._attn_implementation = "eager"
 
     inputs = processor(
@@ -190,7 +214,7 @@ def infer_one(
         gen_kwargs["dola_layers"] = dola_layers
         gen_kwargs["trust_remote_code"] = True
         gen_kwargs["output_hidden_states"] = True
-    elif decoding_mode != "basic" and decoding_mode != "layer_lmhead":
+    elif decoding_mode not in {"basic", "layer_lmhead", "gold_asr_prefix_oracle"}:
         raise ValueError(f"Unsupported decoding mode: {decoding_mode}")
 
     model.eval()
@@ -211,6 +235,8 @@ def infer_one(
         gen_only_ids = output_ids
 
     decoded = [x.strip() for x in batch_decode_text(processor, gen_only_ids)]
+    if assistant_prefix:
+        decoded = [assistant_prefix + x for x in decoded]
     ########### Attention Heat map ############
     #print(gen_out)
     #plot_split_attention_heatmap(gen_out, inputs, asr_wrapper, audio_path, target_layer=-1, output_root=output_root)
@@ -476,7 +502,7 @@ def resolve_decoding_conf(model_args_conf: Dict[str, Any], decoding_conf: Dict[s
 
 def validate_decoding_mode(resolved: Dict[str, Any]) -> str:
     mode = resolved.get("mode", "basic")
-    supported = {"basic", "dola", "layer_lmhead"}
+    supported = {"basic", "dola", "layer_lmhead", "gold_asr_prefix_oracle"}
     if mode not in supported:
         raise ValueError(f"Unsupported decoding mode: {mode}")
     return mode
@@ -651,10 +677,18 @@ def main():
             print(f"[skip] line {i}: no audio field")
             continue
 
+        assistant_prefix = ""
+        if effective_mode == "gold_asr_prefix_oracle":
+            assistant_prefix = build_gold_asr_assistant_prefix(
+                query=query,
+                target_text=row.get("text", ""),
+            )
+
         pred_raw = infer_one(
             asr_wrapper=asr_wrapper,
             audio_path=audio_path,
             prompt=prompt,
+            assistant_prefix=assistant_prefix,
             sr=sr,
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,
@@ -686,7 +720,7 @@ def main():
         nbest = pred_raw if isinstance(pred_raw, list) else [pred_raw]
         pred_raw = nbest[0] if nbest else ""
         pred_json = try_parse_score_dict(pred_raw)
-        pred_query = pred_json.get("asr_text", "FAILED")
+        pred_query = query if effective_mode == "gold_asr_prefix_oracle" else pred_json.get("asr_text", "FAILED")
         
         try:
             if isinstance(pred_json["semantics"], list):
