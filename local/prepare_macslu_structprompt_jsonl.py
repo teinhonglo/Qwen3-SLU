@@ -10,27 +10,33 @@ from typing import Iterable
 
 
 PII_PROMPT_TEMPLATE = """你是一个专业的车载系统自然语言理解（NLU）专家。
-已知当前用户语音中包含以下 Domain–Intent 与 Slot 标签。
-请根据语音内容，建立每个 Domain–Intent 与其对应 Slot 之间的关系。
-每个 Slot 必须归属于正确的 Domain–Intent semantic frame。
-只输出 Slot 名称，不输出 Slot Value。
+你的任务是基于用户的查询（Query），完成以下任务：
+1.  关系识别 (Pairwise Interaction): 已知当前用户语音中包含的 Domain–Intent 与 Slot 标签，建立每个 Domain–Intent 与其对应 Slot 之间的关系。
+
+你需要严格遵循以下规则：
+1.  每个 Slot 必须归属于正确的 Domain–Intent semantic frame。
+2.  只输出 Slot 名称，不输出 Slot Value。
+3.  按照 semantic frame 首次出现顺序输出。
+4.  最终回答中除了指定 JSON，不要包含其他文字。
 
 Domain–Intent 候选：
 {domain_intents}
 
 Slot 候选：
-{slots}
-
-按照 semantic frame 首次出现顺序输出，只输出指定 JSON。"""
+{slots}"""
 
 CDI_PROMPT_TEMPLATE = """你是一个专业的车载系统自然语言理解（NLU）专家。
-请判断当前用户语音与下列参考查询是否包含相同数量的 Intent。
-只比较 Intent 的数量，不需要输出具体的 Domain、Intent 或 Slot。
+你的任务是基于用户的查询（Query），完成以下任务：
+1.  意图数量一致性判断 (Intent Count Verification): 判断当前用户语音与下列参考查询是否包含相同数量的 Intent。
+
+你需要严格遵循以下规则：
+1.  只比较 Intent 的数量，不需要输出具体的 Domain、Intent 或 Slot。
+2.  如果 Intent 数量相同，请输出 true。
+3.  如果 Intent 数量不同，请输出 false。
+4.  最终回答中除了 true 或 false，不要包含其他文字。
 
 参考查询：
-{reference_query}
-
-只输出 true 或 false。"""
+{reference_query}"""
 
 
 def parse_args() -> argparse.Namespace:
@@ -156,7 +162,6 @@ def bool_target_text(value: bool) -> str:
 
 def slu_row(row: dict) -> dict:
     result = dict(row)
-    result["text_id"] = f"{row.get('text_id', '')}__slu"
     result["task"] = "slu"
     return result
 
