@@ -7,10 +7,13 @@ from .grounding import (
     trim_asr_text_left_of_decoded_value,
 )
 from .state_parser import (
+    STATE_COMPLETE,
     STATE_DOMAIN,
     STATE_IMPLICIT_SLOTS_KEY,
+    STATE_IMPLICIT_SLOTS_NEXT,
     STATE_INTENT,
     STATE_SLOTS_KEY,
+    STATE_SLOTS_NEXT,
     STATE_SLOTS_VALUE,
     parse_state,
 )
@@ -53,6 +56,7 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
         self.schema_constraint_strength = float(schema_constraint_strength)
         self.enable_grounding = enable_grounding
         self._schema_trie_cache = {}
+        self._structure_trie_cache = {}
         self.debug_stats = {}
         self.reset()
         print(
@@ -67,6 +71,8 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
         self._active_label_start = None
         self._active_label_context = None
         self._active_label_includes_quote = False
+        self._active_structure_start = None
+        self._active_structure_context = None
         self.debug_stats = {
             "steps": 0,
             "state_domain": 0,
@@ -81,6 +87,9 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
             "schema_applied": 0,
             "schema_no_candidates": 0,
             "schema_prefix_miss": 0,
+            "structure_applied": 0,
+            "structure_prefix_miss": 0,
+            "eos_forced": 0,
             "changed_max": 0,
         }
 
@@ -148,6 +157,18 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
         self._schema_trie_cache[cache_key] = trie
         return trie
 
+    def _get_structure_trie(self, state, allowed):
+        cache_key = (state.state_name, tuple(allowed))
+        cached = self._structure_trie_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        trie = TokenIDTrie()
+        for literal in allowed:
+            trie.insert(self._encode(literal))
+        self._structure_trie_cache[cache_key] = trie
+        return trie
+
     def _decode_ids(self, token_ids):
         if token_ids.ndim == 1:
             token_ids = token_ids.unsqueeze(0)
@@ -182,6 +203,15 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
                 if self._decode_ids(generated[start:]) == target:
                     return self.base_prefix_len + start, includes_quote
         return None, False
+
+    def _find_decoded_suffix_start(self, input_ids, target, max_depth):
+        generated = input_ids[0][self.base_prefix_len :]
+        generated_len = int(generated.shape[0])
+        min_start = max(0, generated_len - max(int(max_depth), 1))
+        for start in range(generated_len - 1, min_start - 1, -1):
+            if self._decode_ids(generated[start:]) == target:
+                return self.base_prefix_len + start
+        return None
 
     def _schema_next_token_ids(self, input_ids, state, allowed):
         context = (
@@ -219,16 +249,107 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
         prefix_ids = input_ids[0][self._active_label_start :].tolist()
         return trie.next_token_ids(prefix_ids)
 
-    def _apply_schema_constraint(self, logits, input_ids, state):
-        if (
-            self.schema_constraint_mode == "off"
-            or self.schema is None
-            or not state.active_label
+    def _structure_allowed_strings(self, state):
+        allowed = list(state.structure_candidates)
+        if state.state_name == STATE_SLOTS_NEXT and self.schema is not None:
+            if not self.schema.get_valid_slot_keys(
+                state.current_domain, state.current_intent
+            ):
+                allowed = [literal for literal in allowed if literal == "}"]
+        elif (
+            state.state_name == STATE_IMPLICIT_SLOTS_NEXT
+            and self.schema is not None
         ):
-            if not state.active_label:
-                self._active_label_start = None
-                self._active_label_context = None
-                self._active_label_includes_quote = False
+            if not self.schema.get_valid_implicit_slot_keys(
+                state.current_domain, state.current_intent
+            ):
+                allowed = [literal for literal in allowed if literal == "}"]
+        return allowed
+
+    def _structure_next_token_ids(self, input_ids, state, allowed):
+        context = (state.state_name, tuple(allowed))
+        if self._active_structure_context != context:
+            self._active_structure_start = None
+            self._active_structure_context = context
+
+        trie = self._get_structure_trie(state, allowed)
+        if self._active_structure_start is None:
+            if state.active_structure_prefix == "":
+                self._active_structure_start = int(input_ids.shape[1])
+            else:
+                self._active_structure_start = self._find_decoded_suffix_start(
+                    input_ids,
+                    state.active_structure_prefix,
+                    trie.max_depth,
+                )
+                if self._active_structure_start is None:
+                    return None
+
+        prefix_ids = input_ids[0][self._active_structure_start :].tolist()
+        return trie.next_token_ids(prefix_ids)
+
+    def _apply_allowed_token_ids(self, logits, valid_ids):
+        if self.schema_constraint_mode == "soft":
+            constrained = logits.clone()
+            constrained[..., valid_ids] += self.schema_constraint_strength
+            return constrained
+
+        constrained = torch.full_like(logits, float("-inf"))
+        constrained[..., valid_ids] = logits[..., valid_ids]
+        return constrained
+
+    def _reset_structure_tracking(self):
+        self._active_structure_start = None
+        self._active_structure_context = None
+
+    def _reset_label_tracking(self):
+        self._active_label_start = None
+        self._active_label_context = None
+        self._active_label_includes_quote = False
+
+    def _apply_schema_constraint(self, logits, input_ids, state):
+        if self.schema_constraint_mode == "off":
+            self._reset_label_tracking()
+            self._reset_structure_tracking()
+            return logits
+
+        if state.state_name == STATE_COMPLETE:
+            self._reset_label_tracking()
+            self._reset_structure_tracking()
+            eos_token_id = getattr(self.tok, "eos_token_id", None)
+            if isinstance(eos_token_id, (tuple, list)):
+                eos_token_ids = [int(token_id) for token_id in eos_token_id]
+            elif eos_token_id is None:
+                eos_token_ids = []
+            else:
+                eos_token_ids = [int(eos_token_id)]
+            valid_ids = [
+                token_id
+                for token_id in eos_token_ids
+                if 0 <= token_id < logits.shape[-1]
+            ]
+            if not valid_ids:
+                return logits
+            self.debug_stats["eos_forced"] += 1
+            return self._apply_allowed_token_ids(logits, valid_ids)
+
+        if state.active_structure:
+            self._reset_label_tracking()
+            allowed = self._structure_allowed_strings(state)
+            next_ids = self._structure_next_token_ids(input_ids, state, allowed)
+            if next_ids is None or not next_ids:
+                self.debug_stats["structure_prefix_miss"] += 1
+                return logits
+            valid_ids = [tid for tid in next_ids if 0 <= tid < logits.shape[-1]]
+            if not valid_ids:
+                self.debug_stats["structure_prefix_miss"] += 1
+                return logits
+            self.debug_stats["structure_applied"] += 1
+            return self._apply_allowed_token_ids(logits, valid_ids)
+
+        self._reset_structure_tracking()
+        if self.schema is None or not state.active_label:
+            self._reset_label_tracking()
             return logits
 
         allowed = self._schema_allowed_strings(state)
@@ -248,14 +369,8 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
             self.debug_stats["schema_prefix_miss"] += 1
             return logits
 
-        if self.schema_constraint_mode == "soft":
-            constrained = logits.clone()
-            constrained[..., valid_ids] += self.schema_constraint_strength
-        else:
-            constrained = torch.full_like(logits, float("-inf"))
-            constrained[..., valid_ids] = logits[..., valid_ids]
         self.debug_stats["schema_applied"] += 1
-        return constrained
+        return self._apply_allowed_token_ids(logits, valid_ids)
     
     def _decode_generated_prefix(self, input_ids):
         ids = input_ids[0][self.base_prefix_len :]
