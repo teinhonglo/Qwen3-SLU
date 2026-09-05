@@ -17,7 +17,7 @@ from .state_parser import (
     STATE_SLOTS_VALUE,
     parse_state,
 )
-from .token_trie import TokenIDTrie
+from .token_trie import TokenIDTrie, remaining_text_candidates
 
 import re
 
@@ -55,8 +55,7 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
             )
         self.schema_constraint_strength = float(schema_constraint_strength)
         self.enable_grounding = enable_grounding
-        self._schema_trie_cache = {}
-        self._structure_trie_cache = {}
+        self._continuation_trie_cache = {}
         self.debug_stats = {}
         self.reset()
         print(
@@ -68,11 +67,6 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
         )
 
     def reset(self):
-        self._active_label_start = None
-        self._active_label_context = None
-        self._active_label_includes_quote = False
-        self._active_structure_start = None
-        self._active_structure_context = None
         self.debug_stats = {
             "steps": 0,
             "state_domain": 0,
@@ -116,138 +110,41 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
             for token_id in self.tok.encode(text, add_special_tokens=False)
         ]
 
-    def _quote_tokenizations(self, quote):
-        variants = [self._encode(quote)]
-        if quote == '\\"':
-            variants.append(self._encode("\\") + self._encode('"'))
-        return [variant for variant in variants if variant]
-
-    def _get_schema_trie(self, state, allowed, include_open_quote):
-        cache_key = (
-            state.state_name,
-            state.current_domain,
-            state.current_intent,
-            state.active_label_quote,
-            bool(include_open_quote),
-            tuple(allowed),
-        )
-        cached = self._schema_trie_cache.get(cache_key)
+    def _get_continuation_trie(self, continuations):
+        cache_key = tuple(continuations)
+        cached = self._continuation_trie_cache.get(cache_key)
         if cached is not None:
             return cached
 
         trie = TokenIDTrie()
+        for continuation in continuations:
+            trie.insert(self._encode(continuation))
+        self._continuation_trie_cache[cache_key] = trie
+        return trie
+
+    def _next_token_ids_for_continuations(self, continuations):
+        continuations = tuple(dict.fromkeys(text for text in continuations if text))
+        if not continuations:
+            return None
+        trie = self._get_continuation_trie(continuations)
+        return trie.next_token_ids([])
+
+    def _schema_followup(self, state):
         quote = state.active_label_quote
-        quote_tokenizations = self._quote_tokenizations(quote)
-        for label in allowed:
-            if include_open_quote:
-                whole_text = f"{quote}{label}{quote}"
-            else:
-                whole_text = f"{label}{quote}"
-            trie.insert(self._encode(whole_text))
-            label_ids = self._encode(label)
-            for closing_quote_ids in quote_tokenizations:
-                if include_open_quote:
-                    for opening_quote_ids in quote_tokenizations:
-                        trie.insert(
-                            opening_quote_ids + label_ids + closing_quote_ids
-                        )
-                else:
-                    trie.insert(label_ids + closing_quote_ids)
+        if state.state_name == STATE_DOMAIN:
+            return f"{quote}, {quote}intent{quote}: {quote}"
+        if state.state_name == STATE_INTENT:
+            return f"{quote}, {quote}slots{quote}: {{"
+        if state.state_name in (STATE_SLOTS_KEY, STATE_IMPLICIT_SLOTS_KEY):
+            return f"{quote}: {quote}"
+        return quote
 
-        self._schema_trie_cache[cache_key] = trie
-        return trie
-
-    def _get_structure_trie(self, state, allowed):
-        cache_key = (state.state_name, tuple(allowed))
-        cached = self._structure_trie_cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        trie = TokenIDTrie()
-        for literal in allowed:
-            trie.insert(self._encode(literal))
-        self._structure_trie_cache[cache_key] = trie
-        return trie
-
-    def _decode_ids(self, token_ids):
-        if token_ids.ndim == 1:
-            token_ids = token_ids.unsqueeze(0)
-        if hasattr(self.tok, "batch_decode"):
-            return self.tok.batch_decode(
-                token_ids,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=False,
-            )[0]
-        if hasattr(self.tok, "tokenizer") and hasattr(
-            self.tok.tokenizer, "batch_decode"
-        ):
-            return self.tok.tokenizer.batch_decode(
-                token_ids,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=False,
-            )[0]
-        return self.tok.decode(token_ids[0], skip_special_tokens=True)
-
-    def _find_active_label_start(self, input_ids, state, max_depth):
-        generated = input_ids[0][self.base_prefix_len :]
-        generated_len = int(generated.shape[0])
-        min_start = max(0, generated_len - max(int(max_depth), 1))
-        targets = (
-            (state.active_label_prefix, False),
-            (f"{state.active_label_quote}{state.active_label_prefix}", True),
-        )
-        for target, includes_quote in targets:
-            if not target:
-                continue
-            for start in range(generated_len - 1, min_start - 1, -1):
-                if self._decode_ids(generated[start:]) == target:
-                    return self.base_prefix_len + start, includes_quote
-        return None, False
-
-    def _find_decoded_suffix_start(self, input_ids, target, max_depth):
-        generated = input_ids[0][self.base_prefix_len :]
-        generated_len = int(generated.shape[0])
-        min_start = max(0, generated_len - max(int(max_depth), 1))
-        for start in range(generated_len - 1, min_start - 1, -1):
-            if self._decode_ids(generated[start:]) == target:
-                return self.base_prefix_len + start
-        return None
-
-    def _schema_next_token_ids(self, input_ids, state, allowed):
-        context = (
-            state.state_name,
-            state.current_domain,
-            state.current_intent,
-            state.active_label_quote,
-        )
-        if self._active_label_context != context:
-            self._active_label_start = None
-            self._active_label_context = context
-            self._active_label_includes_quote = False
-
-        if self._active_label_start is None:
-            if state.active_label_prefix == "":
-                self._active_label_start = int(input_ids.shape[1])
-            else:
-                # Usually the processor observes the empty label immediately
-                # after the opening quote.  This fallback also supports a
-                # tokenizer token that contains the quote and first label piece.
-                label_trie = self._get_schema_trie(state, allowed, False)
-                quoted_trie = self._get_schema_trie(state, allowed, True)
-                max_depth = max(label_trie.max_depth, quoted_trie.max_depth)
-                start, includes_quote = self._find_active_label_start(
-                    input_ids, state, max_depth
-                )
-                if start is None:
-                    return None
-                self._active_label_start = start
-                self._active_label_includes_quote = includes_quote
-
-        trie = self._get_schema_trie(
-            state, allowed, self._active_label_includes_quote
-        )
-        prefix_ids = input_ids[0][self._active_label_start :].tolist()
-        return trie.next_token_ids(prefix_ids)
+    def _schema_next_token_ids(self, state, allowed):
+        prefix = state.active_label_prefix
+        followup = self._schema_followup(state)
+        candidates = [f"{label}{followup}" for label in allowed]
+        continuations = remaining_text_candidates(candidates, prefix)
+        return self._next_token_ids_for_continuations(continuations)
 
     def _structure_allowed_strings(self, state):
         allowed = list(state.structure_candidates)
@@ -266,27 +163,11 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
                 allowed = [literal for literal in allowed if literal == "}"]
         return allowed
 
-    def _structure_next_token_ids(self, input_ids, state, allowed):
-        context = (state.state_name, tuple(allowed))
-        if self._active_structure_context != context:
-            self._active_structure_start = None
-            self._active_structure_context = context
-
-        trie = self._get_structure_trie(state, allowed)
-        if self._active_structure_start is None:
-            if state.active_structure_prefix == "":
-                self._active_structure_start = int(input_ids.shape[1])
-            else:
-                self._active_structure_start = self._find_decoded_suffix_start(
-                    input_ids,
-                    state.active_structure_prefix,
-                    trie.max_depth,
-                )
-                if self._active_structure_start is None:
-                    return None
-
-        prefix_ids = input_ids[0][self._active_structure_start :].tolist()
-        return trie.next_token_ids(prefix_ids)
+    def _structure_next_token_ids(self, state, allowed):
+        continuations = remaining_text_candidates(
+            allowed, state.active_structure_prefix
+        )
+        return self._next_token_ids_for_continuations(continuations)
 
     def _apply_allowed_token_ids(self, logits, valid_ids):
         if self.schema_constraint_mode == "soft":
@@ -298,24 +179,11 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
         constrained[..., valid_ids] = logits[..., valid_ids]
         return constrained
 
-    def _reset_structure_tracking(self):
-        self._active_structure_start = None
-        self._active_structure_context = None
-
-    def _reset_label_tracking(self):
-        self._active_label_start = None
-        self._active_label_context = None
-        self._active_label_includes_quote = False
-
     def _apply_schema_constraint(self, logits, input_ids, state):
         if self.schema_constraint_mode == "off":
-            self._reset_label_tracking()
-            self._reset_structure_tracking()
             return logits
 
         if state.state_name == STATE_COMPLETE:
-            self._reset_label_tracking()
-            self._reset_structure_tracking()
             eos_token_id = getattr(self.tok, "eos_token_id", None)
             if isinstance(eos_token_id, (tuple, list)):
                 eos_token_ids = [int(token_id) for token_id in eos_token_id]
@@ -334,9 +202,8 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
             return self._apply_allowed_token_ids(logits, valid_ids)
 
         if state.active_structure:
-            self._reset_label_tracking()
             allowed = self._structure_allowed_strings(state)
-            next_ids = self._structure_next_token_ids(input_ids, state, allowed)
+            next_ids = self._structure_next_token_ids(state, allowed)
             if next_ids is None or not next_ids:
                 self.debug_stats["structure_prefix_miss"] += 1
                 return logits
@@ -347,9 +214,7 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
             self.debug_stats["structure_applied"] += 1
             return self._apply_allowed_token_ids(logits, valid_ids)
 
-        self._reset_structure_tracking()
         if self.schema is None or not state.active_label:
-            self._reset_label_tracking()
             return logits
 
         allowed = self._schema_allowed_strings(state)
@@ -357,7 +222,7 @@ class StateAwareDExpertsLogitsProcessor(LogitsProcessor):
             self.debug_stats["schema_no_candidates"] += 1
             return logits
 
-        next_ids = self._schema_next_token_ids(input_ids, state, allowed)
+        next_ids = self._schema_next_token_ids(state, allowed)
         if next_ids is None or not next_ids:
             # A generated prefix cannot be repaired by a next-token mask.  Keep
             # base decoding alive instead of turning every logit into -inf.
