@@ -17,7 +17,7 @@ from slu_decoding.state_parser import (
     STATE_SLOTS_VALUE,
     parse_state,
 )
-from slu_decoding.token_trie import TokenIDTrie
+from slu_decoding.token_trie import TokenIDTrie, remaining_text_candidates
 
 
 class StateParserTest(unittest.TestCase):
@@ -163,6 +163,16 @@ class StateParserTest(unittest.TestCase):
 
 
 class TokenIDTrieTest(unittest.TestCase):
+    def test_continuation_prefix_may_start_inside_previous_token(self):
+        candidates = (', \\"intent\\": \\"',)
+        # The tokenizer may emit one token decoding to the preceding closing
+        # quote together with `, \\"in`.  The grammar prefix therefore begins
+        # inside that token and cannot be found by scanning token boundaries.
+        self.assertEqual(
+            remaining_text_candidates(candidates, ', \\"in'),
+            ['tent\\": \\"'],
+        )
+
     def test_returns_children_for_shared_token_prefix(self):
         trie = TokenIDTrie()
         trie.insert([10, 20, 30])

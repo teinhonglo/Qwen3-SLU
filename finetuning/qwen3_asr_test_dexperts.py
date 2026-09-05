@@ -200,10 +200,14 @@ def main():
                 f"pred_raw={pred_raw!r}"
             )
             pred_semantics = [{'FAILED': pred_json}]
-        rows_out.append({'text_id': str(row.get('text_id', f'line{i}')), 'query': row.get('query', ''), 'audio': row.get('audio', ''), 'text': row.get('text', ''), 'semantics': row.get('semantics', []), 'pred_json': pred_json, 'pred_query': pred_query, 'pred_raw': pred_raw, 'pred_semantics': pred_semantics})
+
+        decode_debug = {}
+        if logits_processor is not None and hasattr(logits_processor, "get_debug_stats"):
+            decode_debug = logits_processor.get_debug_stats()
+        rows_out.append({'text_id': str(row.get('text_id', f'line{i}')), 'query': row.get('query', ''), 'audio': row.get('audio', ''), 'text': row.get('text', ''), 'semantics': row.get('semantics', []), 'pred_json': pred_json, 'pred_query': pred_query, 'pred_raw': pred_raw, 'pred_semantics': pred_semantics, 'decode_debug': decode_debug})
 
         if args.use_dexperts and logits_processor is not None and hasattr(logits_processor, "get_debug_stats"):
-            dbg = logits_processor.get_debug_stats()
+            dbg = decode_debug
             print("[DExperts] decode summary:")
             print(
                 "[DExperts] steps={steps}, state_domain={state_domain}, state_intent={state_intent}, "
