@@ -369,6 +369,10 @@ def write_slu_prediction_jsonl(rows_out: List[Dict[str, Any]], output_root: str,
                 "pred_query": row.get("pred_query", ""),
                 "pred_semantics": row.get("pred_semantics", []),
             }
+            if "pred_raw" in row:
+                item["pred_raw"] = row["pred_raw"]
+            if "decode_debug" in row:
+                item["decode_debug"] = row["decode_debug"]
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
     print(f"[info] saved: {out_path}")

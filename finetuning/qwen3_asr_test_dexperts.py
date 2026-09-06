@@ -25,6 +25,7 @@ def parse_args():
     p.add_argument('--use_dexperts', action='store_true')
     p.add_argument('--dexperts_config', type=str, default='')
     p.add_argument('--schema_path', type=str, default='')
+    p.add_argument('--constraint_validation_jsonls', nargs='+', default=[])
     p.add_argument('--domain_intent_expert_path', type=str, default='')
     p.add_argument('--slot_key_expert_path', type=str, default='')
     p.add_argument('--slot_grounding_mode', type=str, default='copy_bias')
@@ -182,6 +183,39 @@ def main():
         enable_grounding=not args.disable_grounding,
     ) if args.use_dexperts else None
 
+    if logits_processor is not None and schema_mode != 'off':
+        if not args.constraint_validation_jsonls:
+            raise ValueError(
+                'schema constraint requires --constraint_validation_jsonls '
+                'with the real train/dev JSONL targets'
+            )
+        validation_targets = []
+        for validation_path in args.constraint_validation_jsonls:
+            if not os.path.isfile(validation_path):
+                raise FileNotFoundError(validation_path)
+            for validation_row in load_jsonl(validation_path):
+                target = validation_row.get('text', '')
+                if not target:
+                    raise ValueError(
+                        f"constraint validation target missing row['text'] in {validation_path}"
+                    )
+                validation_targets.append(target)
+        replay = logits_processor.validate_gold_targets(validation_targets)
+        if not replay['ok']:
+            raise RuntimeError(
+                'schema constraint rejected a real gold token; inference aborted. '
+                f"target_index={replay['target_index']}, "
+                f"token_index={replay['token_index']}, state={replay['state']}, "
+                f"gold_token_id={replay['gold_token_id']}, "
+                f"allowed_token_ids={replay['allowed_token_ids']}, "
+                f"prefix_tail={replay['prefix'][-200:]!r}"
+            )
+        print(
+            '[DExperts] gold constraint replay passed: '
+            f"targets={replay['targets']}, checked_tokens={replay['checked_tokens']}, "
+            f"constrained_tokens={replay['constrained_tokens']}"
+        )
+
     rows = load_jsonl(args.input_jsonl)
     rows_out = []
     jsonl_name = get_jsonl_name(args.input_jsonl)
@@ -200,10 +234,14 @@ def main():
                 f"pred_raw={pred_raw!r}"
             )
             pred_semantics = [{'FAILED': pred_json}]
-        rows_out.append({'text_id': str(row.get('text_id', f'line{i}')), 'query': row.get('query', ''), 'audio': row.get('audio', ''), 'text': row.get('text', ''), 'semantics': row.get('semantics', []), 'pred_json': pred_json, 'pred_query': pred_query, 'pred_raw': pred_raw, 'pred_semantics': pred_semantics})
+
+        decode_debug = {}
+        if logits_processor is not None and hasattr(logits_processor, "get_debug_stats"):
+            decode_debug = logits_processor.get_debug_stats()
+        rows_out.append({'text_id': str(row.get('text_id', f'line{i}')), 'query': row.get('query', ''), 'audio': row.get('audio', ''), 'text': row.get('text', ''), 'semantics': row.get('semantics', []), 'pred_json': pred_json, 'pred_query': pred_query, 'pred_raw': pred_raw, 'pred_semantics': pred_semantics, 'decode_debug': decode_debug})
 
         if args.use_dexperts and logits_processor is not None and hasattr(logits_processor, "get_debug_stats"):
-            dbg = logits_processor.get_debug_stats()
+            dbg = decode_debug
             print("[DExperts] decode summary:")
             print(
                 "[DExperts] steps={steps}, state_domain={state_domain}, state_intent={state_intent}, "

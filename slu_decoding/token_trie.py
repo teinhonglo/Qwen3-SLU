@@ -27,3 +27,20 @@ class TokenIDTrie:
                 return None
             node = node[token_id]
         return {token_id for token_id in node if token_id is not self._END}
+
+
+def remaining_text_candidates(candidates, decoded_prefix):
+    """Return candidate suffixes after an already-decoded text prefix.
+
+    The decoded prefix may begin in the middle of the most recently generated
+    tokenizer token.  Matching in text space avoids assuming that a grammar
+    state transition is also a tokenizer-token boundary.
+    """
+    prefix = decoded_prefix or ""
+    remaining = []
+    for candidate in candidates:
+        if candidate.startswith(prefix):
+            suffix = candidate[len(prefix) :]
+            if suffix:
+                remaining.append(suffix)
+    return remaining

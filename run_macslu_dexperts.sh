@@ -117,6 +117,7 @@ if [ $stage -le 6 ] && [ $stop_stage -ge 6 ]; then
                 --use_dexperts \
                 --dexperts_config conf/decoding/dexperts_macslu.json \
                 --schema_path ${dexperts_root}/schema.json \
+                --constraint_validation_jsonls ${json_root}/train.jsonl ${json_root}/dev.jsonl \
                 --domain_intent_expert_path ${expert_exp_root}/domain_intent \
                 --slot_key_expert_path ${expert_exp_root}/slot_key
     done

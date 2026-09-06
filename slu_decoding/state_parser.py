@@ -92,6 +92,12 @@ def _structure_state(
     return None
 
 
+def _surface_candidates(surface_forms, name, defaults):
+    if surface_forms is None:
+        return tuple(defaults)
+    return tuple(surface_forms.get(name, ()))
+
+
 def _latest_open_object(text: str):
     """Return the latest still-open ``slots``/``implicit_slots`` object."""
     matches = []
@@ -189,7 +195,7 @@ def _semantics_string_tail(text: str):
     )
     return match.group("tail") if match is not None else None
 
-def parse_state(prefix_text: str) -> DecodingState:
+def parse_state(prefix_text: str, surface_forms=None) -> DecodingState:
     text = prefix_text or ""
     payload = text.split("<asr_text>", 1)[-1]
 
@@ -310,7 +316,13 @@ def parse_state(prefix_text: str) -> DecodingState:
             structure = _structure_state(
                 next_state,
                 tail,
-                (f", {quote}", "}"),
+                _surface_candidates(
+                    surface_forms,
+                    "slots_next"
+                    if object_name == "slots"
+                    else "implicit_slots_next",
+                    (f", {quote}", "}"),
+                ),
                 cur_domain,
                 cur_intent,
                 inside,
@@ -330,7 +342,13 @@ def parse_state(prefix_text: str) -> DecodingState:
             structure = _structure_state(
                 after_key_state,
                 tail,
-                (f": {quote}",),
+                _surface_candidates(
+                    surface_forms,
+                    "after_slots_key"
+                    if object_name == "slots"
+                    else "after_implicit_slots_key",
+                    (f": {quote}",),
+                ),
                 cur_domain,
                 cur_intent,
                 inside,
@@ -348,7 +366,13 @@ def parse_state(prefix_text: str) -> DecodingState:
         structure = _structure_state(
             next_state,
             object_tail,
-            (default_quote, "}"),
+            _surface_candidates(
+                surface_forms,
+                "slots_initial"
+                if object_name == "slots"
+                else "implicit_slots_initial",
+                (default_quote, "}"),
+            ),
             cur_domain,
             cur_intent,
             inside,
@@ -371,7 +395,11 @@ def parse_state(prefix_text: str) -> DecodingState:
         structure = _structure_state(
             STATE_AFTER_INTENT,
             payload[end:],
-            (f", {quote}slots{quote}: {{",),
+            _surface_candidates(
+                surface_forms,
+                "after_intent",
+                (f", {quote}slots{quote}: {{",),
+            ),
             cur_domain,
             cur_intent,
             inside,
@@ -386,7 +414,11 @@ def parse_state(prefix_text: str) -> DecodingState:
         structure = _structure_state(
             STATE_AFTER_DOMAIN,
             payload[end:],
-            (f", {quote}intent{quote}: {quote}",),
+            _surface_candidates(
+                surface_forms,
+                "after_domain",
+                (f", {quote}intent{quote}: {quote}",),
+            ),
             cur_domain,
             cur_intent,
             inside,
@@ -403,7 +435,11 @@ def parse_state(prefix_text: str) -> DecodingState:
             structure = _structure_state(
                 STATE_AFTER_SLOTS,
                 tail,
-                (f", {quote}implicit_slots{quote}: {{",),
+                _surface_candidates(
+                    surface_forms,
+                    "after_slots",
+                    (f", {quote}implicit_slots{quote}: {{",),
+                ),
                 cur_domain,
                 cur_intent,
                 inside,
@@ -415,9 +451,13 @@ def parse_state(prefix_text: str) -> DecodingState:
             structure = _structure_state(
                 STATE_AFTER_IMPLICIT_SLOTS,
                 tail,
-                (
-                    final_suffix,
-                    f"}}, {{{quote}domain{quote}: {quote}",
+                _surface_candidates(
+                    surface_forms,
+                    "after_implicit_slots",
+                    (
+                        final_suffix,
+                        f"}}, {{{quote}domain{quote}: {quote}",
+                    ),
                 ),
                 cur_domain,
                 cur_intent,
@@ -432,7 +472,11 @@ def parse_state(prefix_text: str) -> DecodingState:
         structure = _structure_state(
             STATE_SEMANTICS_START,
             semantics_tail,
-            ('[]"}', '[{\\"domain\\": \\"'),
+            _surface_candidates(
+                surface_forms,
+                "semantics_start",
+                ('[]"}', '[{\\"domain\\": \\"'),
+            ),
             cur_domain,
             cur_intent,
             inside,
