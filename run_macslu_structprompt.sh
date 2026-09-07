@@ -18,6 +18,7 @@ suffix=
 train_conf=conf/macslu_qwen3_asr_17b_ep20_lora_woemblmhead.json
 seed=66
 cdi_pairs_per_class=1
+cdi_max_anchor_intent_count=3
 checkpoint=
 
 # stage
@@ -64,6 +65,7 @@ if [ "$stage" -le 0 ] && [ "$stop_stage" -ge 0 ]; then
         --splits train dev test \
         --expand-splits train \
         --cdi-pairs-per-class "$cdi_pairs_per_class" \
+        --cdi-max-anchor-intent-count "$cdi_max_anchor_intent_count" \
         --seed "$seed"
 fi
 

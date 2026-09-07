@@ -64,6 +64,15 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Number of positive and negative CDI references sampled per anchor",
     )
+    parser.add_argument(
+        "--cdi-max-anchor-intent-count",
+        type=int,
+        default=3,
+        help=(
+            "Maximum intent count used as a CDI anchor. Rows above this limit "
+            "remain available as negative references and in SLU/PII."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -198,12 +207,17 @@ def pii_row(row: dict, rng: random.Random) -> dict:
 
 
 def build_cdi_rows(
-    rows: list[dict], rng: random.Random, pairs_per_class: int
+    rows: list[dict],
+    rng: random.Random,
+    pairs_per_class: int,
+    max_anchor_intent_count: int = 3,
 ) -> list[list[dict]]:
     if len(rows) < 2:
         raise ValueError("CDI requires at least two source rows")
     if pairs_per_class < 1:
         raise ValueError("--cdi-pairs-per-class must be at least 1")
+    if max_anchor_intent_count < 0:
+        raise ValueError("--cdi-max-anchor-intent-count must be at least 0")
 
     infos = []
     pools = defaultdict(list)
@@ -227,6 +241,10 @@ def build_cdi_rows(
 
     cdi_rows = []
     for current in infos:
+        if current["count"] > max_anchor_intent_count:
+            cdi_rows.append([])
+            continue
+
         positive = [
             candidate
             for candidate in pools[current["count"]]
@@ -291,12 +309,31 @@ def build_cdi_rows(
     return cdi_rows
 
 
+def repeat_rows_to_size(
+    rows: list[dict], target_size: int, rng: random.Random, task: str
+) -> list[dict]:
+    if target_size < len(rows):
+        raise ValueError(
+            f"Cannot preserve all {task} rows while balancing to CDI: "
+            f"source_rows={len(rows)}, cdi_rows={target_size}"
+        )
+
+    repeated = []
+    while len(repeated) < target_size:
+        indices = list(range(len(rows)))
+        rng.shuffle(indices)
+        remaining = target_size - len(repeated)
+        repeated.extend(rows[index] for index in indices[:remaining])
+    return repeated
+
+
 def convert_split(
     src_path: Path,
     output_path: Path,
     expand: bool,
     seed: int,
     cdi_pairs_per_class: int,
+    cdi_max_anchor_intent_count: int = 3,
 ) -> dict[str, int]:
     source_rows = load_jsonl(src_path)
     counts = {
@@ -306,6 +343,7 @@ def convert_split(
         "cdi": 0,
         "cdi_true": 0,
         "cdi_false": 0,
+        "cdi_anchors": 0,
         "total": 0,
     }
 
@@ -314,22 +352,40 @@ def convert_split(
         cdi_rng = random.Random(seed + 1)
         pii_rows = [pii_row(row, pii_rng) for row in source_rows]
         cdi_rows = build_cdi_rows(
-            source_rows, cdi_rng, pairs_per_class=cdi_pairs_per_class
+            source_rows,
+            cdi_rng,
+            pairs_per_class=cdi_pairs_per_class,
+            max_anchor_intent_count=cdi_max_anchor_intent_count,
+        )
+        counts["cdi_anchors"] = sum(bool(group) for group in cdi_rows)
+        flat_cdi_rows = [row for group in cdi_rows for row in group]
+        slu_rows = repeat_rows_to_size(
+            [slu_row(row) for row in source_rows],
+            len(flat_cdi_rows),
+            random.Random(seed + 2),
+            "SLU",
+        )
+        balanced_pii_rows = repeat_rows_to_size(
+            pii_rows,
+            len(flat_cdi_rows),
+            random.Random(seed + 3),
+            "PII",
         )
     else:
         pii_rows = []
         cdi_rows = []
+        flat_cdi_rows = []
+        slu_rows = []
+        balanced_pii_rows = []
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as output:
-        for index, row in enumerate(source_rows):
-            if expand:
-                rows = []
-                for cdi_row in cdi_rows[index]:
-                    rows.extend([slu_row(row), pii_rows[index], cdi_row])
-            else:
-                rows = [slu_row(row)]
+        if expand:
+            output_groups = zip(slu_rows, balanced_pii_rows, flat_cdi_rows)
+        else:
+            output_groups = ((slu_row(row),) for row in source_rows)
 
+        for rows in output_groups:
             for result in rows:
                 output.write(json.dumps(result, ensure_ascii=False) + "\n")
                 counts[result["task"]] += 1
@@ -337,9 +393,7 @@ def convert_split(
                     counts["cdi_true" if result["cdi_label"] else "cdi_false"] += 1
                 counts["total"] += 1
 
-    expected = counts["source_rows"] * (
-        6 * cdi_pairs_per_class if expand else 1
-    )
+    expected = 3 * counts["cdi"] if expand else counts["source_rows"]
     if counts["total"] != expected:
         raise RuntimeError(
             f"Sanity check failed for {src_path}: total={counts['total']}, expected={expected}"
@@ -367,6 +421,7 @@ def main() -> None:
             split in expand_splits,
             args.seed + split_index * 10000,
             args.cdi_pairs_per_class,
+            args.cdi_max_anchor_intent_count,
         )
         print(f"[INFO] {split}:")
         print(f"source_rows={counts['source_rows']}")
@@ -375,6 +430,8 @@ def main() -> None:
         print(f"cdi={counts['cdi']}")
         if counts["cdi"]:
             print(f"cdi_pairs_per_class={args.cdi_pairs_per_class}")
+            print(f"cdi_max_anchor_intent_count={args.cdi_max_anchor_intent_count}")
+            print(f"cdi_anchors={counts['cdi_anchors']}")
             print(f"cdi_true={counts['cdi_true']}")
             print(f"cdi_false={counts['cdi_false']}")
         print(f"total={counts['total']}")
