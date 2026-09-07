@@ -58,6 +58,12 @@ def parse_args() -> argparse.Namespace:
         default=66,
         help="Random seed for PII candidate shuffling and CDI reference sampling",
     )
+    parser.add_argument(
+        "--cdi-pairs-per-class",
+        type=int,
+        default=1,
+        help="Number of positive and negative CDI references sampled per anchor",
+    )
     return parser.parse_args()
 
 
@@ -191,9 +197,13 @@ def pii_row(row: dict, rng: random.Random) -> dict:
     return result
 
 
-def build_cdi_rows(rows: list[dict], rng: random.Random) -> list[dict]:
+def build_cdi_rows(
+    rows: list[dict], rng: random.Random, pairs_per_class: int
+) -> list[list[dict]]:
     if len(rows) < 2:
         raise ValueError("CDI requires at least two source rows")
+    if pairs_per_class < 1:
+        raise ValueError("--cdi-pairs-per-class must be at least 1")
 
     infos = []
     pools = defaultdict(list)
@@ -215,11 +225,8 @@ def build_cdi_rows(rows: list[dict], rng: random.Random) -> list[dict]:
         infos.append(info)
         pools[count].append(info)
 
-    labels = [True] * (len(infos) // 2) + [False] * (len(infos) - len(infos) // 2)
-    rng.shuffle(labels)
-
     cdi_rows = []
-    for current, desired_label in zip(infos, labels):
+    for current in infos:
         positive = [
             candidate
             for candidate in pools[current["count"]]
@@ -232,36 +239,64 @@ def build_cdi_rows(rows: list[dict], rng: random.Random) -> list[dict]:
             for candidate in candidates
         ]
 
-        label = desired_label
-        candidates = positive if label else negative
-        if not candidates:
-            label = not label
-            candidates = positive if label else negative
-        if not candidates:
+        if len(positive) < pairs_per_class:
             raise ValueError(
-                f"No valid CDI reference for {current['text_id'] or current['index']}"
+                "Not enough positive CDI references for "
+                f"{current['text_id'] or current['index']}: "
+                f"intent_count={current['count']}, available={len(positive)}, "
+                f"required={pairs_per_class}"
+            )
+        if len(negative) < pairs_per_class:
+            raise ValueError(
+                "Not enough negative CDI references for "
+                f"{current['text_id'] or current['index']}: "
+                f"intent_count={current['count']}, available={len(negative)}, "
+                f"required={pairs_per_class}"
             )
 
-        reference = rng.choice(candidates)
-        result = dict(current["row"])
-        result["text_id"] = f"{current['text_id']}__cdi"
-        result["task"] = "cdi"
-        result["prompt"] = CDI_PROMPT_TEMPLATE.format(
-            reference_query=reference["query"]
+        sampled_pairs = [
+            (True, pair_index, reference)
+            for pair_index, reference in enumerate(
+                rng.sample(positive, pairs_per_class), start=1
+            )
+        ]
+        sampled_pairs.extend(
+            (False, pair_index, reference)
+            for pair_index, reference in enumerate(
+                rng.sample(negative, pairs_per_class), start=1
+            )
         )
-        result["text"] = bool_target_text(label)
-        result["reference_text_id"] = reference["text_id"]
-        result["reference_query"] = reference["query"]
-        result["current_intent_count"] = current["count"]
-        result["reference_intent_count"] = reference["count"]
-        result["cdi_label"] = label
-        cdi_rows.append(result)
+        rng.shuffle(sampled_pairs)
+
+        current_rows = []
+        for label, pair_index, reference in sampled_pairs:
+            pair_type = "positive" if label else "negative"
+            result = dict(current["row"])
+            result["text_id"] = (
+                f"{current['text_id']}__cdi_{pair_type}_{pair_index}"
+            )
+            result["task"] = "cdi"
+            result["prompt"] = CDI_PROMPT_TEMPLATE.format(
+                reference_query=reference["query"]
+            )
+            result["text"] = bool_target_text(label)
+            result["reference_text_id"] = reference["text_id"]
+            result["reference_query"] = reference["query"]
+            result["current_intent_count"] = current["count"]
+            result["reference_intent_count"] = reference["count"]
+            result["cdi_label"] = label
+            current_rows.append(result)
+        cdi_rows.append(current_rows)
 
     return cdi_rows
 
 
 def convert_split(
-    src_path: Path, output_path: Path, expand: bool, seed: int
+    src_path: Path,
+    output_path: Path,
+    expand: bool,
+    seed: int,
+    cdi_pairs_per_class: int,
 ) -> dict[str, int]:
     source_rows = load_jsonl(src_path)
     counts = {
@@ -278,7 +313,9 @@ def convert_split(
         pii_rng = random.Random(seed)
         cdi_rng = random.Random(seed + 1)
         pii_rows = [pii_row(row, pii_rng) for row in source_rows]
-        cdi_rows = build_cdi_rows(source_rows, cdi_rng)
+        cdi_rows = build_cdi_rows(
+            source_rows, cdi_rng, pairs_per_class=cdi_pairs_per_class
+        )
     else:
         pii_rows = []
         cdi_rows = []
@@ -286,9 +323,12 @@ def convert_split(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as output:
         for index, row in enumerate(source_rows):
-            rows = [slu_row(row)]
             if expand:
-                rows.extend([pii_rows[index], cdi_rows[index]])
+                rows = []
+                for cdi_row in cdi_rows[index]:
+                    rows.extend([slu_row(row), pii_rows[index], cdi_row])
+            else:
+                rows = [slu_row(row)]
 
             for result in rows:
                 output.write(json.dumps(result, ensure_ascii=False) + "\n")
@@ -297,7 +337,9 @@ def convert_split(
                     counts["cdi_true" if result["cdi_label"] else "cdi_false"] += 1
                 counts["total"] += 1
 
-    expected = counts["source_rows"] * (3 if expand else 1)
+    expected = counts["source_rows"] * (
+        6 * cdi_pairs_per_class if expand else 1
+    )
     if counts["total"] != expected:
         raise RuntimeError(
             f"Sanity check failed for {src_path}: total={counts['total']}, expected={expected}"
@@ -324,6 +366,7 @@ def main() -> None:
             output_root / f"{split}.jsonl",
             split in expand_splits,
             args.seed + split_index * 10000,
+            args.cdi_pairs_per_class,
         )
         print(f"[INFO] {split}:")
         print(f"source_rows={counts['source_rows']}")
@@ -331,6 +374,7 @@ def main() -> None:
         print(f"pii={counts['pii']}")
         print(f"cdi={counts['cdi']}")
         if counts["cdi"]:
+            print(f"cdi_pairs_per_class={args.cdi_pairs_per_class}")
             print(f"cdi_true={counts['cdi_true']}")
             print(f"cdi_false={counts['cdi_false']}")
         print(f"total={counts['total']}")

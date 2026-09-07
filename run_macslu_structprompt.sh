@@ -17,6 +17,7 @@ gpuid=0
 suffix=
 train_conf=conf/macslu_qwen3_asr_17b_ep20_lora_woemblmhead.json
 seed=66
+cdi_pairs_per_class=1
 checkpoint=
 
 # stage
@@ -62,6 +63,7 @@ if [ "$stage" -le 0 ] && [ "$stop_stage" -ge 0 ]; then
         --json-root "$json_root" \
         --splits train dev test \
         --expand-splits train \
+        --cdi-pairs-per-class "$cdi_pairs_per_class" \
         --seed "$seed"
 fi
 
