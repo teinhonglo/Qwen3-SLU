@@ -29,6 +29,7 @@ simpo_train_conf=""  # default: SimPO paper-style train_conf
 # sampled_highest_lowest uses five on-policy samples and selects their score extrema.
 # oracle_sampled_highest_lowest additionally requires a sampled oracle as chosen
 # and a sampled non-oracle as rejected. Neither mode uses ground-truth fallback.
+train_mode="train" # dev means traing set is dev 
 pair_mode="nbest_oracle"
 pair_min_score_margin="0.1"
 pair_max_pairs_per_sample="1"
@@ -103,7 +104,13 @@ conf_tag=$(basename -s .json "$simpo_train_conf")
 nbest_decoding_conf_name=$(basename -s .json "$nbest_decoding_conf")
 # Keep runs made with different pair construction policies in separate trees.
 exp_base=${exp_root}_${pair_mode}
+
+if [ "$train_mode" == "dev" ]; then
+    suffix=${suffix}_dev
+fi
+
 exp_dir=${exp_base}/${conf_tag}${suffix}
+
 
 if [ "$checkpoint" != "" ]; then
     training_opts="--resume_from $checkpoint --resume 1"
@@ -282,14 +289,26 @@ if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
         echo "[ERROR] unsupported simpo_init_checkpoint_mode: $simpo_init_checkpoint_mode (expected latest, best, or none)"
         exit 1
     fi
-
-    CUDA_VISIBLE_DEVICES=$gpuid \
-        python finetuning/qwen3_asr_simpo.py --seed $seed $training_opts \
-            "${init_opts[@]}" \
-            --train_conf "$simpo_train_conf" \
-            --train_file "${src_exp_dir}/train_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
-            --eval_file "${src_exp_dir}/dev_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
-            --output_dir "$exp_dir"
+    
+    if [ "$train_mode" == "dev" ]; then
+        CUDA_VISIBLE_DEVICES=$gpuid \
+            python finetuning/qwen3_asr_simpo.py --seed $seed $training_opts \
+                "${init_opts[@]}" \
+                --train_conf "$simpo_train_conf" \
+                --train_file "${src_exp_dir}/dev_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
+                --eval_file "${src_exp_dir}/dev_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
+                --output_dir "$exp_dir"
+    
+    else
+        # default
+        CUDA_VISIBLE_DEVICES=$gpuid \
+            python finetuning/qwen3_asr_simpo.py --seed $seed $training_opts \
+                "${init_opts[@]}" \
+                --train_conf "$simpo_train_conf" \
+                --train_file "${src_exp_dir}/train_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
+                --eval_file "${src_exp_dir}/dev_${nbest_decoding_conf_name}/nbest/simpo_pairs_${pair_mode}.jsonl" \
+                --output_dir "$exp_dir"
+    fi
 fi
 
 # Stage 6: Reuse run_macslu.sh to run standard test inference/eval/summary.
