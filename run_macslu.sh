@@ -17,6 +17,8 @@ inference_mode="--auto_latest_checkpoint"
 prompt_file=""   # 可指定外部 prompt 檔案，空字串則使用 prepare_macslu_jsonl.py 內建 prompt
 attention_map_opts="" # e.g., --save_attention_map --attn_layers all --attn_mode rollout --attn_imgs_dir imgs
 decoding_conf="conf/decoding/basic_decoding.json"
+analyze_asr_logits=false
+asr_logit_bins=10
 
 # training config
 nj=4
@@ -33,6 +35,16 @@ test_sets="test"
 
 . ./local/parse_options.sh
 . ./path.sh
+
+asr_logit_opts=""
+case "$analyze_asr_logits" in
+    true) asr_logit_opts="--save_asr_logits" ;;
+    false) ;;
+    *)
+        echo "[ERROR] --analyze_asr_logits must be true or false, got: $analyze_asr_logits"
+        exit 1
+        ;;
+esac
 
 if [ ! -f "$train_conf" ]; then
     echo "[ERROR] train_conf not found: $train_conf"
@@ -112,6 +124,7 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
                 --output_root $exp_dir \
                 --device cuda:0 \
                 --decoding_conf $decoding_conf \
+                $asr_logit_opts \
                 $attention_map_opts
     done
 fi
@@ -129,6 +142,14 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
         fi
 
         python local/metrics.py --output_dir ${exp_root}/${test_set}_${decoding_conf_name} "$pred_file" "$gt_file" | tee ${exp_root}/${test_set}_${decoding_conf_name}/metrics.txt
+
+        if [ "$analyze_asr_logits" = "true" ]; then
+            python local/analyze_asr_logits_mer.py \
+                --pred_file "$pred_file" \
+                --gt_file "$gt_file" \
+                --output_dir ${exp_root}/${test_set}_${decoding_conf_name} \
+                --num_bins "$asr_logit_bins"
+        fi
     done
 fi
 

@@ -94,6 +94,125 @@ def unwrap_generate_output(gen_out):
         return gen_out[0]
     return gen_out
 
+
+def _find_json_string_value_span(text: str, key: str = "asr_text") -> Optional[tuple]:
+    """Return [start, end) character offsets for a JSON string value."""
+    pattern = re.compile(rf'"{re.escape(key)}"\s*:\s*"')
+    match = pattern.search(text or "")
+    if match is None:
+        return None
+
+    start = match.end()
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escaped:
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == '"':
+            return start, i
+    return None
+
+
+def _token_indices_for_char_span(tokenizer, token_ids: List[int], span: tuple) -> List[int]:
+    """Map a decoded character span back to overlapping generated token indices."""
+    if not token_ids:
+        return []
+
+    start, end = span
+    if end <= start:
+        return []
+
+    prefix_lens = [0]
+    max_seen = 0
+    for i in range(1, len(token_ids) + 1):
+        decoded = tokenizer.decode(
+            token_ids[:i],
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+        max_seen = max(max_seen, len(decoded))
+        prefix_lens.append(max_seen)
+
+    return [
+        i
+        for i in range(len(token_ids))
+        if prefix_lens[i + 1] > start and prefix_lens[i] < end
+    ]
+
+
+def compute_asr_token_score_stats(
+    model,
+    processor,
+    inputs: Dict[str, Any],
+    output_ids: torch.Tensor,
+    prefix_len: int,
+) -> Dict[str, Any]:
+    """Teacher-force top-1 generation and summarize logits on asr_text value tokens."""
+    if not torch.is_tensor(output_ids) or output_ids.dim() != 2 or output_ids.size(0) < 1:
+        return {}
+    if prefix_len <= 0 or output_ids.size(1) <= prefix_len:
+        return {}
+
+    sequence = output_ids[:1]
+    generated_ids = sequence[0, prefix_len:].detach().cpu().tolist()
+    decoded = batch_decode_text(processor, sequence[:, prefix_len:])[0]
+    span = _find_json_string_value_span(decoded, key="asr_text")
+    if span is None:
+        return {"asr_token_count": 0}
+
+    tokenizer = getattr(processor, "tokenizer", processor)
+    token_indices = _token_indices_for_char_span(tokenizer, generated_ids, span)
+    if not token_indices:
+        return {"asr_token_count": 0}
+
+    score_inputs = dict(inputs)
+    score_inputs["input_ids"] = sequence.to(inputs["input_ids"].device)
+    score_inputs.pop("cache_position", None)
+    score_inputs.pop("position_ids", None)
+
+    if "attention_mask" in score_inputs:
+        attention_mask = score_inputs["attention_mask"][:1]
+        extra = sequence.size(1) - attention_mask.size(1)
+        if extra > 0:
+            attention_mask = torch.cat(
+                [
+                    attention_mask,
+                    torch.ones(
+                        (1, extra),
+                        dtype=attention_mask.dtype,
+                        device=attention_mask.device,
+                    ),
+                ],
+                dim=1,
+            )
+        score_inputs["attention_mask"] = attention_mask
+
+    with torch.inference_mode():
+        outputs = model(**score_inputs, use_cache=False, return_dict=True)
+
+    logits = outputs.logits[0, prefix_len - 1 : sequence.size(1) - 1, :]
+    targets = sequence[0, prefix_len:].to(logits.device)
+    step_count = min(logits.size(0), targets.size(0))
+    token_indices = [idx for idx in token_indices if 0 <= idx < step_count]
+    if not token_indices:
+        return {"asr_token_count": 0}
+
+    index_tensor = torch.tensor(token_indices, dtype=torch.long, device=logits.device)
+    asr_logits = logits.index_select(0, index_tensor).float()
+    asr_targets = targets.index_select(0, index_tensor)
+    selected_logits = asr_logits.gather(1, asr_targets.unsqueeze(1)).squeeze(1)
+    selected_logprobs = selected_logits - torch.logsumexp(asr_logits, dim=-1)
+
+    return {
+        "asr_token_count": len(token_indices),
+        "asr_avg_logit": float(selected_logits.mean().item()),
+        "asr_avg_logprob": float(selected_logprobs.mean().item()),
+        "asr_avg_prob": float(selected_logprobs.exp().mean().item()),
+    }
+
+
 def extract_payload_text(raw_text: str) -> str:
     """
     Example:
@@ -148,7 +267,8 @@ def infer_one(
     repetition_penalty: float = 1.0,
     num_return_sequences: int = 1,
     beam_size: int = 1,
-) -> Union[str, List[str]]:
+    collect_asr_logits: bool = False,
+) -> Union[str, List[str], tuple]:
     processor = asr_wrapper.processor
     model = asr_wrapper.model
     device = next(model.parameters()).device
@@ -211,13 +331,28 @@ def infer_one(
         gen_only_ids = output_ids
 
     decoded = [x.strip() for x in batch_decode_text(processor, gen_only_ids)]
+
+    asr_score_stats: Dict[str, Any] = {}
+    if collect_asr_logits:
+        try:
+            asr_score_stats = compute_asr_token_score_stats(
+                model=model,
+                processor=processor,
+                inputs=inputs,
+                output_ids=output_ids,
+                prefix_len=prefix_len,
+            )
+        except Exception as exc:
+            print(f"[WARNING] failed to collect asr_text logits for {audio_path}: {exc}")
+
     ########### Attention Heat map ############
     #print(gen_out)
     #plot_split_attention_heatmap(gen_out, inputs, asr_wrapper, audio_path, target_layer=-1, output_root=output_root)
     #######################
-    if num_return_sequences > 1:
-        return decoded
-    return decoded[0] if decoded else ""
+    result = decoded if num_return_sequences > 1 else (decoded[0] if decoded else "")
+    if collect_asr_logits:
+        return result, asr_score_stats
+    return result
 
 def plot_split_attention_heatmap(gen_out, inputs, asr_wrapper, audio_path, target_layer=-1, output_root=""):
     """
@@ -369,6 +504,9 @@ def write_slu_prediction_jsonl(rows_out: List[Dict[str, Any]], output_root: str,
                 "pred_query": row.get("pred_query", ""),
                 "pred_semantics": row.get("pred_semantics", []),
             }
+            for key in ("asr_token_count", "asr_avg_logit", "asr_avg_logprob", "asr_avg_prob"):
+                if key in row:
+                    item[key] = row[key]
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
     print(f"[info] saved: {out_path}")
@@ -525,6 +663,8 @@ def parse_args():
                    help="Correction prompt file path for corrected jsonl")
     p.add_argument("--decoding_conf", type=str, default="conf/decoding/basic_decoding.json",
                    help="Hierarchical decoding config JSON path")
+    p.add_argument("--save_asr_logits", action="store_true",
+                   help="Teacher-force the top-1 generation and save averaged logits/log-probabilities for generated asr_text tokens")
     return p.parse_args()
 
 
@@ -651,7 +791,7 @@ def main():
             print(f"[skip] line {i}: no audio field")
             continue
 
-        pred_raw = infer_one(
+        infer_result = infer_one(
             asr_wrapper=asr_wrapper,
             audio_path=audio_path,
             prompt=prompt,
@@ -667,7 +807,13 @@ def main():
             repetition_penalty=repetition_penalty,
             num_return_sequences=num_return_sequences,
             beam_size=beam_size,
+            collect_asr_logits=args.save_asr_logits,
         )
+        if args.save_asr_logits:
+            pred_raw, asr_score_stats = infer_result
+        else:
+            pred_raw = infer_result
+            asr_score_stats = {}
         '''
         if "<slu>" in pred_raw:
             pred_query = pred_raw.split("<slu>")[0].split("<asr_text>")[1]
@@ -700,7 +846,7 @@ def main():
             print(f"[WARNING]: Processing failed for {text_id}: {pred_json} and ")
             pred_semantics = [{"FAILED": pred_json}]
 
-        rows_out.append({
+        output_row = {
             "text_id": text_id,
             "query": query,
             "audio": audio_path,
@@ -712,7 +858,9 @@ def main():
             "pred_raw": pred_raw,
             "pred_semantics": pred_semantics,
             "nbest": nbest,
-        })
+        }
+        output_row.update(asr_score_stats)
+        rows_out.append(output_row)
 
         print(f"[{i}/{len(rows)}] done: {text_id}")
 
