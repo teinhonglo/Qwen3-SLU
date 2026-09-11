@@ -318,6 +318,13 @@ class MakeEveryCheckpointInferableCallback(TrainerCallback):
 
         save_prompt_txt(save_dir, self.default_prompt)
 
+    def on_step_end(self, args: TrainingArguments, state, control, **kwargs):
+        # Always ask Trainer to write a complete checkpoint at the final
+        # optimizer step, even when save_steps is larger than the whole run.
+        if state.global_step >= state.max_steps:
+            control.should_save = True
+        return control
+
     def on_save(self, args: TrainingArguments, state, control, **kwargs):
         if args.process_index != 0:
             return control
