@@ -59,7 +59,7 @@ if [ "$stage" -le 1 ] && [ "$stop_stage" -ge 1 ]; then
     echo "Stage 1: PII inference"
     mkdir -p "$aux_output_root"
     CUDA_VISIBLE_DEVICES="$gpuid" \
-        python finetuning/qwen3_asr_test.py \
+        python finetuning/qwen3_asr_test_aux.py \
             $inference_mode \
             --exp_dir "$exp_root" \
             --input_jsonl "${eval_json_root}/${split}_pii.jsonl" \
@@ -73,7 +73,7 @@ if [ "$stage" -le 2 ] && [ "$stop_stage" -ge 2 ]; then
     echo "Stage 2: CDI inference"
     mkdir -p "$aux_output_root"
     CUDA_VISIBLE_DEVICES="$gpuid" \
-        python finetuning/qwen3_asr_test.py \
+        python finetuning/qwen3_asr_test_aux.py \
             $inference_mode \
             --exp_dir "$exp_root" \
             --input_jsonl "${eval_json_root}/${split}_cdi.jsonl" \
