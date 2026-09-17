@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate PII/CDI predictions produced by qwen3_asr_test.py."""
+"""Evaluate held-out PII/CDI predictions for StructSFT."""
 
 import argparse
 import json
@@ -54,6 +54,8 @@ def parse_json_list(raw_text: str) -> list | None:
     except Exception:
         pass
 
+    # Allow surrounding non-JSON text for diagnosis, but the extracted object
+    # itself must still be a valid JSON list.
     start = payload.find("[")
     if start < 0:
         return None
@@ -146,6 +148,7 @@ def evaluate_pii(pred_rows: list[dict], gt_rows: list[dict]) -> tuple[dict, list
     relation_exact = 0
     candidate_valid_count = 0
     missing_predictions = 0
+    empty_gold_relations = 0
 
     di_tp = di_fp = di_fn = 0
     pair_tp = pair_fp = pair_fn = 0
@@ -162,23 +165,27 @@ def evaluate_pii(pred_rows: list[dict], gt_rows: list[dict]) -> tuple[dict, list
         gold = normalize_pii(gold_list)
         if gold is None:
             raise ValueError(f"Invalid PII gold target for {text_id}: {gt.get('text')}")
+        if not gold:
+            empty_gold_relations += 1
 
         pred_list = parse_json_list(raw_pred)
-        pred = normalize_pii(pred_list)
-        is_valid = pred is not None
+        pred_raw_relation = normalize_pii(pred_list)
+        is_valid = pred_raw_relation is not None
         if is_valid:
             valid_json += 1
-        is_candidate_valid = candidate_valid(pred, gt)
+
+        is_candidate_valid = candidate_valid(pred_raw_relation, gt)
         if is_candidate_valid:
             candidate_valid_count += 1
 
-        if pred is None:
-            pred = {}
-
-        is_exact = pred == gold
+        # Invalid output is always an error. Do not convert it to {} before
+        # deciding exact match, otherwise invalid predictions incorrectly match
+        # gold [] examples.
+        is_exact = is_valid and pred_raw_relation == gold
         if is_exact:
             relation_exact += 1
 
+        pred = pred_raw_relation if pred_raw_relation is not None else {}
         gold_di = set(gold)
         pred_di = set(pred)
         di_tp_i = len(gold_di & pred_di)
@@ -226,6 +233,7 @@ def evaluate_pii(pred_rows: list[dict], gt_rows: list[dict]) -> tuple[dict, list
         "task": "pii",
         "num_examples": total,
         "missing_predictions": missing_predictions,
+        "empty_gold_relations": empty_gold_relations,
         "valid_json_rate": safe_div(valid_json, total),
         "candidate_valid_rate": safe_div(candidate_valid_count, total),
         "relation_exact_match": safe_div(relation_exact, total),
@@ -277,7 +285,6 @@ def evaluate_cdi(pred_rows: list[dict], gt_rows: list[dict]) -> tuple[dict, list
     missing_predictions = 0
     valid_outputs = 0
     correct = 0
-    correct_valid = 0
     pair_stats: dict[tuple[int, int], dict[str, int]] = defaultdict(
         lambda: {"total": 0, "correct": 0, "valid": 0}
     )
@@ -291,6 +298,7 @@ def evaluate_cdi(pred_rows: list[dict], gt_rows: list[dict]) -> tuple[dict, list
         raw_pred = "" if pred_row is None else str(pred_row.get("pred_raw", ""))
         if pred_row is None:
             missing_predictions += 1
+
         pred = parse_bool(raw_pred)
         valid = pred is not None
         is_correct = valid and pred == gold
@@ -299,7 +307,6 @@ def evaluate_cdi(pred_rows: list[dict], gt_rows: list[dict]) -> tuple[dict, list
         pred_labels.append(pred)
         valid_outputs += int(valid)
         correct += int(is_correct)
-        correct_valid += int(is_correct)
 
         current_count = int(gt.get("current_intent_count", -1))
         reference_count = int(gt.get("reference_intent_count", -1))
@@ -352,7 +359,7 @@ def evaluate_cdi(pred_rows: list[dict], gt_rows: list[dict]) -> tuple[dict, list
         "num_false": total - sum(gold_labels),
         "valid_output_rate": safe_div(valid_outputs, total),
         "accuracy": safe_div(correct, total),
-        "accuracy_on_valid_outputs": safe_div(correct_valid, valid_outputs),
+        "accuracy_on_valid_outputs": safe_div(correct, valid_outputs),
         "macro_f1": macro_f1,
         "balanced_accuracy": balanced_accuracy,
         "true_class": true_stats,
@@ -378,6 +385,7 @@ def format_metrics(metrics: dict) -> str:
                 "PII Evaluation",
                 f"Examples: {metrics['num_examples']}",
                 f"Missing predictions: {metrics['missing_predictions']}",
+                f"Empty gold relations: {metrics['empty_gold_relations']}",
                 f"Valid JSON Rate: {pct(metrics['valid_json_rate'])}",
                 f"Candidate Valid Rate: {pct(metrics['candidate_valid_rate'])}",
                 f"Relation Exact Match: {pct(metrics['relation_exact_match'])}",
