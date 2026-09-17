@@ -109,7 +109,6 @@ def convert_split(
                 "SLU",
             )
         if "pii" in train_tasks:
-            pii_rows = [pii_row(row, random.Random(seed)) for row in []]
             # Use one shared RNG exactly as in the full-data preparation.
             pii_rng = random.Random(seed)
             pii_rows = [pii_row(row, pii_rng) for row in source_rows]
