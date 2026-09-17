@@ -17,6 +17,7 @@ gpuid=0
 suffix=
 train_conf=conf/macslu_qwen3_asr_17b_ep20_lora_woemblmhead.json
 seed=66
+train_tasks="slu pii cdi"
 cdi_pairs_per_class=1
 cdi_max_anchor_intent_count=3
 checkpoint=
@@ -33,7 +34,43 @@ test_sets="test"
 . ./local/parse_options.sh
 . ./path.sh
 
-json_root=${src_json_root}_structprompt
+# Normalize and validate the selected training tasks in a fixed order so
+# equivalent task sets share the same data/experiment naming.
+for task in $train_tasks; do
+    case "$task" in
+        slu|pii|cdi) ;;
+        *)
+            echo "[ERROR] Unsupported train task: $task (allowed: slu pii cdi)"
+            exit 1
+            ;;
+    esac
+done
+normalized_train_tasks=""
+for task in slu pii cdi; do
+    if [[ " $train_tasks " == *" $task "* ]]; then
+        if [ -n "$normalized_train_tasks" ]; then
+            normalized_train_tasks+=" "
+        fi
+        normalized_train_tasks+="$task"
+    fi
+done
+train_tasks="$normalized_train_tasks"
+if [[ " $train_tasks " != *" slu "* ]]; then
+    echo "[ERROR] train_tasks must include the main task: slu"
+    exit 1
+fi
+task_tag=${train_tasks// /_}
+
+# Preserve the original full-StructSFT data path. Ablations use their own
+# JSON root so Stage 0 cannot overwrite another task combination.
+if [ "$task_tag" = "slu_pii_cdi" ]; then
+    json_root=${src_json_root}_structprompt
+else
+    json_root=${src_json_root}_structprompt_${task_tag}
+    if [ -z "$suffix" ]; then
+        suffix="_${task_tag}"
+    fi
+fi
 
 if [ ! -f "$train_conf" ]; then
     echo "[ERROR] train_conf not found: $train_conf"
@@ -58,7 +95,7 @@ else
 fi
 
 if [ "$stage" -le 0 ] && [ "$stop_stage" -ge 0 ]; then
-    echo "Stage 0: Prepare PICD-style SLU + PII + CDI MAC-SLU jsonl"
+    echo "Stage 0: Prepare StructPrompt MAC-SLU jsonl (train_tasks=$train_tasks)"
     for split in train dev test; do
         if [ ! -f "${src_json_root}/${split}.jsonl" ]; then
             echo "[ERROR] Required source jsonl not found: ${src_json_root}/${split}.jsonl"
@@ -66,18 +103,19 @@ if [ "$stage" -le 0 ] && [ "$stop_stage" -ge 0 ]; then
             exit 1
         fi
     done
-    python local/prepare_macslu_structprompt_jsonl.py \
+    python local/prepare_macslu_structprompt_ablation_jsonl.py \
         --src-json-root "$src_json_root" \
         --json-root "$json_root" \
         --splits train dev test \
         --expand-splits train \
+        --train-tasks $train_tasks \
         --cdi-pairs-per-class "$cdi_pairs_per_class" \
         --cdi-max-anchor-intent-count "$cdi_max_anchor_intent_count" \
         --seed "$seed"
 fi
 
 if [ "$stage" -le 1 ] && [ "$stop_stage" -ge 1 ]; then
-    echo "Stage 1: Finetuning on PICD-style SLU + PII + CDI MAC-SLU"
+    echo "Stage 1: Finetuning StructPrompt MAC-SLU (train_tasks=$train_tasks)"
     CUDA_VISIBLE_DEVICES=$gpuid \
         python finetuning/qwen3_asr_sft.py --seed "$seed" "${training_opts[@]}" \
             --train_conf "$train_conf" \
@@ -132,7 +170,7 @@ if [ "$stage" -le 4 ] && [ "$stop_stage" -ge 4 ]; then
 fi
 
 if [ "$stage" -le 5 ] && [ "$stop_stage" -ge 5 ]; then
-    echo "Stage 5: Summary (PICD-style SLU + PII + CDI MAC-SLU)"
+    echo "Stage 5: Summary (StructPrompt train_tasks=$train_tasks)"
     for test_set in $test_sets; do
         metrics_file=${exp_root}/${test_set}_${decoding_conf_name}/metrics.txt
         if [ ! -f "$metrics_file" ]; then
