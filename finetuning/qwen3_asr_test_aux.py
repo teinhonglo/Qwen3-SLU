@@ -3,6 +3,7 @@
 """Raw-output inference for StructSFT auxiliary tasks such as PII and CDI."""
 
 import argparse
+import json
 import os
 
 import numpy as np
@@ -21,7 +22,6 @@ from qwen3_asr_test import (
     resolve_dtype,
     save_resolved_decoding_conf,
     validate_decoding_mode,
-    write_slu_prediction_jsonl,
 )
 
 
@@ -44,6 +44,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--beam_size", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     return parser.parse_args()
+
+
+def write_aux_prediction_jsonl(rows_out, output_root: str, jsonl_name: str) -> None:
+    """Write raw generations without forcing Full-SLU JSON parsing."""
+    save_dir = os.path.join(output_root, jsonl_name)
+    os.makedirs(save_dir, exist_ok=True)
+    out_path = os.path.join(save_dir, "predictions.jsonl")
+    with open(out_path, "w", encoding="utf-8") as output:
+        for row in rows_out:
+            # Keep the evaluation metadata and, critically, pred_raw/nbest.
+            output.write(json.dumps(row, ensure_ascii=False) + "\n")
+    print(f"[info] saved auxiliary predictions: {out_path}")
 
 
 def main() -> None:
@@ -178,7 +190,7 @@ def main() -> None:
         rows_out.append(result)
         print(f"[{index}/{len(rows)}] done: {text_id}")
 
-    write_slu_prediction_jsonl(
+    write_aux_prediction_jsonl(
         rows_out=rows_out,
         output_root=args.output_root,
         jsonl_name=output_name,
