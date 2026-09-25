@@ -28,11 +28,14 @@ prompt_file=""   # Empty uses prepare_macslu_jsonl.py built-in prompt.
 # prototype-only adapter-head finetune config
 prototype_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead_prototype.json"
 
-prototype_top_k=5
+# Defaults come from model_args.prototype in prototype_train_conf:
+# k=5, metric_ks=[1, 3, 5], prototype_source=audio_prompt, and pooling=last_hidden_state.
+# Any non-empty value below, including a corresponding CLI option, overrides the config value.
+prototype_top_k=
+prototype_metric_ks=
+prototype_source=
+prototype_pooling=
 prototype_min_similarity="-1"       # -1 auto-selects on dev; empty keeps all top-k candidates in generated data-json prompts.
-prototype_metric_ks="1 3 5"       # IR metric cutoffs used by Stage 3.
-prototype_source="audio_prompt"       # audio_only | audio_prompt | audio_prefix | text_prefix
-prototype_pooling="last_hidden_state" # mean_pooling | last_hidden_state
 prototype_variant=""                  # Empty auto-tags output dirs as ${prototype_source}_${prototype_pooling}_${prototype_finetune_type}_${src_model ep tag}.
 
 # Step 1 source model for prototype extraction. Empty means initialize the source
@@ -68,7 +71,7 @@ if [ ! -f "$prototype_train_conf" ]; then
     exit 1
 fi
 
-prototype_finetune_type=$(python - "$prototype_train_conf" <<'PY'
+prototype_conf_defaults=$(python - "$prototype_train_conf" <<'PY_DEFAULTS'
 import json
 import sys
 
@@ -79,6 +82,12 @@ if not isinstance(cfg, list) or len(cfg) != 2:
 training_args = cfg[0]
 training_args.setdefault("metric_for_best_model", "eval_domain_intent_micro_f1")
 model_args = cfg[1]
+proto = model_args.get("prototype", {}) or {}
+required = ("k", "metric_ks", "prototype_source", "pooling")
+missing = [key for key in required if key not in proto]
+if missing:
+    raise KeyError(f"prototype_train_conf is missing prototype defaults: {', '.join(missing)}")
+
 lora_type = str(model_args.get("lora_type", "default")).lower()
 lora_config = model_args.get("lora_config", None)
 if lora_type == "adapter_head":
@@ -90,8 +99,30 @@ elif lora_config:
 else:
     tag = "full_ft"
 print(tag)
-PY
+print(int(proto["k"]))
+print(" ".join(str(int(k)) for k in proto["metric_ks"]))
+print(str(proto["prototype_source"]))
+print(str(proto["pooling"]))
+PY_DEFAULTS
 )
+mapfile -t prototype_conf_values <<< "$prototype_conf_defaults"
+if [ "${#prototype_conf_values[@]}" -ne 5 ]; then
+    echo "[ERROR] failed to resolve prototype defaults from $prototype_train_conf"
+    exit 1
+fi
+prototype_finetune_type=${prototype_conf_values[0]}
+if [ -z "$prototype_top_k" ]; then
+    prototype_top_k=${prototype_conf_values[1]}
+fi
+if [ -z "$prototype_metric_ks" ]; then
+    prototype_metric_ks=${prototype_conf_values[2]}
+fi
+if [ -z "$prototype_source" ]; then
+    prototype_source=${prototype_conf_values[3]}
+fi
+if [ -z "$prototype_pooling" ]; then
+    prototype_pooling=${prototype_conf_values[4]}
+fi
 
 prototype_src_ep="src_ep_unknown"
 if [ "$src_model" = "" ]; then

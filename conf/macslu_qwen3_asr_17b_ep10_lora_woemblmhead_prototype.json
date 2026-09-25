@@ -60,10 +60,16 @@
         "prototype": {
             "enabled": true,
             "k": 5,
+            "metric_ks": [
+                1,
+                3,
+                5
+            ],
             "labels_path": "data/macslu/labels.txt",
             "schema_path": "",
-            "prototype_json": "data/macslu/prototypes/domain_intent_prototypes.json",
-            "pooling": "mean_pooling",
+            "prototype_json": "",
+            "prototype_source": "audio_prompt",
+            "pooling": "last_hidden_state",
             "normalize": true,
             "temperature": 1.0,
             "loss_weight": 1.0,
