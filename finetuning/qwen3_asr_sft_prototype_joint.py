@@ -40,6 +40,8 @@ from finetuning.prototype_joint_utils import (  # noqa: E402
     DOMAIN_INTENT_SEP,
     extract_gold_domain_intent_labels,
     make_domain_intent_label,
+    split_domain_intent_label,
+    unique_keep_order,
 )
 from qwen_asr.core.transformers_backend.configuration_qwen3_asr import Qwen3ASRConfig  # noqa: E402
 from qwen_asr.core.transformers_backend.modeling_qwen3_asr_prototype_joint import (  # noqa: E402
@@ -508,22 +510,135 @@ def _ranking_metrics_from_scores(scores: torch.Tensor, gold: torch.Tensor, metri
     return metrics
 
 
-def make_compute_prototype_metrics(prototype_top_k: int, metric_ks: Sequence[int]):
+def _project_joint_rankings(
+    scores: torch.Tensor,
+    gold: torch.Tensor,
+    domain_intent_labels: Sequence[str],
+    top_k: int,
+) -> Tuple[List[List[str]], List[List[str]], List[List[str]], List[List[str]]]:
+    """Project ranked joint labels exactly as Stage 3 inference does."""
+    ranked_indices = torch.argsort(scores, dim=-1, descending=True)[:, :top_k]
+    pred_domains: List[List[str]] = []
+    pred_intents: List[List[str]] = []
+    gold_domains: List[List[str]] = []
+    gold_intents: List[List[str]] = []
+    for row_idx in range(scores.size(0)):
+        pred_labels = [
+            domain_intent_labels[int(label_idx)]
+            for label_idx in ranked_indices[row_idx].tolist()
+            if domain_intent_labels[int(label_idx)] not in {"", "__empty__"}
+        ]
+        gold_labels = [
+            domain_intent_labels[int(label_idx)]
+            for label_idx in torch.nonzero(gold[row_idx], as_tuple=False).flatten().tolist()
+            if domain_intent_labels[int(label_idx)] not in {"", "__empty__"}
+        ]
+        pred_pairs = [split_domain_intent_label(label) for label in pred_labels]
+        gold_pairs = [split_domain_intent_label(label) for label in gold_labels]
+        pred_domains.append(unique_keep_order(domain for domain, intent in pred_pairs if domain and intent))
+        pred_intents.append(unique_keep_order(intent for domain, intent in pred_pairs if domain and intent))
+        gold_domains.append(unique_keep_order(domain for domain, intent in gold_pairs if domain and intent))
+        gold_intents.append(unique_keep_order(intent for domain, intent in gold_pairs if domain and intent))
+    return pred_domains, pred_intents, gold_domains, gold_intents
+
+
+def _set_metrics_from_rankings(pred_rows: Sequence[Sequence[str]], gold_rows: Sequence[Sequence[str]]) -> Dict[str, float]:
+    labels = sorted({label for row in pred_rows for label in row} | {label for row in gold_rows for label in row})
+    if not labels:
+        return {
+            "exact_match": 1.0 if pred_rows else 0.0,
+            "micro_precision": 0.0,
+            "micro_recall": 0.0,
+            "micro_f1": 0.0,
+            "macro_f1": 0.0,
+        }
+    label2id = {label: idx for idx, label in enumerate(labels)}
+    pred = torch.zeros((len(pred_rows), len(labels)), dtype=torch.bool)
+    gold = torch.zeros_like(pred)
+    for row_idx, row in enumerate(pred_rows):
+        for label in row:
+            pred[row_idx, label2id[label]] = True
+    for row_idx, row in enumerate(gold_rows):
+        for label in row:
+            gold[row_idx, label2id[label]] = True
+    return _set_metrics_from_masks(pred, gold)
+
+
+def _ranking_metrics_from_rankings(
+    pred_rows: Sequence[Sequence[str]],
+    gold_rows: Sequence[Sequence[str]],
+    metric_ks: Sequence[int],
+) -> Dict[str, float]:
+    metrics: Dict[str, float] = {}
+    denom = len(pred_rows)
+    for k in sorted({int(k) for k in metric_ks if int(k) > 0}):
+        precision_sum = recall_sum = hit_sum = covered_sum = ap_sum = rr_sum = 0.0
+        for pred, gold in zip(pred_rows, gold_rows):
+            pred_at_k = list(pred[:k])
+            gold_set = set(gold)
+            hits = len(set(pred_at_k) & gold_set)
+            precision_sum += hits / k
+            recall_sum += hits / len(gold_set) if gold_set else 0.0
+            hit_sum += float(hits > 0)
+            covered_sum += float(bool(gold_set) and gold_set.issubset(set(pred_at_k)))
+            running_hits = 0
+            average_precision = 0.0
+            reciprocal_rank = 0.0
+            for rank, label in enumerate(pred_at_k, start=1):
+                if label in gold_set:
+                    running_hits += 1
+                    average_precision += running_hits / rank
+                    if reciprocal_rank == 0.0:
+                        reciprocal_rank = 1.0 / rank
+            ap_sum += average_precision / min(len(gold_set), k) if gold_set else 0.0
+            rr_sum += reciprocal_rank
+        metrics[f"precision@{k}"] = precision_sum / denom if denom else 0.0
+        metrics[f"recall@{k}"] = recall_sum / denom if denom else 0.0
+        metrics[f"hit@{k}"] = hit_sum / denom if denom else 0.0
+        metrics[f"all_gold_covered@{k}"] = covered_sum / denom if denom else 0.0
+        metrics[f"map@{k}"] = ap_sum / denom if denom else 0.0
+        metrics[f"mrr@{k}"] = rr_sum / denom if denom else 0.0
+    return metrics
+
+
+def make_compute_prototype_metrics(
+    prototype_top_k: int,
+    metric_ks: Sequence[int],
+    domain_intent_labels: Sequence[str],
+):
     def compute_prototype_metrics(eval_pred) -> Dict[str, float]:
         scores, gold = _as_2d_scores_and_gold(eval_pred.predictions, eval_pred.label_ids)
         pred = _prediction_mask_at_k(scores, prototype_top_k)
-        set_metrics = _set_metrics_from_masks(pred, gold)
-        ranking_metrics = _ranking_metrics_from_scores(scores, gold, metric_ks)
+        joint_set = _set_metrics_from_masks(pred, gold)
+        joint_ranking = _ranking_metrics_from_scores(scores, gold, metric_ks)
+        pred_domains, pred_intents, gold_domains, gold_intents = _project_joint_rankings(
+            scores, gold, domain_intent_labels, prototype_top_k
+        )
+        domain_set = _set_metrics_from_rankings(pred_domains, gold_domains)
+        intent_set = _set_metrics_from_rankings(pred_intents, gold_intents)
+        domain_ranking = _ranking_metrics_from_rankings(pred_domains, gold_domains, metric_ks)
+        intent_ranking = _ranking_metrics_from_rankings(pred_intents, gold_intents, metric_ks)
 
-        out = {f"domain_intent_{key}": value for key, value in set_metrics.items()}
-        out.update({f"domain_intent_{key}": value for key, value in ranking_metrics.items()})
-        # Keep the best-checkpoint metric used by the prototype configs explicit.
-        # With the default prototype_top_k=5 this creates:
-        #   eval_domain_intent_all_gold_covered@5
-        # after the Trainer adds its eval_ prefix.
-        best_coverage_key = f"all_gold_covered@{prototype_top_k}"
-        if best_coverage_key in ranking_metrics:
-            out[f"domain_intent_{best_coverage_key}"] = ranking_metrics[best_coverage_key]
+        out: Dict[str, float] = {}
+        out.update({f"domain_{key}": value for key, value in domain_set.items()})
+        out.update({f"intent_{key}": value for key, value in intent_set.items()})
+        out.update({f"domain_{key}": value for key, value in domain_ranking.items()})
+        out.update({f"intent_{key}": value for key, value in intent_ranking.items()})
+        for k in sorted({int(k) for k in metric_ks if int(k) > 0} | {int(prototype_top_k)}):
+            both_covered = sum(
+                int(
+                    bool(gold_domain)
+                    and set(gold_domain).issubset(set(pred_domain[:k]))
+                    and bool(gold_intent)
+                    and set(gold_intent).issubset(set(pred_intent[:k]))
+                )
+                for pred_domain, pred_intent, gold_domain, gold_intent in zip(
+                    pred_domains, pred_intents, gold_domains, gold_intents
+                )
+            )
+            out[f"domain_intent_all_gold_covered@{k}"] = both_covered / len(pred_domains) if pred_domains else 0.0
+        out.update({f"joint_label_{key}": value for key, value in joint_set.items()})
+        out.update({f"joint_label_{key}": value for key, value in joint_ranking.items()})
         return out
 
     return compute_prototype_metrics
@@ -723,7 +838,11 @@ def train_prototype_only(args: argparse.Namespace) -> None:
         eval_dataset=ds["validation"],
         data_collator=collator,
         tokenizer=processor.tokenizer,
-        compute_metrics=make_compute_prototype_metrics(prototype_top_k=prototype_top_k, metric_ks=metric_ks),
+        compute_metrics=make_compute_prototype_metrics(
+            prototype_top_k=prototype_top_k,
+            metric_ks=metric_ks,
+            domain_intent_labels=domain_intent_labels,
+        ),
         callbacks=[MakeEveryCheckpointInferableCallback(processor=processor, model=model, default_prompt=default_prompt)],
     )
     os.makedirs(training_args.output_dir, exist_ok=True)
