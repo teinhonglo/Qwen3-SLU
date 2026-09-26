@@ -291,48 +291,15 @@ def ranking_metrics(rows: Sequence[Dict[str, Any]], pred_key: str, gold_key: str
     return metrics
 
 
-def projected_domain_intent_candidates_at_k(row: Dict[str, Any], k: int) -> Tuple[List[str], List[str]]:
-    """Project the first k joint candidates into unique domain and intent lists."""
-    joint_labels = list(row.get("pred_domain_intents", []) or [])[: max(0, int(k))]
-    domains, intents, _, _ = split_domain_intent_candidates(joint_labels)
-    return strip_empty(domains), strip_empty(intents)
-
-
-def projected_ranking_metrics(
-    rows: Sequence[Dict[str, Any]],
-    kind: str,
-    gold_key: str,
-    ks: Sequence[int],
-) -> Dict[str, float]:
-    """Score projected labels while preserving the original joint top-k budget."""
-    if kind not in {"domain", "intent"}:
-        raise ValueError(f"Unsupported projected ranking kind: {kind}")
-    pred_key = f"projected_{kind}s"
-    metrics: Dict[str, float] = {}
-    for k in sorted({int(k) for k in ks if int(k) > 0}):
-        projected_rows: List[Dict[str, Any]] = []
-        for row in rows:
-            domains, intents = projected_domain_intent_candidates_at_k(row, k)
-            projected_rows.append(
-                {
-                    pred_key: domains if kind == "domain" else intents,
-                    gold_key: row.get(gold_key, []),
-                }
-            )
-        metrics.update(ranking_metrics(projected_rows, pred_key, gold_key, [k]))
-    return metrics
-
-
 def joint_coverage_metrics(rows: Sequence[Dict[str, Any]], ks: Sequence[int]) -> Dict[str, float]:
     metrics: Dict[str, float] = {}
     clean_ks = sorted({int(k) for k in ks if int(k) > 0})
     for k in clean_ks:
         covered_sum = 0.0
         for row in rows:
-            projected_domains, projected_intents = projected_domain_intent_candidates_at_k(row, k)
-            pred_domains = set(projected_domains)
+            pred_domains = set(strip_empty(row.get("pred_domains", []))[:k])
             gold_domains = set(strip_empty(row.get("gold_domains", [])))
-            pred_intents = set(projected_intents)
+            pred_intents = set(strip_empty(row.get("pred_intents", []))[:k])
             gold_intents = set(strip_empty(row.get("gold_intents", [])))
             domains_covered = bool(gold_domains) and gold_domains.issubset(pred_domains)
             intents_covered = bool(gold_intents) and gold_intents.issubset(pred_intents)
@@ -399,30 +366,16 @@ def compute_metrics(split: str, rows: Sequence[Dict[str, Any]], metric_ks: Seque
         "joint_exact_match": both_exact / len(rows) if rows else 0.0,
         "domain": {
             "set": domain_set,
-            "ranking": projected_ranking_metrics(rows, "domain", "gold_domains", metric_ks),
+            "ranking": ranking_metrics(rows, "pred_domains", "gold_domains", metric_ks),
             "thresholded": thresholded_metrics(rows, "pred_domains", "pred_domains_similarity", "gold_domains", min_similarity),
         },
         "intent": {
             "set": intent_set,
-            "ranking": projected_ranking_metrics(rows, "intent", "gold_intents", metric_ks),
+            "ranking": ranking_metrics(rows, "pred_intents", "gold_intents", metric_ks),
             "thresholded": thresholded_metrics(rows, "pred_intents", "pred_intents_similarity", "gold_intents", min_similarity),
         },
-        # Match finetuning/qwen3_asr_test_prototype.py Stage 3 reporting:
-        # domain_intent is the joint coverage of the projected domain and intent
-        # candidate lists, not a separate recall over joint-label strings.
         "domain_intent": {
             "ranking": joint_coverage_metrics(rows, metric_ks),
-        },
-        "joint_label": {
-            "set": score_one_kind(rows, "pred_domain_intents", "gold_domain_intents"),
-            "ranking": ranking_metrics(rows, "pred_domain_intents", "gold_domain_intents", metric_ks),
-            "thresholded": thresholded_metrics(
-                rows,
-                "pred_domain_intents",
-                "pred_domain_intents_similarity",
-                "gold_domain_intents",
-                min_similarity,
-            ),
         },
         "by_semantic_frame_count": {},
     }
@@ -430,8 +383,8 @@ def compute_metrics(split: str, rows: Sequence[Dict[str, Any]], metric_ks: Seque
         group = [r for r in rows if int(r.get("semantic_frame_count", 0)) == count]
         out["by_semantic_frame_count"][str(count)] = {
             "count": len(group),
-            "domain_ranking": projected_ranking_metrics(group, "domain", "gold_domains", metric_ks),
-            "intent_ranking": projected_ranking_metrics(group, "intent", "gold_intents", metric_ks),
+            "domain_ranking": ranking_metrics(group, "pred_domains", "gold_domains", metric_ks),
+            "intent_ranking": ranking_metrics(group, "pred_intents", "gold_intents", metric_ks),
             "domain_intent_ranking": joint_coverage_metrics(group, metric_ks),
             "domain_thresholded": thresholded_metrics(group, "pred_domains", "pred_domains_similarity", "gold_domains", min_similarity),
             "intent_thresholded": thresholded_metrics(group, "pred_intents", "pred_intents_similarity", "gold_intents", min_similarity),
@@ -458,18 +411,6 @@ def format_metrics(split: str, rows: Sequence[Dict[str, Any]], metric_ks: Sequen
     lines.append("[domain_intent/ranking]")
     for key, value in metrics["domain_intent"]["ranking"].items():
         lines.append(f"{key}: {value:.6f}")
-    lines.append("[joint_label/set]")
-    for key in ["exact_match", "micro_precision", "micro_recall", "micro_f1", "macro_f1"]:
-        lines.append(f"{key}: {metrics['joint_label']['set'][key]:.6f}")
-    lines.append("[joint_label/ranking]")
-    for key, value in metrics["joint_label"]["ranking"].items():
-        lines.append(f"{key}: {value:.6f}")
-    lines.append("[joint_label/thresholded]")
-    for key, value in metrics["joint_label"]["thresholded"].items():
-        if value is None:
-            lines.append(f"{key}: none")
-        else:
-            lines.append(f"{key}: {value:.6f}")
     lines.append("[by_semantic_frame_count]")
     max_k = max([int(k) for k in metric_ks if int(k) > 0], default=0)
     for count, group in metrics["by_semantic_frame_count"].items():

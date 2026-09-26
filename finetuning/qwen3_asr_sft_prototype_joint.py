@@ -423,16 +423,6 @@ def _as_2d_scores_and_gold(logits: Any, labels: Any) -> Tuple[torch.Tensor, torc
     return scores, gold
 
 
-def _prediction_mask_at_k(scores: torch.Tensor, k: int) -> torch.Tensor:
-    if scores.numel() == 0:
-        return torch.zeros_like(scores, dtype=torch.bool)
-    k = max(1, min(int(k), scores.size(-1)))
-    pred = torch.zeros_like(scores, dtype=torch.bool)
-    top_idx = torch.topk(scores, k=k, dim=-1).indices
-    pred.scatter_(1, top_idx, True)
-    return pred
-
-
 def _set_metrics_from_masks(pred: torch.Tensor, gold: torch.Tensor) -> Dict[str, float]:
     exact = (pred == gold).all(dim=1).float().mean().item() if pred.numel() else 0.0
     tp = (pred & gold).sum().item()
@@ -465,49 +455,6 @@ def _set_metrics_from_masks(pred: torch.Tensor, gold: torch.Tensor) -> Dict[str,
         "micro_f1": micro_f1,
         "macro_f1": macro_f1,
     }
-
-
-def _ranking_metrics_from_scores(scores: torch.Tensor, gold: torch.Tensor, metric_ks: Sequence[int]) -> Dict[str, float]:
-    metrics: Dict[str, float] = {}
-    clean_ks = sorted({int(k) for k in metric_ks if int(k) > 0})
-    if scores.numel() == 0 or gold.numel() == 0:
-        for k in clean_ks:
-            metrics.update({f"precision@{k}": 0.0, f"recall@{k}": 0.0, f"hit@{k}": 0.0, f"all_gold_covered@{k}": 0.0, f"map@{k}": 0.0, f"mrr@{k}": 0.0})
-        return metrics
-
-    sorted_idx = torch.argsort(scores, dim=-1, descending=True)
-    denom = scores.size(0)
-    for k in clean_ks:
-        k = min(k, scores.size(-1))
-        precision_sum = recall_sum = hit_sum = covered_sum = ap_sum = rr_sum = 0.0
-        for row_idx in range(denom):
-            gold_idx = set(torch.nonzero(gold[row_idx], as_tuple=False).flatten().tolist())
-            pred_idx = sorted_idx[row_idx, :k].tolist()
-            pred_set = set(pred_idx)
-            hits = len(pred_set & gold_idx)
-            precision_sum += hits / k if k else 0.0
-            recall_sum += hits / len(gold_idx) if gold_idx else 0.0
-            hit_sum += 1.0 if hits > 0 else 0.0
-            covered_sum += 1.0 if gold_idx and gold_idx.issubset(pred_set) else 0.0
-
-            running_hits = 0
-            ap = 0.0
-            rr = 0.0
-            for rank, label_idx in enumerate(pred_idx, start=1):
-                if label_idx in gold_idx:
-                    running_hits += 1
-                    ap += running_hits / rank
-                    if rr == 0.0:
-                        rr = 1.0 / rank
-            ap_sum += ap / min(len(gold_idx), k) if gold_idx and k else 0.0
-            rr_sum += rr
-        metrics[f"precision@{k}"] = precision_sum / denom if denom else 0.0
-        metrics[f"recall@{k}"] = recall_sum / denom if denom else 0.0
-        metrics[f"hit@{k}"] = hit_sum / denom if denom else 0.0
-        metrics[f"all_gold_covered@{k}"] = covered_sum / denom if denom else 0.0
-        metrics[f"map@{k}"] = ap_sum / denom if denom else 0.0
-        metrics[f"mrr@{k}"] = rr_sum / denom if denom else 0.0
-    return metrics
 
 
 def _project_joint_rankings(
@@ -608,9 +555,6 @@ def make_compute_prototype_metrics(
 ):
     def compute_prototype_metrics(eval_pred) -> Dict[str, float]:
         scores, gold = _as_2d_scores_and_gold(eval_pred.predictions, eval_pred.label_ids)
-        pred = _prediction_mask_at_k(scores, prototype_top_k)
-        joint_set = _set_metrics_from_masks(pred, gold)
-        joint_ranking = _ranking_metrics_from_scores(scores, gold, metric_ks)
         pred_domains, pred_intents, gold_domains, gold_intents = _project_joint_rankings(
             scores, gold, domain_intent_labels, prototype_top_k
         )
@@ -637,8 +581,6 @@ def make_compute_prototype_metrics(
                 )
             )
             out[f"domain_intent_all_gold_covered@{k}"] = both_covered / len(pred_domains) if pred_domains else 0.0
-        out.update({f"joint_label_{key}": value for key, value in joint_set.items()})
-        out.update({f"joint_label_{key}": value for key, value in joint_ranking.items()})
         return out
 
     return compute_prototype_metrics
