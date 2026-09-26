@@ -91,26 +91,48 @@ def load_audio(path: str, sr: int = 16000):
     return wav
 
 
-def build_prefix_messages(prompt: str, audio_array):
+def build_prefix_messages(
+    prompt: str,
+    audio_array=None,
+    input_text: str = "",
+    use_audio: bool = True,
+):
+    if use_audio:
+        user_content = [{"type": "audio", "audio": audio_array}]
+    else:
+        user_content = [{"type": "text", "text": input_text}]
     return [
         {"role": "system", "content": prompt or ""},
-        {"role": "user", "content": [{"type": "audio", "audio": audio_array}]},
+        {"role": "user", "content": user_content},
     ]
 
 
 def make_preprocess_fn_prefix_only(processor):
     def _preprocess(ex: Dict[str, Any]) -> Dict[str, Any]:
         prompt = ex.get("prompt", "")
-        dummy_audio = None
-        prefix_msgs = build_prefix_messages(prompt, dummy_audio)
+        input_mode = str(ex.get("input_mode", "audio") or "audio").strip().lower()
+        if input_mode not in {"audio", "text"}:
+            raise ValueError(f"Unsupported input_mode: {input_mode}")
+
+        use_audio = input_mode == "audio"
+        input_text = str(ex.get("query", "") or "").strip() if not use_audio else ""
+        if not use_audio and not input_text:
+            raise ValueError("Text-only training row requires a non-empty query")
+
+        prefix_msgs = build_prefix_messages(
+            prompt,
+            audio_array=None,
+            input_text=input_text,
+            use_audio=use_audio,
+        )
         prefix_text = processor.apply_chat_template(
             [prefix_msgs], add_generation_prompt=True, tokenize=False
         )[0]
         return {
             "prompt": prompt,
-            "audio": ex["audio"],
+            "audio": ex.get("audio", "") or "",
             "target": ex["text"],
-            
+            "input_mode": input_mode,
             "prefix_text": prefix_text,
         }
 
@@ -124,24 +146,35 @@ class DataCollatorForQwen3ASRFinetuning:
     sampling_rate: int = 16000
 
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-        audio_paths = [f["audio"] for f in features]
         prefix_texts = [f["prefix_text"] for f in features]
         targets = [f["target"] for f in features]
 
         eos = self.processor.tokenizer.eos_token or ""
         full_texts = [pfx + tgt + eos for pfx, tgt in zip(prefix_texts, targets)]
-        audios = [load_audio(p, sr=self.sampling_rate) for p in audio_paths]
+        audio_paths = []
+        for feature in features:
+            input_mode = str(
+                feature.get("input_mode", "audio") or "audio"
+            ).strip().lower()
+            if input_mode == "text":
+                continue
+            audio_path = str(feature.get("audio", "") or "").strip()
+            if not audio_path:
+                raise ValueError("Audio training row requires a non-empty audio path")
+            audio_paths.append(audio_path)
+        audios = [load_audio(path, sr=self.sampling_rate) for path in audio_paths]
+        processor_audio = audios or None
 
         full_inputs = self.processor(
             text=full_texts,
-            audio=audios,
+            audio=processor_audio,
             return_tensors="pt",
             padding=True,
             truncation=False,
         )
         prefix_inputs = self.processor(
             text=prefix_texts,
-            audio=audios,
+            audio=processor_audio,
             return_tensors="pt",
             padding=True,
             truncation=False,
@@ -402,7 +435,7 @@ def main():
     )
     ds = raw_ds.map(make_preprocess_fn_prefix_only(processor), num_proc=1)
 
-    keep = {"prompt", "audio", "target", "prefix_text"}
+    keep = {"prompt", "audio", "target", "input_mode", "prefix_text"}
     for split in ds.keys():
         drop = [c for c in ds[split].column_names if c not in keep]
         if drop:

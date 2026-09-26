@@ -160,14 +160,24 @@ def main() -> None:
         text_id = str(row.get("text_id", f"line{index}")).strip()
         audio_path = row.get("audio", "")
         prompt = row.get("prompt", "")
-        if not audio_path:
+        input_mode = str(row.get("input_mode", "audio") or "audio").strip().lower()
+        if input_mode not in {"audio", "text"}:
+            raise ValueError(f"Unsupported input_mode for {text_id}: {input_mode}")
+        use_audio = input_mode == "audio"
+        input_text = str(row.get("query", "") or "").strip() if not use_audio else ""
+        if use_audio and not audio_path:
             print(f"[skip] line {index}: no audio field")
+            continue
+        if not use_audio and not input_text:
+            print(f"[skip] line {index}: no query field for text-only input")
             continue
 
         generated = infer_one(
             asr_wrapper=asr_wrapper,
             audio_path=audio_path,
             prompt=prompt,
+            input_text=input_text,
+            use_audio=use_audio,
             sr=sr,
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,

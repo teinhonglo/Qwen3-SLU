@@ -194,6 +194,8 @@ def pii_row(row: dict, rng: random.Random) -> dict:
     result = dict(row)
     result["text_id"] = f"{row.get('text_id', '')}__pii"
     result["task"] = "pii"
+    result["input_mode"] = "text"
+    result.pop("audio", None)
     result["prompt"] = PII_PROMPT_TEMPLATE.format(
         domain_intents=json.dumps(
             domain_intent_candidates, ensure_ascii=False, separators=(",", ":")
