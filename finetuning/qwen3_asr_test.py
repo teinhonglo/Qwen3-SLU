@@ -41,15 +41,34 @@ def load_audio(path: str, sr: int = 16000):
     return wav
 
 
-def build_prefix_messages(prompt: str, audio_array=None):
+def build_prefix_messages(
+    prompt: str,
+    audio_array=None,
+    input_text: str = "",
+    use_audio: bool = True,
+):
+    if use_audio:
+        user_content = [{"type": "audio", "audio": audio_array}]
+    else:
+        user_content = [{"type": "text", "text": input_text}]
     return [
         {"role": "system", "content": prompt or ""},
-        {"role": "user", "content": [{"type": "audio", "audio": audio_array}]},
+        {"role": "user", "content": user_content},
     ]
 
 
-def build_prefix_text(processor, prompt: str) -> str:
-    prefix_msgs = build_prefix_messages(prompt, None)
+def build_prefix_text(
+    processor,
+    prompt: str,
+    input_text: str = "",
+    use_audio: bool = True,
+) -> str:
+    prefix_msgs = build_prefix_messages(
+        prompt,
+        None,
+        input_text=input_text,
+        use_audio=use_audio,
+    )
     prefix_text = processor.apply_chat_template(
         [prefix_msgs],
         add_generation_prompt=True,
@@ -148,19 +167,35 @@ def infer_one(
     repetition_penalty: float = 1.0,
     num_return_sequences: int = 1,
     beam_size: int = 1,
+    input_text: str = "",
+    use_audio: bool = True,
 ) -> Union[str, List[str]]:
     processor = asr_wrapper.processor
     model = asr_wrapper.model
     device = next(model.parameters()).device
     model_dtype = getattr(model, "dtype", torch.float16)
 
-    wav = load_audio(audio_path, sr=sr)
-    prefix_text = build_prefix_text(processor, prompt)
+    if use_audio:
+        if not audio_path:
+            raise ValueError("Audio inference requires a non-empty audio path")
+        processor_audio = [load_audio(audio_path, sr=sr)]
+    else:
+        input_text = str(input_text or "").strip()
+        if not input_text:
+            raise ValueError("Text-only inference requires non-empty input_text")
+        processor_audio = None
+
+    prefix_text = build_prefix_text(
+        processor,
+        prompt,
+        input_text=input_text,
+        use_audio=use_audio,
+    )
     #asr_wrapper.model.thinker.config._attn_implementation = "eager"
 
     inputs = processor(
         text=[prefix_text],
-        audio=[wav],
+        audio=processor_audio,
         return_tensors="pt",
         padding=True,
         truncation=False,

@@ -9,7 +9,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "local"))
 
-from prepare_macslu_structprompt_jsonl import build_cdi_rows, convert_split
+from prepare_macslu_structprompt_jsonl import build_cdi_rows, convert_split, pii_row
 
 
 def make_row(index: int, intent_count: int) -> dict:
@@ -63,6 +63,15 @@ class PrepareMacSLUStructPromptTest(unittest.TestCase):
                     == pair["reference_intent_count"]
                 )
                 self.assertEqual(pair["cdi_label"], same_count)
+
+    def test_pii_is_text_only_and_keeps_query(self):
+        source = self.rows[0]
+        result = pii_row(source, random.Random(66))
+
+        self.assertEqual(result["input_mode"], "text")
+        self.assertNotIn("audio", result)
+        self.assertEqual(result["query"], source["query"])
+        self.assertEqual(result["task"], "pii")
 
     def test_repeats_slu_and_pii_to_match_cdi_count(self):
         with tempfile.TemporaryDirectory() as tmpdir:
