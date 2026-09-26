@@ -71,40 +71,7 @@ if [ ! -f "$prototype_train_conf" ]; then
     exit 1
 fi
 
-prototype_conf_defaults=$(python - "$prototype_train_conf" <<'PY_DEFAULTS'
-import json
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    cfg = json.load(f)
-if not isinstance(cfg, list) or len(cfg) != 2:
-    raise ValueError("prototype_train_conf must be [training_args, model_args]")
-training_args = cfg[0]
-training_args.setdefault("metric_for_best_model", "eval_domain_intent_micro_f1")
-model_args = cfg[1]
-proto = model_args.get("prototype", {}) or {}
-required = ("k", "metric_ks", "prototype_source", "pooling")
-missing = [key for key in required if key not in proto]
-if missing:
-    raise KeyError(f"prototype_train_conf is missing prototype defaults: {', '.join(missing)}")
-
-lora_type = str(model_args.get("lora_type", "default")).lower()
-lora_config = model_args.get("lora_config", None)
-if lora_type == "adapter_head":
-    tag = "adapter_head"
-elif lora_type == "qlora":
-    tag = "qlora"
-elif lora_config:
-    tag = "lora"
-else:
-    tag = "full_ft"
-print(tag)
-print(int(proto["k"]))
-print(" ".join(str(int(k)) for k in proto["metric_ks"]))
-print(str(proto["prototype_source"]))
-print(str(proto["pooling"]))
-PY_DEFAULTS
-)
+prototype_conf_defaults=$(python local/prototype_run_config.py defaults --config "$prototype_train_conf")
 mapfile -t prototype_conf_values <<< "$prototype_conf_defaults"
 if [ "${#prototype_conf_values[@]}" -ne 5 ]; then
     echo "[ERROR] failed to resolve prototype defaults from $prototype_train_conf"
@@ -168,33 +135,16 @@ fi
 write_prototype_runtime_conf() {
     local output_conf=$1
     local init_json=$2
-    python - "$prototype_train_conf" "$output_conf" "$labels_path" "$prototype_schema_path" "$prototype_top_k" "$prototype_metric_ks" "$prototype_source" "$prototype_pooling" "$init_json" <<'PY'
-import json
-import sys
-
-src, dst, labels_path, schema_path, top_k, metric_ks, prototype_source, prototype_pooling, init_json = sys.argv[1:]
-with open(src, "r", encoding="utf-8") as f:
-    cfg = json.load(f)
-if not isinstance(cfg, list) or len(cfg) != 2:
-    raise ValueError("prototype_train_conf must be [training_args, model_args]")
-model_args = cfg[1]
-proto = dict(model_args.get("prototype", {}) or {})
-proto["enabled"] = True
-proto["labels_path"] = labels_path
-proto["schema_path"] = schema_path
-
-proto["prototype_json"] = init_json
-proto.pop("init_path", None)
-proto["k"] = int(top_k)
-proto["metric_ks"] = [int(k) for k in metric_ks.split() if int(k) > 0]
-proto["prototype_source"] = prototype_source
-proto["pooling"] = prototype_pooling
-model_args["prototype"] = proto
-with open(dst, "w", encoding="utf-8") as f:
-    json.dump(cfg, f, ensure_ascii=False, indent=4)
-    f.write("\n")
-print(f"[info] wrote prototype runtime config: {dst}; init_json={init_json}")
-PY
+    python local/prototype_run_config.py materialize \
+        --config "$prototype_train_conf" \
+        --output "$output_conf" \
+        --labels-path "$labels_path" \
+        --schema-path "$prototype_schema_path" \
+        --prototype-json "$init_json" \
+        --top-k "$prototype_top_k" \
+        --metric-ks $prototype_metric_ks \
+        --source "$prototype_source" \
+        --pooling "$prototype_pooling"
 }
 
 prototype_checkpoint_opt() {
