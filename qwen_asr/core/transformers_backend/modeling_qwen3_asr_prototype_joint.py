@@ -14,6 +14,7 @@ from .modeling_qwen3_asr import (
     Qwen3ASRForConditionalGeneration,
     Qwen3ASRThinkerForConditionalGeneration,
 )
+from .prototype_losses import prototype_multi_label_loss
 
 
 class JointDomainIntentPrototypeHead(nn.Module):
@@ -120,12 +121,13 @@ class Qwen3ASRJointPrototypeThinkerForConditionalGeneration(Qwen3ASRThinkerForCo
             pooling=str(self.prototype_config.get("pooling", "mean_pooling")),
         )
         domain_intent_logits = self.prototype_head(pooled_hidden)
-        domain_intent_targets = domain_intent_labels.to(domain_intent_logits.device, dtype=domain_intent_logits.dtype)
-        if domain_intent_targets.dim() != 2:
-            raise ValueError("domain_intent_labels must be a multi-hot tensor with shape (batch, num_domain_intents)")
         proto_loss = (
             float(self.prototype_config.get("domain_intent_loss_weight", 1.0))
-            * F.binary_cross_entropy_with_logits(domain_intent_logits, domain_intent_targets)
+            * prototype_multi_label_loss(
+                domain_intent_logits,
+                domain_intent_labels,
+                self.prototype_config,
+            )
             * float(self.prototype_config.get("loss_weight", 1.0))
         )
         total_loss = proto_loss if outputs.loss is None else outputs.loss + proto_loss

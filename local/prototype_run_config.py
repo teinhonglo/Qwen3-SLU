@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 
 VALID_SOURCES = {"audio_only", "audio_prompt", "audio_prefix", "text_prefix"}
 VALID_POOLING = {"mean_pooling", "last_hidden_state"}
+VALID_LOSS_TYPES = {"bce", "clipped_dynamic_margin"}
 
 
 def load_train_conf(path: str) -> List[Dict[str, Any]]:
@@ -36,12 +37,27 @@ def resolve_defaults(path: str) -> Dict[str, Any]:
     metric_ks = [int(value) for value in prototype["metric_ks"]]
     source = str(prototype["prototype_source"])
     pooling = str(prototype["pooling"])
+    loss_type = str(prototype.get("loss_type", "bce")).lower()
     if top_k <= 0 or not metric_ks or any(value <= 0 for value in metric_ks):
         raise ValueError("prototype k and metric_ks must contain positive integers")
     if source not in VALID_SOURCES:
         raise ValueError(f"unsupported prototype_source: {source}")
     if pooling not in VALID_POOLING:
         raise ValueError(f"unsupported prototype pooling: {pooling}")
+    if loss_type not in VALID_LOSS_TYPES:
+        raise ValueError(f"unsupported prototype loss_type: {loss_type}")
+    if loss_type == "clipped_dynamic_margin":
+        if not bool(prototype.get("normalize", True)):
+            raise ValueError("clipped_dynamic_margin requires prototype.normalize=true")
+        gamma_min = float(prototype.get("dynamic_margin_min", 0.1))
+        gamma_max = float(prototype.get("dynamic_margin_max", 0.3))
+        if gamma_min < 0.0 or gamma_max < gamma_min:
+            raise ValueError(
+                "dynamic margins must satisfy 0 <= dynamic_margin_min <= dynamic_margin_max"
+            )
+        loss_tag = f"{loss_type}_gmin{gamma_min:g}_gmax{gamma_max:g}"
+    else:
+        loss_tag = loss_type
 
     lora_type = str(model_args.get("lora_type", "default")).lower()
     lora_config = model_args.get("lora_config")
@@ -59,6 +75,7 @@ def resolve_defaults(path: str) -> Dict[str, Any]:
         "metric_ks": metric_ks,
         "source": source,
         "pooling": pooling,
+        "loss_tag": loss_tag,
     }
 
 
@@ -69,6 +86,7 @@ def command_defaults(args: argparse.Namespace) -> None:
     print(" ".join(str(value) for value in defaults["metric_ks"]))
     print(defaults["source"])
     print(defaults["pooling"])
+    print(defaults["loss_tag"])
 
 
 def command_materialize(args: argparse.Namespace) -> None:

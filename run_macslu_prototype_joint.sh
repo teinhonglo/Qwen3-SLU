@@ -31,12 +31,13 @@ prototype_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead_prototype.
 # Defaults come from model_args.prototype in prototype_train_conf:
 # k=5, metric_ks=[1, 3, 5], prototype_source=audio_prompt, and pooling=last_hidden_state.
 # Any non-empty value below, including a corresponding CLI option, overrides the config value.
+# Loss type and margins always come from the config and are included in the automatic variant tag.
 prototype_top_k=
 prototype_metric_ks=
 prototype_source=
 prototype_pooling=
 prototype_min_similarity="-1"       # -1 auto-selects on dev; empty keeps all top-k candidates in generated data-json prompts.
-prototype_variant=""                  # Empty auto-tags output dirs as ${prototype_source}_${prototype_pooling}_${prototype_finetune_type}_${src_model ep tag}.
+prototype_variant=""                  # Empty auto-tags output dirs with source, pooling, finetune type, loss, and source-model epoch.
 
 # Step 1 source model for prototype extraction. Empty means initialize the source
 # model from downstream_train_conf instead of loading an existing experiment.
@@ -73,11 +74,12 @@ fi
 
 prototype_conf_defaults=$(python local/prototype_run_config.py defaults --config "$prototype_train_conf")
 mapfile -t prototype_conf_values <<< "$prototype_conf_defaults"
-if [ "${#prototype_conf_values[@]}" -ne 5 ]; then
+if [ "${#prototype_conf_values[@]}" -ne 6 ]; then
     echo "[ERROR] failed to resolve prototype defaults from $prototype_train_conf"
     exit 1
 fi
 prototype_finetune_type=${prototype_conf_values[0]}
+prototype_loss_tag=${prototype_conf_values[5]}
 if [ -z "$prototype_top_k" ]; then
     prototype_top_k=${prototype_conf_values[1]}
 fi
@@ -102,7 +104,7 @@ else
 fi
 
 if [ "$prototype_variant" = "" ]; then
-    prototype_variant="${prototype_source}_${prototype_pooling}_${prototype_finetune_type}_${prototype_src_ep}"
+    prototype_variant="${prototype_source}_${prototype_pooling}_${prototype_finetune_type}_${prototype_loss_tag}_${prototype_src_ep}"
 fi
 
 prototype_json_root=${json_root}_prototype_joint_${prototype_variant}
