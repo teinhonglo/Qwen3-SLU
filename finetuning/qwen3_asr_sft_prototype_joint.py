@@ -224,6 +224,10 @@ def initialize_prototype_embeddings(
     head = getattr(model.thinker, "prototype_head", None)
     if head is None:
         raise RuntimeError("prototype_head is not enabled")
+    # The base Qwen checkpoint has no scaled-cosine calibration weights.
+    # Explicitly initialize these raw nn.Parameters after from_pretrained();
+    # the generic missing-weight path only initializes recognized layer types.
+    head.logit_calibration.reset_parameters()
     if not init_path:
         print("[prototype] no prototype_json set; using random prototype initialization")
         return
