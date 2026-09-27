@@ -29,6 +29,9 @@ prompt_file=""   # Empty uses prepare_macslu_jsonl.py built-in prompt.
 # Its filename is also used as the experiment tag.
 prototype_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead_prototype_audio_prompt_last_hidden_state_bce.json"
 
+# Stage 3 evaluation setting. This default can be overridden from the command
+# line and does not modify the prototype training config.
+prototype_metric_ks="1 3 5"
 prototype_min_similarity="-1"       # -1 auto-selects on dev; empty keeps all top-k candidates in generated data-json prompts.
 
 # Step 1 source model for prototype extraction. Empty means initialize the source
@@ -235,7 +238,7 @@ fi
 if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     echo "Stage 3: Joint prototype train/dev/test inference and jsonl generation"
     mkdir -p "$prototype_json_root"
-    prototype_infer_opts=()
+    prototype_infer_opts=(--prototype_metric_ks $prototype_metric_ks)
     if [ -n "$prototype_min_similarity" ]; then
         prototype_infer_opts+=(--prototype_min_similarity "$prototype_min_similarity")
     fi

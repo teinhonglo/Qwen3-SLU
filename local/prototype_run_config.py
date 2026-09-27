@@ -25,7 +25,7 @@ def load_train_conf(path: str) -> List[Dict[str, Any]]:
 def resolve_defaults(path: str) -> Dict[str, Any]:
     _, model_args = load_train_conf(path)
     prototype = model_args.get("prototype", {}) or {}
-    required = ("k", "metric_ks", "prototype_source", "pooling")
+    required = ("k", "prototype_source", "pooling")
     missing = [key for key in required if key not in prototype]
     if missing:
         raise KeyError(
@@ -34,12 +34,11 @@ def resolve_defaults(path: str) -> Dict[str, Any]:
         )
 
     top_k = int(prototype["k"])
-    metric_ks = [int(value) for value in prototype["metric_ks"]]
     source = str(prototype["prototype_source"])
     pooling = str(prototype["pooling"])
     loss_type = str(prototype.get("loss_type", "bce")).lower()
-    if top_k <= 0 or not metric_ks or any(value <= 0 for value in metric_ks):
-        raise ValueError("prototype k and metric_ks must contain positive integers")
+    if top_k <= 0:
+        raise ValueError("prototype k must be a positive integer")
     if source not in VALID_SOURCES:
         raise ValueError(f"unsupported prototype_source: {source}")
     if pooling not in VALID_POOLING:
@@ -56,7 +55,6 @@ def resolve_defaults(path: str) -> Dict[str, Any]:
         )
     return {
         "top_k": top_k,
-        "metric_ks": metric_ks,
         "source": source,
         "pooling": pooling,
     }
@@ -65,7 +63,6 @@ def resolve_defaults(path: str) -> Dict[str, Any]:
 def command_defaults(args: argparse.Namespace) -> None:
     defaults = resolve_defaults(args.config)
     print(defaults["top_k"])
-    print(" ".join(str(value) for value in defaults["metric_ks"]))
     print(defaults["source"])
     print(defaults["pooling"])
 
