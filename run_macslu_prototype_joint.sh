@@ -31,7 +31,7 @@ prototype_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead_prototype.
 # Defaults come from model_args.prototype in prototype_train_conf:
 # k=5, metric_ks=[1, 3, 5], prototype_source=audio_prompt, and pooling=last_hidden_state.
 # Any non-empty value below, including a corresponding CLI option, overrides the config value.
-# Loss type and margins always come from the config and are included in the automatic variant tag.
+# BCE scaled-cosine settings come from the config; the automatic loss tag is simply "bce".
 prototype_top_k=
 prototype_metric_ks=
 prototype_source=

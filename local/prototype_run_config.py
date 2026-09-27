@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 VALID_SOURCES = {"audio_only", "audio_prompt", "audio_prefix", "text_prefix"}
 VALID_POOLING = {"mean_pooling", "last_hidden_state"}
-VALID_LOSS_TYPES = {"bce", "clipped_dynamic_margin"}
+VALID_LOSS_TYPES = {"bce"}
 
 
 def load_train_conf(path: str) -> List[Dict[str, Any]]:
@@ -46,28 +46,15 @@ def resolve_defaults(path: str) -> Dict[str, Any]:
         raise ValueError(f"unsupported prototype pooling: {pooling}")
     if loss_type not in VALID_LOSS_TYPES:
         raise ValueError(f"unsupported prototype loss_type: {loss_type}")
-    if loss_type == "bce":
-        if not bool(prototype.get("normalize", True)):
-            raise ValueError("prototype BCE requires prototype.normalize=true")
-        scale_init = float(prototype.get("logit_scale_init", 10.0))
-        scale_max = float(prototype.get("logit_scale_max", 100.0))
-        if scale_init <= 0.0 or scale_max < scale_init:
-            raise ValueError(
-                "scaled-cosine BCE requires 0 < logit_scale_init <= logit_scale_max"
-            )
-        bias_init = prototype.get("logit_bias_init")
-        bias_tag = "auto" if bias_init is None else f"{float(bias_init):g}"
-        loss_tag = f"bce_scaled_cosine_s{scale_init:g}_smax{scale_max:g}_b{bias_tag}"
-    elif loss_type == "clipped_dynamic_margin":
-        if not bool(prototype.get("normalize", True)):
-            raise ValueError("clipped_dynamic_margin requires prototype.normalize=true")
-        gamma_min = float(prototype.get("dynamic_margin_min", 0.1))
-        gamma_max = float(prototype.get("dynamic_margin_max", 0.3))
-        if gamma_min < 0.0 or gamma_max < gamma_min:
-            raise ValueError(
-                "dynamic margins must satisfy 0 <= dynamic_margin_min <= dynamic_margin_max"
-            )
-        loss_tag = f"{loss_type}_gmin{gamma_min:g}_gmax{gamma_max:g}"
+    if not bool(prototype.get("normalize", True)):
+        raise ValueError("prototype BCE requires prototype.normalize=true")
+    scale_init = float(prototype.get("logit_scale_init", 10.0))
+    scale_max = float(prototype.get("logit_scale_max", 100.0))
+    if scale_init <= 0.0 or scale_max < scale_init:
+        raise ValueError(
+            "scaled-cosine BCE requires 0 < logit_scale_init <= logit_scale_max"
+        )
+    loss_tag = loss_type
 
     lora_type = str(model_args.get("lora_type", "default")).lower()
     lora_config = model_args.get("lora_config")

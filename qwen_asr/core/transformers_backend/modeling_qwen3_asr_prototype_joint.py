@@ -24,10 +24,8 @@ class JointDomainIntentPrototypeHead(nn.Module):
         self,
         hidden_size: int,
         num_domain_intents: int,
-        temperature: float = 1.0,
         normalize: bool = True,
         use_projection_head: bool = False,
-        loss_type: str = "bce",
         logit_scale_init: float = 10.0,
         logit_scale_max: float = 100.0,
         logit_bias_init: float | None = None,
@@ -38,21 +36,14 @@ class JointDomainIntentPrototypeHead(nn.Module):
         # intentionally disabled: prototype training now predicts legal
         # domain-intent pairs directly.
         self.domain_intent_prototypes = nn.Embedding(int(num_domain_intents), int(hidden_size))
-        self.temperature = float(temperature)
         self.normalize = bool(normalize)
-        self.loss_type = str(loss_type).lower()
-        self.uses_scaled_cosine_bce = self.loss_type == "bce"
-        if self.uses_scaled_cosine_bce and not self.normalize:
+        if not self.normalize:
             raise ValueError("prototype BCE requires normalize=true for scaled-cosine logits")
-        self.logit_calibration = (
-            LearnableScaledCosine(
-                num_labels=num_domain_intents,
-                scale_init=logit_scale_init,
-                scale_max=logit_scale_max,
-                bias_init=logit_bias_init,
-            )
-            if self.uses_scaled_cosine_bce
-            else None
+        self.logit_calibration = LearnableScaledCosine(
+            num_labels=num_domain_intents,
+            scale_init=logit_scale_init,
+            scale_max=logit_scale_max,
+            bias_init=logit_bias_init,
         )
 
     def forward(self, pooled_hidden: torch.Tensor) -> torch.Tensor:
@@ -64,15 +55,10 @@ class JointDomainIntentPrototypeHead(nn.Module):
             query = F.normalize(query, dim=-1)
             domain_intent_weight = F.normalize(domain_intent_weight, dim=-1)
         similarities = torch.matmul(query, domain_intent_weight.transpose(0, 1))
-        if self.uses_scaled_cosine_bce:
-            return self.logit_calibration(similarities)
-        temperature = max(self.temperature, 1e-6)
-        return similarities / temperature
+        return self.logit_calibration(similarities)
 
     def similarities_from_logits(self, logits: torch.Tensor) -> torch.Tensor:
-        if self.uses_scaled_cosine_bce:
-            return self.logit_calibration.recover_similarities(logits)
-        return logits * max(self.temperature, 1e-6)
+        return self.logit_calibration.recover_similarities(logits)
 
 
 class Qwen3ASRJointPrototypeThinkerForConditionalGeneration(Qwen3ASRThinkerForConditionalGeneration):
@@ -85,10 +71,8 @@ class Qwen3ASRJointPrototypeThinkerForConditionalGeneration(Qwen3ASRThinkerForCo
             self.prototype_head = JointDomainIntentPrototypeHead(
                 hidden_size=config.text_config.hidden_size,
                 num_domain_intents=self.prototype_config.get("num_domain_intents", 0),
-                temperature=self.prototype_config.get("temperature", 1.0),
                 normalize=self.prototype_config.get("normalize", True),
                 use_projection_head=self.prototype_config.get("use_projection_head", False),
-                loss_type=self.prototype_config.get("loss_type", "bce"),
                 logit_scale_init=self.prototype_config.get("logit_scale_init", 10.0),
                 logit_scale_max=self.prototype_config.get("logit_scale_max", 100.0),
                 logit_bias_init=self.prototype_config.get("logit_bias_init"),
@@ -246,10 +230,7 @@ class Qwen3ASRJointPrototypeForConditionalGeneration(Qwen3ASRForConditionalGener
         domain_intent_labels = list(proto_cfg.get("domain_intent_labels", []) or [])
         k_domain_intent = min(int(top_k), domain_intent_logits.size(-1))
         head = self.thinker.prototype_head
-        if head.uses_scaled_cosine_bce:
-            domain_intent_scores = torch.sigmoid(domain_intent_logits.float())
-        else:
-            domain_intent_scores = torch.softmax(domain_intent_logits.float(), dim=-1)
+        domain_intent_scores = torch.sigmoid(domain_intent_logits.float())
         domain_intent_similarities = head.similarities_from_logits(domain_intent_logits.float())
         domain_intent_top = torch.topk(domain_intent_scores, k=k_domain_intent, dim=-1)
 
