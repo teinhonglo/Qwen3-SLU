@@ -39,14 +39,24 @@ class LearnableScaledCosine(nn.Module):
             positive_prior = min(max(positive_prior, 1e-6), 1.0 - 1e-6)
             bias_init = math.log(positive_prior / (1.0 - positive_prior))
 
-        self.logit_scale = nn.Parameter(
-            torch.tensor(math.log(scale_init), dtype=torch.float32)
-        )
-        self.logit_bias = nn.Parameter(torch.tensor(float(bias_init), dtype=torch.float32))
+        self.scale_init = scale_init
+        self.bias_init = float(bias_init)
         self.scale_max = scale_max
+        self.logit_scale = nn.Parameter(torch.empty((), dtype=torch.float32))
+        self.logit_bias = nn.Parameter(torch.empty((), dtype=torch.float32))
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        """Restore the configured calibration initialization."""
+
+        with torch.no_grad():
+            self.logit_scale.fill_(math.log(self.scale_init))
+            self.logit_bias.fill_(self.bias_init)
 
     def scale(self) -> torch.Tensor:
-        return self.logit_scale.exp().clamp(max=self.scale_max)
+        # Clamp in log space so exp() cannot overflow before the upper bound is
+        # applied; exp(inf).clamp(...) can otherwise yield a NaN gradient.
+        return self.logit_scale.clamp(max=math.log(self.scale_max)).exp()
 
     def forward(self, similarities: torch.Tensor) -> torch.Tensor:
         return (
