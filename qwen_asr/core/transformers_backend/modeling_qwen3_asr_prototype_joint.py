@@ -14,7 +14,7 @@ from .modeling_qwen3_asr import (
     Qwen3ASRForConditionalGeneration,
     Qwen3ASRThinkerForConditionalGeneration,
 )
-from .prototype_losses import prototype_multi_label_loss
+from .prototype_losses import LearnableScaledCosine, prototype_multi_label_loss
 
 
 class JointDomainIntentPrototypeHead(nn.Module):
@@ -27,6 +27,10 @@ class JointDomainIntentPrototypeHead(nn.Module):
         temperature: float = 1.0,
         normalize: bool = True,
         use_projection_head: bool = False,
+        loss_type: str = "bce",
+        logit_scale_init: float = 10.0,
+        logit_scale_max: float = 100.0,
+        logit_bias_init: float | None = None,
     ):
         super().__init__()
         self.query_projection = nn.Linear(int(hidden_size), int(hidden_size)) if use_projection_head else None
@@ -36,6 +40,20 @@ class JointDomainIntentPrototypeHead(nn.Module):
         self.domain_intent_prototypes = nn.Embedding(int(num_domain_intents), int(hidden_size))
         self.temperature = float(temperature)
         self.normalize = bool(normalize)
+        self.loss_type = str(loss_type).lower()
+        self.uses_scaled_cosine_bce = self.loss_type == "bce"
+        if self.uses_scaled_cosine_bce and not self.normalize:
+            raise ValueError("prototype BCE requires normalize=true for scaled-cosine logits")
+        self.logit_calibration = (
+            LearnableScaledCosine(
+                num_labels=num_domain_intents,
+                scale_init=logit_scale_init,
+                scale_max=logit_scale_max,
+                bias_init=logit_bias_init,
+            )
+            if self.uses_scaled_cosine_bce
+            else None
+        )
 
     def forward(self, pooled_hidden: torch.Tensor) -> torch.Tensor:
         if self.query_projection is not None:
@@ -45,8 +63,16 @@ class JointDomainIntentPrototypeHead(nn.Module):
         if self.normalize:
             query = F.normalize(query, dim=-1)
             domain_intent_weight = F.normalize(domain_intent_weight, dim=-1)
+        similarities = torch.matmul(query, domain_intent_weight.transpose(0, 1))
+        if self.uses_scaled_cosine_bce:
+            return self.logit_calibration(similarities)
         temperature = max(self.temperature, 1e-6)
-        return torch.matmul(query, domain_intent_weight.transpose(0, 1)) / temperature
+        return similarities / temperature
+
+    def similarities_from_logits(self, logits: torch.Tensor) -> torch.Tensor:
+        if self.uses_scaled_cosine_bce:
+            return self.logit_calibration.recover_similarities(logits)
+        return logits * max(self.temperature, 1e-6)
 
 
 class Qwen3ASRJointPrototypeThinkerForConditionalGeneration(Qwen3ASRThinkerForConditionalGeneration):
@@ -62,6 +88,10 @@ class Qwen3ASRJointPrototypeThinkerForConditionalGeneration(Qwen3ASRThinkerForCo
                 temperature=self.prototype_config.get("temperature", 1.0),
                 normalize=self.prototype_config.get("normalize", True),
                 use_projection_head=self.prototype_config.get("use_projection_head", False),
+                loss_type=self.prototype_config.get("loss_type", "bce"),
+                logit_scale_init=self.prototype_config.get("logit_scale_init", 10.0),
+                logit_scale_max=self.prototype_config.get("logit_scale_max", 100.0),
+                logit_bias_init=self.prototype_config.get("logit_bias_init"),
             )
         else:
             self.prototype_head = None
@@ -215,13 +245,12 @@ class Qwen3ASRJointPrototypeForConditionalGeneration(Qwen3ASRForConditionalGener
         proto_cfg = dict(getattr(self.thinker, "prototype_config", {}) or {})
         domain_intent_labels = list(proto_cfg.get("domain_intent_labels", []) or [])
         k_domain_intent = min(int(top_k), domain_intent_logits.size(-1))
-        temperature = max(float(proto_cfg.get("temperature", 1.0)), 1e-6)
-        domain_intent_scores = torch.softmax(domain_intent_logits.float(), dim=-1)
-        # ``prototype_logits`` returns dot-product prototype scores divided by
-        # temperature.  Multiplying by temperature recovers the raw prototype
-        # similarity used for ranking/threshold analysis.  When the prototype
-        # head is normalized, this value is cosine similarity.
-        domain_intent_similarities = domain_intent_logits.float() * temperature
+        head = self.thinker.prototype_head
+        if head.uses_scaled_cosine_bce:
+            domain_intent_scores = torch.sigmoid(domain_intent_logits.float())
+        else:
+            domain_intent_scores = torch.softmax(domain_intent_logits.float(), dim=-1)
+        domain_intent_similarities = head.similarities_from_logits(domain_intent_logits.float())
         domain_intent_top = torch.topk(domain_intent_scores, k=k_domain_intent, dim=-1)
 
         def pack(top, labels, similarities):
