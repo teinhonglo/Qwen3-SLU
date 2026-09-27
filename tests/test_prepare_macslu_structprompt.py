@@ -9,7 +9,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "local"))
 
-from prepare_macslu_structprompt_jsonl import build_cdi_rows, convert_split
+from prepare_macslu_structprompt_jsonl import build_cdi_rows, convert_split, pii_row
 
 
 def make_row(index: int, intent_count: int) -> dict:
@@ -63,6 +63,64 @@ class PrepareMacSLUStructPromptTest(unittest.TestCase):
                     == pair["reference_intent_count"]
                 )
                 self.assertEqual(pair["cdi_label"], same_count)
+
+    def test_pii_keeps_audio_input(self):
+        source = self.rows[0]
+        result = pii_row(source, random.Random(66))
+
+        self.assertEqual(result["audio"], source["audio"])
+        self.assertNotIn("input_mode", result)
+        self.assertEqual(result["task"], "pii")
+
+    def test_pii_uses_slot_value_candidates_and_targets(self):
+        source = {
+            "text_id": "pii_values",
+            "query": "open the window and close the sunroof",
+            "audio": "audio.wav",
+            "semantics": [
+                {
+                    "domain": "vehicle",
+                    "intent": "control",
+                    "slots": {"action": "open", "object": "window"},
+                    "implicit_slots": {},
+                },
+                {
+                    "domain": "vehicle",
+                    "intent": "control",
+                    "slots": {"action": "close", "object": "sunroof"},
+                    "implicit_slots": {"scope": "all"},
+                },
+            ],
+        }
+        result = pii_row(source, random.Random(66))
+
+        self.assertCountEqual(
+            result["pii_slots"],
+            [
+                {"slot": "action", "value": "open"},
+                {"slot": "object", "value": "window"},
+                {"slot": "action", "value": "close"},
+                {"slot": "object", "value": "sunroof"},
+                {"slot": "scope", "value": "all"},
+            ],
+        )
+        target = json.loads(result["text"].split("<asr_text>", 1)[1])
+        self.assertEqual(
+            target,
+            [
+                {
+                    "domain": "vehicle",
+                    "intent": "control",
+                    "slots": [
+                        {"slot": "action", "value": "open"},
+                        {"slot": "object", "value": "window"},
+                        {"slot": "action", "value": "close"},
+                        {"slot": "object", "value": "sunroof"},
+                        {"slot": "scope", "value": "all"},
+                    ],
+                }
+            ],
+        )
 
     def test_repeats_slu_and_pii_to_match_cdi_count(self):
         with tempfile.TemporaryDirectory() as tmpdir:

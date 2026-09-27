@@ -11,18 +11,18 @@ from typing import Iterable
 
 PII_PROMPT_TEMPLATE = """你是一个专业的车载系统自然语言理解（NLU）专家。
 你的任务是基于用户的查询（Query），完成以下任务：
-1.  关系识别 (Pairwise Interaction): 已知当前用户语音中包含的 Domain–Intent 与 Slot 标签，建立每个 Domain–Intent 与其对应 Slot 之间的关系。
+1.  关系识别 (Pairwise Interaction): 已知当前用户语音中包含的 Domain–Intent 与 Slot–Value 对，建立每个 Domain–Intent 与其对应 Slot–Value 之间的关系。
 
 你需要严格遵循以下规则：
-1.  每个 Slot 必须归属于正确的 Domain–Intent semantic frame。
-2.  只输出 Slot 名称，不输出 Slot Value。
+1.  每个 Slot–Value 对必须归属于正确的 Domain–Intent semantic frame。
+2.  每个 Slot–Value 对以 {{"slot":"...","value":"..."}} 格式输出。
 3.  按照 semantic frame 首次出现顺序输出。
 4.  最终回答中除了指定 JSON，不要包含其他文字。
 
 Domain–Intent 候选：
 {domain_intents}
 
-Slot 候选：
+Slot–Value 候选：
 {slots}"""
 
 CDI_PROMPT_TEMPLATE = """你是一个专业的车载系统自然语言理解（NLU）专家。
@@ -117,25 +117,27 @@ def unique_domain_intents(frames: Iterable[dict]) -> list[dict]:
     return values
 
 
-def unique_slot_names(frames: Iterable[dict]) -> list[str]:
-    names = []
+def unique_slot_values(frames: Iterable[dict]) -> list[dict]:
+    values = []
     seen = set()
     for frame in frames:
         for field in ("slots", "implicit_slots"):
             slots = frame.get(field, {})
             if not isinstance(slots, dict):
                 continue
-            for name in slots:
+            for name, value in slots.items():
                 name = str(name)
-                if name in seen:
+                value = str(value)
+                key = (name, value)
+                if key in seen:
                     continue
-                seen.add(name)
-                names.append(name)
-    return names
+                seen.add(key)
+                values.append({"slot": name, "value": value})
+    return values
 
 
 def pairwise_target(frames: Iterable[dict]) -> list[dict]:
-    relations: OrderedDict[tuple[str, str], list[str]] = OrderedDict()
+    relations: OrderedDict[tuple[str, str], list[dict]] = OrderedDict()
     for frame in frames:
         domain = frame.get("domain")
         intent = frame.get("intent")
@@ -144,17 +146,19 @@ def pairwise_target(frames: Iterable[dict]) -> list[dict]:
         if not isinstance(intent, str):
             intent = ""
         key = (domain, intent)
-        slot_names = relations.setdefault(key, [])
-        seen = set(slot_names)
+        slot_values = relations.setdefault(key, [])
+        seen = {(item["slot"], item["value"]) for item in slot_values}
         for field in ("slots", "implicit_slots"):
             slots = frame.get(field, {})
             if not isinstance(slots, dict):
                 continue
-            for name in slots:
+            for name, value in slots.items():
                 name = str(name)
-                if name not in seen:
-                    seen.add(name)
-                    slot_names.append(name)
+                value = str(value)
+                slot_value = (name, value)
+                if slot_value not in seen:
+                    seen.add(slot_value)
+                    slot_values.append({"slot": name, "value": value})
     return [
         {"domain": domain, "intent": intent, "slots": slots}
         for (domain, intent), slots in relations.items()
@@ -184,7 +188,7 @@ def slu_row(row: dict) -> dict:
 def pii_row(row: dict, rng: random.Random) -> dict:
     frames = semantic_frames(row)
     domain_intents = unique_domain_intents(frames)
-    slots = unique_slot_names(frames)
+    slots = unique_slot_values(frames)
 
     domain_intent_candidates = list(domain_intents)
     slot_candidates = list(slots)

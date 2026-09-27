@@ -66,11 +66,13 @@ def parse_json_list(raw_text: str) -> list | None:
         return None
 
 
-def normalize_pii(value: Any) -> dict[tuple[str, str], frozenset[str]] | None:
+def normalize_pii(
+    value: Any,
+) -> dict[tuple[str, str], frozenset[tuple[str, str]]] | None:
     if not isinstance(value, list):
         return None
 
-    relations: dict[tuple[str, str], set[str]] = {}
+    relations: dict[tuple[str, str], set[tuple[str, str]]] = {}
     for item in value:
         if not isinstance(item, dict):
             return None
@@ -83,23 +85,29 @@ def normalize_pii(value: Any) -> dict[tuple[str, str], frozenset[str]] | None:
             return None
         if not isinstance(slots, list):
             return None
-        if not all(isinstance(slot, str) and slot.strip() for slot in slots):
-            return None
-
         key = (domain.strip(), intent.strip())
         slot_set = relations.setdefault(key, set())
-        slot_set.update(slot.strip() for slot in slots)
+        for slot_value in slots:
+            if not isinstance(slot_value, dict):
+                return None
+            slot = slot_value.get("slot")
+            value = slot_value.get("value")
+            if not isinstance(slot, str) or not slot.strip():
+                return None
+            if not isinstance(value, str):
+                return None
+            slot_set.add((slot.strip(), value.strip()))
 
     return {key: frozenset(slots) for key, slots in relations.items()}
 
 
 def relation_pair_set(
-    mapping: dict[tuple[str, str], frozenset[str]]
-) -> set[tuple[str, str, str]]:
+    mapping: dict[tuple[str, str], frozenset[tuple[str, str]]]
+) -> set[tuple[str, str, str, str]]:
     return {
-        (domain, intent, slot)
+        (domain, intent, slot, value)
         for (domain, intent), slots in mapping.items()
-        for slot in slots
+        for slot, value in slots
     }
 
 
@@ -115,7 +123,7 @@ def prf(tp: int, fp: int, fn: int) -> dict[str, float]:
 
 
 def candidate_valid(
-    pred: dict[tuple[str, str], frozenset[str]] | None,
+    pred: dict[tuple[str, str], frozenset[tuple[str, str]]] | None,
     gt_row: dict,
 ) -> bool:
     if pred is None:
@@ -127,15 +135,15 @@ def candidate_valid(
         if isinstance(item, dict)
     }
     candidate_slots = {
-        str(slot).strip()
-        for slot in gt_row.get("pii_slots", [])
-        if str(slot).strip()
+        (str(item.get("slot", "")).strip(), str(item.get("value", "")).strip())
+        for item in gt_row.get("pii_slots", [])
+        if isinstance(item, dict) and str(item.get("slot", "")).strip()
     }
 
     for key, slots in pred.items():
         if key not in candidate_di:
             return False
-        if any(slot not in candidate_slots for slot in slots):
+        if any(slot_value not in candidate_slots for slot_value in slots):
             return False
     return True
 
@@ -213,11 +221,25 @@ def evaluate_pii(pred_rows: list[dict], gt_rows: list[dict]) -> tuple[dict, list
                 "candidate_valid": is_candidate_valid,
                 "relation_exact": is_exact,
                 "gold_relation": [
-                    {"domain": d, "intent": i, "slots": sorted(slots)}
+                    {
+                        "domain": d,
+                        "intent": i,
+                        "slots": [
+                            {"slot": slot, "value": value}
+                            for slot, value in sorted(slots)
+                        ],
+                    }
                     for (d, i), slots in sorted(gold.items())
                 ],
                 "pred_relation": [
-                    {"domain": d, "intent": i, "slots": sorted(slots)}
+                    {
+                        "domain": d,
+                        "intent": i,
+                        "slots": [
+                            {"slot": slot, "value": value}
+                            for slot, value in sorted(slots)
+                        ],
+                    }
                     for (d, i), slots in sorted(pred.items())
                 ],
                 "di_tp": di_tp_i,
@@ -243,7 +265,7 @@ def evaluate_pii(pred_rows: list[dict], gt_rows: list[dict]) -> tuple[dict, list
             "fp": di_fp,
             "fn": di_fn,
         },
-        "intent_slot_pair_micro": {
+        "intent_slot_value_pair_micro": {
             **prf(pair_tp, pair_fp, pair_fn),
             "tp": pair_tp,
             "fp": pair_fp,
@@ -379,7 +401,7 @@ def pct(value: float) -> str:
 def format_metrics(metrics: dict) -> str:
     if metrics["task"] == "pii":
         di = metrics["domain_intent_micro"]
-        pair = metrics["intent_slot_pair_micro"]
+        pair = metrics["intent_slot_value_pair_micro"]
         return "\n".join(
             [
                 "PII Evaluation",
@@ -390,7 +412,7 @@ def format_metrics(metrics: dict) -> str:
                 f"Candidate Valid Rate: {pct(metrics['candidate_valid_rate'])}",
                 f"Relation Exact Match: {pct(metrics['relation_exact_match'])}",
                 f"Domain-Intent Micro P/R/F1: {pct(di['precision'])} / {pct(di['recall'])} / {pct(di['f1'])}",
-                f"Intent-Slot Pair Micro P/R/F1: {pct(pair['precision'])} / {pct(pair['recall'])} / {pct(pair['f1'])}",
+                f"Intent-Slot-Value Pair Micro P/R/F1: {pct(pair['precision'])} / {pct(pair['recall'])} / {pct(pair['f1'])}",
             ]
         )
 
