@@ -37,14 +37,22 @@
         "temperature": 1.0,
         "top_p": 1.0,
         "freeze_components": [],
+        "lora_type": "adapter_head",
+        "lora_config": null,
         "wandb_project": "qwen3-asr-finetuning",
         "wandb_log_model": "false",
         "prototype": {
             "enabled": true,
             "k": 5,
+            "metric_ks": [
+                1,
+                3,
+                5
+            ],
             "labels_path": "data/macslu/labels.txt",
             "schema_path": "",
             "prototype_json": "data/macslu/prototypes/domain_intent_prototypes.json",
+            "prototype_source": "audio_only",
             "pooling": "mean_pooling",
             "normalize": true,
             "loss_type": "bce",

@@ -184,6 +184,24 @@ def resolve_model(args):
     return wrapper, model_args_conf
 
 
+def resolve_prototype_settings(args) -> Tuple[str, str]:
+    source = args.prototype_source
+    pooling = args.prototype_pooling
+    if args.prototype_config:
+        _, model_args_conf = load_train_conf_file(args.prototype_config)
+        prototype_conf = dict(model_args_conf.get("prototype", {}) or {})
+        source = str(prototype_conf.get("prototype_source", source))
+        pooling = str(prototype_conf.get("pooling", pooling))
+
+    valid_sources = {"audio_only", "audio_prompt", "audio_prefix", "text_prefix"}
+    valid_pooling = {"mean_pooling", "last_hidden_state"}
+    if source not in valid_sources:
+        raise ValueError(f"Unsupported prototype_source: {source}")
+    if pooling not in valid_pooling:
+        raise ValueError(f"Unsupported prototype pooling: {pooling}")
+    return source, pooling
+
+
 def _example_record(ex: Dict[str, Any], vec: List[float], split: str) -> Dict[str, Any]:
     meta = dict(ex.get("meta", {}) or {})
     return {
@@ -321,6 +339,7 @@ def parse_args():
     p.add_argument("--test_examples_jsonl", default="")
     p.add_argument("--exp_dir", default="", help="Existing experiment/checkpoint root used as embedding source")
     p.add_argument("--train_conf", default="", help="Train config used to initialize the embedding source when --exp_dir is empty")
+    p.add_argument("--prototype_config", default="", help="Prototype config that defines source and pooling")
     p.add_argument("--auto_latest_checkpoint", action="store_true")
     p.add_argument("--auto_best_checkpoint", action="store_true")
     p.add_argument("--device", default="cuda:0")
@@ -338,6 +357,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    prototype_source, prototype_pooling = resolve_prototype_settings(args)
     rows = load_jsonl(args.train_jsonl)
     test_rows = load_jsonl(args.test_jsonl) if args.test_jsonl else []
     label_schema = MACSLULabelSchema(labels_path=args.labels_path, schema_path=args.schema_path)
@@ -349,14 +369,14 @@ def main():
         wrapper.model,
         processor=wrapper.processor,
         device=args.device,
-        pooling=args.prototype_pooling,
+        pooling=prototype_pooling,
         sample_rate=int(model_args_conf.get("sr", 16000)),
     )
 
     audio_embedder = AudioStatsPrefixEmbedder(text_embedder, sample_rate=int(model_args_conf.get("sr", 16000)))
     embedder = PrototypeSourceEmbedder(
-        audio_embedder if args.prototype_source in {"audio_only", "audio_prompt", "audio_prefix"} else text_embedder,
-        args.prototype_source,
+        audio_embedder if prototype_source in {"audio_only", "audio_prompt", "audio_prefix"} else text_embedder,
+        prototype_source,
     )
     examples = list(iter_prefix_examples(rows, label_schema))
     test_examples = list(iter_prefix_examples(test_rows, label_schema)) if test_rows else []
@@ -370,8 +390,8 @@ def main():
     write_jsonl(args.train_examples_jsonl, sample_embedded_examples(train_instance_rows, args.max_instance_examples_per_label))
     write_jsonl(args.test_examples_jsonl, sample_embedded_examples(test_instance_rows, args.max_instance_examples_per_label))
     obj = {
-        "prototype_source": args.prototype_source,
-        "prototype_pooling": args.prototype_pooling,
+        "prototype_source": prototype_source,
+        "prototype_pooling": prototype_pooling,
         "embedding_backend": "hidden_state",
         "label_schema": label_schema.to_dict(),
         **sections,

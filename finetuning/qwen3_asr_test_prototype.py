@@ -48,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default="cuda:0")
     p.add_argument("--prototype_top_k", type=int, default=0)
     p.add_argument("--prototype_min_similarity", type=float, default=-1.0, help="Filter candidates when building augmented JSONL/prompts; -1 auto-selects on dev F1")
-    p.add_argument("--prototype_metric_ks", nargs="+", type=int, default=[1, 3, 5], help="K values for prototype ranking metrics")
+    p.add_argument("--prototype_metric_ks", nargs="+", type=int, default=None, help="K values for prototype ranking metrics; defaults to the training config")
     p.add_argument("--checkpoint_mode", choices=["best", "latest", "exp_dir"], default="best")
     return p.parse_args()
 
@@ -607,7 +607,8 @@ def run_inference_and_build_data(args: argparse.Namespace) -> None:
     )
     model, processor, _ = load_prototype_model(checkpoint_args, model_args_conf, dtype)
     prototype_top_k = int(args.prototype_top_k or prototype_conf.get("k", 5))
-    metric_ks = sorted({int(k) for k in args.prototype_metric_ks if int(k) > 0 and int(k) <= prototype_top_k} | {prototype_top_k})
+    configured_metric_ks = args.prototype_metric_ks or prototype_conf.get("metric_ks", [1, 3, 5])
+    metric_ks = sorted({int(k) for k in configured_metric_ks if int(k) > 0 and int(k) <= prototype_top_k} | {prototype_top_k})
     prompt_template = get_prompt_template(prototype_conf)
     prototype_source = str(prototype_conf.get("prototype_source", "audio_only"))
     split_to_file = {"train": args.train_file, "dev": args.dev_file, "test": args.test_file}

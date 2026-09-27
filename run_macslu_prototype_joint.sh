@@ -11,7 +11,7 @@
 #         prototype JSON.
 # Stage 3 uses the trained prototype-only model to predict train/dev/test
 #         joint domain-intent candidates, writes metrics_proto.txt for every split,
-#         and creates ${json_root}_prototype_joint.
+#         and creates a joint prototype-config-scoped JSON root.
 # Stage 4 trains the regular MAC-SLU model on the prototype-augmented JSONL data
 #         by invoking run_macslu.sh with --json_root.
 
@@ -25,19 +25,11 @@ json_root="data-json/macslu_fixed"
 labels_path=${data_root}/labels.txt
 prompt_file=""   # Empty uses prepare_macslu_jsonl.py built-in prompt.
 
-# prototype-only adapter-head finetune config
-prototype_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead_prototype.json"
+# Prototype training and retrieval settings come exclusively from this config.
+# Its filename is also used as the experiment tag.
+prototype_train_conf="conf/macslu_qwen3_asr_17b_ep10_lora_woemblmhead_prototype_audio_prompt_last_hidden_state_bce.json"
 
-# Defaults come from model_args.prototype in prototype_train_conf:
-# k=5, metric_ks=[1, 3, 5], prototype_source=audio_prompt, and pooling=last_hidden_state.
-# Any non-empty value below, including a corresponding CLI option, overrides the config value.
-# BCE scaled-cosine settings come from the config; the automatic loss tag is simply "bce".
-prototype_top_k=
-prototype_metric_ks=
-prototype_source=
-prototype_pooling=
 prototype_min_similarity="-1"       # -1 auto-selects on dev; empty keeps all top-k candidates in generated data-json prompts.
-prototype_variant=""                  # Empty auto-tags output dirs with source, pooling, finetune type, loss, and source-model epoch.
 
 # Step 1 source model for prototype extraction. Empty means initialize the source
 # model from downstream_train_conf instead of loading an existing experiment.
@@ -50,7 +42,6 @@ skip_prototype_tsne=0
 
 # downstream MAC-SLU config; run_macslu.sh appends the train-conf tag under this root.
 downstream_train_conf="conf/macslu_qwen3_asr_17b_ep20_lora_woemblmhead.json"
-downstream_exp_root="exp/macslu_prototype"
 downstream_extra_opts=""
 
 # model/runtime config
@@ -72,26 +63,7 @@ if [ ! -f "$prototype_train_conf" ]; then
     exit 1
 fi
 
-prototype_conf_defaults=$(python local/prototype_run_config.py defaults --config "$prototype_train_conf")
-mapfile -t prototype_conf_values <<< "$prototype_conf_defaults"
-if [ "${#prototype_conf_values[@]}" -ne 6 ]; then
-    echo "[ERROR] failed to resolve prototype defaults from $prototype_train_conf"
-    exit 1
-fi
-prototype_finetune_type=${prototype_conf_values[0]}
-prototype_loss_tag=${prototype_conf_values[5]}
-if [ -z "$prototype_top_k" ]; then
-    prototype_top_k=${prototype_conf_values[1]}
-fi
-if [ -z "$prototype_metric_ks" ]; then
-    prototype_metric_ks=${prototype_conf_values[2]}
-fi
-if [ -z "$prototype_source" ]; then
-    prototype_source=${prototype_conf_values[3]}
-fi
-if [ -z "$prototype_pooling" ]; then
-    prototype_pooling=${prototype_conf_values[4]}
-fi
+prototype_conf_tag=$(basename -s .json "$prototype_train_conf")
 
 prototype_src_ep="src_ep_unknown"
 if [ "$src_model" = "" ]; then
@@ -103,15 +75,12 @@ else
     fi
 fi
 
-if [ "$prototype_variant" = "" ]; then
-    prototype_variant="${prototype_source}_${prototype_pooling}_${prototype_finetune_type}_${prototype_loss_tag}_${prototype_src_ep}"
-fi
-
-prototype_json_root=${json_root}_prototype_joint_${prototype_variant}
-downstream_exp_root=${exp_root}_prototype_joint_${prototype_variant}
+prototype_run_tag="${prototype_conf_tag}_${prototype_src_ep}"
+prototype_json_root=${json_root}_joint_${prototype_run_tag}
+downstream_exp_root=${exp_root}_joint_${prototype_run_tag}
 prototype_schema_path=${prototype_json_root}/schema.json
 prototype_domain_intents_txt=${prototype_json_root}/domain-intents.txt
-prototype_exp_dir=${exp_root}/prototype_joint_${prototype_variant}
+prototype_exp_dir=${exp_root}/joint_${prototype_run_tag}
 prototype_runtime_conf=${prototype_json_root}/prototype_runtime.json
 prototype_init_json=${prototype_json_root}/prototype_init.json
 prototype_train_examples_jsonl=${prototype_json_root}/prototype_train_examples.jsonl
@@ -142,11 +111,7 @@ write_prototype_runtime_conf() {
         --output "$output_conf" \
         --labels-path "$labels_path" \
         --schema-path "$prototype_schema_path" \
-        --prototype-json "$init_json" \
-        --top-k "$prototype_top_k" \
-        --metric-ks $prototype_metric_ks \
-        --source "$prototype_source" \
-        --pooling "$prototype_pooling"
+        --prototype-json "$init_json"
 }
 
 prototype_checkpoint_opt() {
@@ -216,9 +181,8 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
                 --train_examples_jsonl "$prototype_train_examples_jsonl" \
                 --test_examples_jsonl "$prototype_test_examples_jsonl" \
                 "${build_source_opts[@]}" \
-                --device cuda:0 \
-                --prototype_source "$prototype_source" \
-                --prototype_pooling "$prototype_pooling"
+                --prototype_config "$prototype_train_conf" \
+                --device cuda:0
     else
         echo "[info] skip prototype JSON build; reuse $prototype_init_json"
     fi
@@ -271,7 +235,7 @@ fi
 if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     echo "Stage 3: Joint prototype train/dev/test inference and jsonl generation"
     mkdir -p "$prototype_json_root"
-    prototype_infer_opts=(--prototype_metric_ks $prototype_metric_ks)
+    prototype_infer_opts=()
     if [ -n "$prototype_min_similarity" ]; then
         prototype_infer_opts+=(--prototype_min_similarity "$prototype_min_similarity")
     fi
@@ -283,7 +247,6 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
             --test_file "${json_root}/test.jsonl" \
             --output_jsonl_dir "$prototype_json_root" \
             --prediction_root "$prototype_exp_dir" \
-            --prototype_top_k "$prototype_top_k" \
             "${prototype_infer_opts[@]}" \
             --checkpoint_mode "$checkpoint_mode" \
             --device cuda:0
