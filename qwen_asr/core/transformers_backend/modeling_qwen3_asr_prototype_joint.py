@@ -14,6 +14,7 @@ from .modeling_qwen3_asr import (
     Qwen3ASRForConditionalGeneration,
     Qwen3ASRThinkerForConditionalGeneration,
 )
+from .prototype_losses import LearnableScaledCosine, prototype_multi_label_loss
 
 
 class JointDomainIntentPrototypeHead(nn.Module):
@@ -23,9 +24,11 @@ class JointDomainIntentPrototypeHead(nn.Module):
         self,
         hidden_size: int,
         num_domain_intents: int,
-        temperature: float = 1.0,
         normalize: bool = True,
         use_projection_head: bool = False,
+        logit_scale_init: float = 10.0,
+        logit_scale_max: float = 100.0,
+        logit_bias_init: float | None = None,
     ):
         super().__init__()
         self.query_projection = nn.Linear(int(hidden_size), int(hidden_size)) if use_projection_head else None
@@ -33,8 +36,15 @@ class JointDomainIntentPrototypeHead(nn.Module):
         # intentionally disabled: prototype training now predicts legal
         # domain-intent pairs directly.
         self.domain_intent_prototypes = nn.Embedding(int(num_domain_intents), int(hidden_size))
-        self.temperature = float(temperature)
         self.normalize = bool(normalize)
+        if not self.normalize:
+            raise ValueError("prototype BCE requires normalize=true for scaled-cosine logits")
+        self.logit_calibration = LearnableScaledCosine(
+            num_labels=num_domain_intents,
+            scale_init=logit_scale_init,
+            scale_max=logit_scale_max,
+            bias_init=logit_bias_init,
+        )
 
     def forward(self, pooled_hidden: torch.Tensor) -> torch.Tensor:
         if self.query_projection is not None:
@@ -44,8 +54,11 @@ class JointDomainIntentPrototypeHead(nn.Module):
         if self.normalize:
             query = F.normalize(query, dim=-1)
             domain_intent_weight = F.normalize(domain_intent_weight, dim=-1)
-        temperature = max(self.temperature, 1e-6)
-        return torch.matmul(query, domain_intent_weight.transpose(0, 1)) / temperature
+        similarities = torch.matmul(query, domain_intent_weight.transpose(0, 1))
+        return self.logit_calibration(similarities)
+
+    def similarities_from_logits(self, logits: torch.Tensor) -> torch.Tensor:
+        return self.logit_calibration.recover_similarities(logits)
 
 
 class Qwen3ASRJointPrototypeThinkerForConditionalGeneration(Qwen3ASRThinkerForConditionalGeneration):
@@ -58,9 +71,11 @@ class Qwen3ASRJointPrototypeThinkerForConditionalGeneration(Qwen3ASRThinkerForCo
             self.prototype_head = JointDomainIntentPrototypeHead(
                 hidden_size=config.text_config.hidden_size,
                 num_domain_intents=self.prototype_config.get("num_domain_intents", 0),
-                temperature=self.prototype_config.get("temperature", 1.0),
                 normalize=self.prototype_config.get("normalize", True),
                 use_projection_head=self.prototype_config.get("use_projection_head", False),
+                logit_scale_init=self.prototype_config.get("logit_scale_init", 10.0),
+                logit_scale_max=self.prototype_config.get("logit_scale_max", 100.0),
+                logit_bias_init=self.prototype_config.get("logit_bias_init"),
             )
         else:
             self.prototype_head = None
@@ -120,12 +135,13 @@ class Qwen3ASRJointPrototypeThinkerForConditionalGeneration(Qwen3ASRThinkerForCo
             pooling=str(self.prototype_config.get("pooling", "mean_pooling")),
         )
         domain_intent_logits = self.prototype_head(pooled_hidden)
-        domain_intent_targets = domain_intent_labels.to(domain_intent_logits.device, dtype=domain_intent_logits.dtype)
-        if domain_intent_targets.dim() != 2:
-            raise ValueError("domain_intent_labels must be a multi-hot tensor with shape (batch, num_domain_intents)")
         proto_loss = (
             float(self.prototype_config.get("domain_intent_loss_weight", 1.0))
-            * F.binary_cross_entropy_with_logits(domain_intent_logits, domain_intent_targets)
+            * prototype_multi_label_loss(
+                domain_intent_logits,
+                domain_intent_labels,
+                self.prototype_config,
+            )
             * float(self.prototype_config.get("loss_weight", 1.0))
         )
         total_loss = proto_loss if outputs.loss is None else outputs.loss + proto_loss
@@ -213,13 +229,9 @@ class Qwen3ASRJointPrototypeForConditionalGeneration(Qwen3ASRForConditionalGener
         proto_cfg = dict(getattr(self.thinker, "prototype_config", {}) or {})
         domain_intent_labels = list(proto_cfg.get("domain_intent_labels", []) or [])
         k_domain_intent = min(int(top_k), domain_intent_logits.size(-1))
-        temperature = max(float(proto_cfg.get("temperature", 1.0)), 1e-6)
-        domain_intent_scores = torch.softmax(domain_intent_logits.float(), dim=-1)
-        # ``prototype_logits`` returns dot-product prototype scores divided by
-        # temperature.  Multiplying by temperature recovers the raw prototype
-        # similarity used for ranking/threshold analysis.  When the prototype
-        # head is normalized, this value is cosine similarity.
-        domain_intent_similarities = domain_intent_logits.float() * temperature
+        head = self.thinker.prototype_head
+        domain_intent_scores = torch.sigmoid(domain_intent_logits.float())
+        domain_intent_similarities = head.similarities_from_logits(domain_intent_logits.float())
         domain_intent_top = torch.topk(domain_intent_scores, k=k_domain_intent, dim=-1)
 
         def pack(top, labels, similarities):

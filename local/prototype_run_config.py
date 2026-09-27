@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 
 VALID_SOURCES = {"audio_only", "audio_prompt", "audio_prefix", "text_prefix"}
 VALID_POOLING = {"mean_pooling", "last_hidden_state"}
+VALID_LOSS_TYPES = {"bce"}
 
 
 def load_train_conf(path: str) -> List[Dict[str, Any]]:
@@ -24,7 +25,7 @@ def load_train_conf(path: str) -> List[Dict[str, Any]]:
 def resolve_defaults(path: str) -> Dict[str, Any]:
     _, model_args = load_train_conf(path)
     prototype = model_args.get("prototype", {}) or {}
-    required = ("k", "metric_ks", "prototype_source", "pooling")
+    required = ("k", "prototype_source", "pooling")
     missing = [key for key in required if key not in prototype]
     if missing:
         raise KeyError(
@@ -33,30 +34,27 @@ def resolve_defaults(path: str) -> Dict[str, Any]:
         )
 
     top_k = int(prototype["k"])
-    metric_ks = [int(value) for value in prototype["metric_ks"]]
     source = str(prototype["prototype_source"])
     pooling = str(prototype["pooling"])
-    if top_k <= 0 or not metric_ks or any(value <= 0 for value in metric_ks):
-        raise ValueError("prototype k and metric_ks must contain positive integers")
+    loss_type = str(prototype.get("loss_type", "bce")).lower()
+    if top_k <= 0:
+        raise ValueError("prototype k must be a positive integer")
     if source not in VALID_SOURCES:
         raise ValueError(f"unsupported prototype_source: {source}")
     if pooling not in VALID_POOLING:
         raise ValueError(f"unsupported prototype pooling: {pooling}")
-
-    lora_type = str(model_args.get("lora_type", "default")).lower()
-    lora_config = model_args.get("lora_config")
-    if lora_type == "adapter_head":
-        finetune_type = "adapter_head"
-    elif lora_type == "qlora":
-        finetune_type = "qlora"
-    elif lora_config:
-        finetune_type = "lora"
-    else:
-        finetune_type = "full_ft"
+    if loss_type not in VALID_LOSS_TYPES:
+        raise ValueError(f"unsupported prototype loss_type: {loss_type}")
+    if not bool(prototype.get("normalize", True)):
+        raise ValueError("prototype BCE requires prototype.normalize=true")
+    scale_init = float(prototype.get("logit_scale_init", 10.0))
+    scale_max = float(prototype.get("logit_scale_max", 100.0))
+    if scale_init <= 0.0 or scale_max < scale_init:
+        raise ValueError(
+            "scaled-cosine BCE requires 0 < logit_scale_init <= logit_scale_max"
+        )
     return {
-        "finetune_type": finetune_type,
         "top_k": top_k,
-        "metric_ks": metric_ks,
         "source": source,
         "pooling": pooling,
     }
@@ -64,9 +62,7 @@ def resolve_defaults(path: str) -> Dict[str, Any]:
 
 def command_defaults(args: argparse.Namespace) -> None:
     defaults = resolve_defaults(args.config)
-    print(defaults["finetune_type"])
     print(defaults["top_k"])
-    print(" ".join(str(value) for value in defaults["metric_ks"]))
     print(defaults["source"])
     print(defaults["pooling"])
 
@@ -74,10 +70,11 @@ def command_defaults(args: argparse.Namespace) -> None:
 def command_materialize(args: argparse.Namespace) -> None:
     config = load_train_conf(args.config)
     training_args, model_args = config
+    defaults = resolve_defaults(args.config)
     best_metric = str(training_args.get("metric_for_best_model", ""))
     if not best_metric or best_metric.startswith("eval_domain_intent_all_gold_covered@"):
         training_args["metric_for_best_model"] = (
-            f"eval_domain_intent_all_gold_covered@{args.top_k}"
+            f"eval_domain_intent_all_gold_covered@{defaults['top_k']}"
         )
 
     prototype = dict(model_args.get("prototype", {}) or {})
@@ -87,10 +84,6 @@ def command_materialize(args: argparse.Namespace) -> None:
             "labels_path": args.labels_path,
             "schema_path": args.schema_path,
             "prototype_json": args.prototype_json,
-            "k": args.top_k,
-            "metric_ks": args.metric_ks,
-            "prototype_source": args.source,
-            "pooling": args.pooling,
         }
     )
     prototype.pop("init_path", None)
@@ -118,10 +111,6 @@ def build_parser() -> argparse.ArgumentParser:
     materialize.add_argument("--labels-path", required=True)
     materialize.add_argument("--schema-path", required=True)
     materialize.add_argument("--prototype-json", required=True)
-    materialize.add_argument("--top-k", type=int, required=True)
-    materialize.add_argument("--metric-ks", nargs="+", type=int, required=True)
-    materialize.add_argument("--source", choices=sorted(VALID_SOURCES), required=True)
-    materialize.add_argument("--pooling", choices=sorted(VALID_POOLING), required=True)
     materialize.set_defaults(func=command_materialize)
     return parser
 
