@@ -44,10 +44,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--test_file", type=str, required=True)
     p.add_argument("--output_jsonl_dir", type=str, default="data-json/macslu_prototype")
     p.add_argument(
-        "--gold_output_jsonl_dir",
-        type=str,
-        default="",
-        help="Optional output directory for JSONL prompts guided by gold domain and intent labels",
+        "--guidance_source",
+        choices=["predicted", "gold"],
+        default="predicted",
+        help="Use prototype predictions or gold domain/intent labels when building guidance JSONL",
     )
     p.add_argument("--prediction_root", type=str, default="")
     p.add_argument("--splits", nargs="+", default=["train", "dev", "test"], choices=["train", "dev", "test"])
@@ -687,20 +687,33 @@ def run_inference_and_build_data(args: argparse.Namespace) -> None:
             prompt_template,
             selected_min_similarity,
         )
-        if args.gold_output_jsonl_dir:
-            build_augmented_data(
-                result["input_jsonl"],
-                result["pred_rows"],
-                os.path.join(args.gold_output_jsonl_dir, f"{split}.jsonl"),
-                prompt_template,
-                None,
-                candidate_source="gold",
-            )
+
+
+def build_gold_guidance_data(args: argparse.Namespace) -> None:
+    train_conf_path = os.path.join(args.exp_dir, "train_conf.json")
+    train_conf = load_train_conf(train_conf_path)
+    _, model_args_conf = train_conf
+    prototype_conf = dict(model_args_conf.get("prototype", {}) or {})
+    prompt_template = get_prompt_template(prototype_conf)
+    split_to_file = {"train": args.train_file, "dev": args.dev_file, "test": args.test_file}
+
+    for split in args.splits:
+        build_augmented_data(
+            split_to_file[split],
+            [],
+            os.path.join(args.output_jsonl_dir, f"{split}.jsonl"),
+            prompt_template,
+            None,
+            candidate_source="gold",
+        )
 
 
 def main() -> None:
     args = parse_args()
-    run_inference_and_build_data(args)
+    if args.guidance_source == "gold":
+        build_gold_guidance_data(args)
+    else:
+        run_inference_and_build_data(args)
 
 
 if __name__ == "__main__":
