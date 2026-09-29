@@ -43,6 +43,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dev_file", type=str, required=True)
     p.add_argument("--test_file", type=str, required=True)
     p.add_argument("--output_jsonl_dir", type=str, default="data-json/macslu_prototype")
+    p.add_argument(
+        "--gold_output_jsonl_dir",
+        type=str,
+        default="",
+        help="Optional output directory for JSONL prompts guided by gold domain and intent labels",
+    )
     p.add_argument("--prediction_root", type=str, default="")
     p.add_argument("--splits", nargs="+", default=["train", "dev", "test"], choices=["train", "dev", "test"])
     p.add_argument("--device", type=str, default="cuda:0")
@@ -492,34 +498,49 @@ def build_augmented_data(
     output_jsonl: str,
     prompt_template: Dict[str, str],
     min_similarity: Optional[float],
+    candidate_source: str = "predicted",
 ) -> None:
+    if candidate_source not in {"predicted", "gold"}:
+        raise ValueError(f"Unsupported candidate_source: {candidate_source}")
+
     rows = read_jsonl(input_jsonl)
     by_id = {str(r.get("text_id", "")): r for r in pred_rows}
     augmented = []
     for idx, row in enumerate(rows, start=1):
         text_id = str(row.get("text_id", f"line{idx}")).strip()
-        pred = by_id.get(text_id, {})
         item = dict(row)
-        filtered_domains, filtered_domain_similarities = filter_by_similarity(
-            pred.get("pred_domains", []), pred.get("pred_domains_similarity", []), min_similarity
-        )
-        filtered_intents, filtered_intent_similarities = filter_by_similarity(
-            pred.get("pred_intents", []), pred.get("pred_intents_similarity", []), min_similarity
-        )
+        if candidate_source == "predicted":
+            pred = by_id.get(text_id, {})
+            candidate_domains, domain_similarities = filter_by_similarity(
+                pred.get("pred_domains", []), pred.get("pred_domains_similarity", []), min_similarity
+            )
+            candidate_intents, intent_similarities = filter_by_similarity(
+                pred.get("pred_intents", []), pred.get("pred_intents_similarity", []), min_similarity
+            )
+        else:
+            candidate_domains, candidate_intents = extract_gold_domain_intents(row)
+            domain_similarities = []
+            intent_similarities = []
+
         item["prompt"] = format_domain_intent_candidates(
             row.get("prompt", ""),
-            filtered_domains,
-            filtered_intents,
+            candidate_domains,
+            candidate_intents,
             **prompt_template,
         )
-        item["prototype_pred_domains"] = filtered_domains
-        item["prototype_pred_intents"] = filtered_intents
-        item["prototype_pred_domains_similarity"] = filtered_domain_similarities
-        item["prototype_pred_intents_similarity"] = filtered_intent_similarities
-        item["prototype_min_similarity"] = float(min_similarity) if min_similarity is not None else None
+        if candidate_source == "predicted":
+            item["prototype_pred_domains"] = candidate_domains
+            item["prototype_pred_intents"] = candidate_intents
+            item["prototype_pred_domains_similarity"] = domain_similarities
+            item["prototype_pred_intents_similarity"] = intent_similarities
+            item["prototype_min_similarity"] = float(min_similarity) if min_similarity is not None else None
+        else:
+            item["guidance_source"] = "gold"
+            item["gold_guidance_domains"] = candidate_domains
+            item["gold_guidance_intents"] = candidate_intents
         augmented.append(item)
     write_jsonl(output_jsonl, augmented)
-    print(f"[info] saved augmented MAC-SLU jsonl: {output_jsonl}")
+    print(f"[info] saved {candidate_source}-guided MAC-SLU jsonl: {output_jsonl}")
 
 
 def is_auto_min_similarity(value: Optional[float]) -> bool:
@@ -666,6 +687,15 @@ def run_inference_and_build_data(args: argparse.Namespace) -> None:
             prompt_template,
             selected_min_similarity,
         )
+        if args.gold_output_jsonl_dir:
+            build_augmented_data(
+                result["input_jsonl"],
+                result["pred_rows"],
+                os.path.join(args.gold_output_jsonl_dir, f"{split}.jsonl"),
+                prompt_template,
+                None,
+                candidate_source="gold",
+            )
 
 
 def main() -> None:
