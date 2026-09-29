@@ -11,9 +11,10 @@
 #         prototype JSON.
 # Stage 3 uses the trained prototype-only model to predict train/dev/test
 #         domain-intent candidates, writes metrics_proto.txt for every split,
-#         and creates a prototype-config-scoped JSON root.
-# Stage 4 trains the regular MAC-SLU model on the prototype-augmented JSONL data
-#         by invoking run_macslu.sh with --json_root.
+#         and creates the predicted self-conditioned-guidance JSON root.
+# Stage 4 trains and evaluates the regular MAC-SLU model with predicted guidance.
+# Stage 5 creates the gold domain/intent-guidance JSON root without model inference.
+# Stage 6 trains and evaluates the regular MAC-SLU model with gold guidance.
 
 set -euo pipefail
 
@@ -56,7 +57,7 @@ prototype_init_from_checkpoint=""  # Optional LoRA/QLoRA adapter warm-start for 
 
 # stage config
 stage=0
-stop_stage=1000
+stop_stage=4
 
 . ./local/parse_options.sh
 . ./path.sh
@@ -80,7 +81,9 @@ fi
 
 prototype_run_tag="${prototype_conf_tag}_${prototype_src_ep}"
 prototype_json_root=${json_root}_${prototype_run_tag}
+gold_json_root=${prototype_json_root}_gold
 downstream_exp_root=${exp_root}_${prototype_run_tag}
+gold_downstream_exp_root=${downstream_exp_root}_gold
 prototype_schema_path=${prototype_json_root}/schema.json
 prototype_exp_dir=${exp_root}/${prototype_run_tag}
 prototype_runtime_conf=${prototype_json_root}/prototype_runtime.json
@@ -230,7 +233,7 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
 fi
 
 if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
-    echo "Stage 3: Prototype train/dev/test inference and jsonl generation"
+    echo "Stage 3: Prototype inference and predicted-guidance jsonl generation"
     mkdir -p "$prototype_json_root"
     prototype_infer_opts=(--prototype_metric_ks $prototype_metric_ks)
     if [ -n "$prototype_min_similarity" ]; then
@@ -250,10 +253,35 @@ if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
 fi
 
 if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
-    echo "Stage 4: Train MAC-SLU with prototype-augmented jsonl"
+    echo "Stage 4: Train MAC-SLU with predicted self-conditioned guidance"
     ./run_macslu.sh \
         --json_root "$prototype_json_root" \
         --exp_root "$downstream_exp_root" \
+        --stage 1 \
+        --train_conf "$downstream_train_conf" \
+        --seed "$seed" \
+        --gpuid "$gpuid" \
+        --suffix "$suffix" \
+        $downstream_extra_opts
+fi
+
+if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
+    echo "Stage 5: Gold domain/intent-guidance jsonl generation"
+    mkdir -p "$gold_json_root"
+    python finetuning/qwen3_asr_test_prototype.py \
+        --exp_dir "$prototype_exp_dir" \
+        --train_file "${json_root}/train.jsonl" \
+        --dev_file "${json_root}/dev.jsonl" \
+        --test_file "${json_root}/test.jsonl" \
+        --output_jsonl_dir "$gold_json_root" \
+        --guidance_source gold
+fi
+
+if [ $stage -le 6 ] && [ $stop_stage -ge 6 ]; then
+    echo "Stage 6: Train MAC-SLU with gold domain/intent guidance"
+    ./run_macslu.sh \
+        --json_root "$gold_json_root" \
+        --exp_root "$gold_downstream_exp_root" \
         --stage 1 \
         --train_conf "$downstream_train_conf" \
         --seed "$seed" \
