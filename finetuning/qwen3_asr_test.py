@@ -503,6 +503,9 @@ def parse_args():
     p.add_argument("--auto_best_checkpoint", action="store_true",
                    help="If exp_dir contains checkpoints, automatically use best checkpoint")
 
+    p.add_argument("--checkpoint", type=str, default="",
+                   help="Explicit checkpoint directory. train_conf.json is still loaded from exp_dir")
+
     p.add_argument("--input_jsonl", type=str, required=True,
                    help="Input JSONL with fields like text_id, query, audio, prompt")
 
@@ -549,6 +552,17 @@ def load_train_conf_from_exp_dir(exp_dir: str) -> Optional[List[Dict[str, Any]]]
 def main():
     args = parse_args()
 
+    checkpoint_selectors = sum([
+        bool(args.checkpoint),
+        bool(args.auto_best_checkpoint),
+        bool(args.auto_latest_checkpoint),
+    ])
+    if checkpoint_selectors > 1:
+        raise ValueError(
+            "Only one of --checkpoint, --auto_best_checkpoint, and "
+            "--auto_latest_checkpoint may be set"
+        )
+
     train_conf = load_train_conf_from_exp_dir(args.exp_dir)
     if train_conf is None:
         raise ValueError("Unable to load train_conf from exp_dir")
@@ -577,7 +591,11 @@ def main():
     beam_size = int(gen_cfg.get("beam_size", num_return_sequences))
 
     model_path = args.exp_dir
-    if args.auto_best_checkpoint:
+    if args.checkpoint:
+        model_path = args.checkpoint
+        if not os.path.isdir(model_path):
+            raise FileNotFoundError(f"checkpoint not found: {model_path}")
+    elif args.auto_best_checkpoint:
         model_path = os.path.join(model_path, "checkpoint-best")
     elif args.auto_latest_checkpoint:
         latest_ckpt = find_latest_checkpoint(model_path)
