@@ -105,6 +105,13 @@ class Qwen3ASRPrototypeThinkerForConditionalGeneration(Qwen3ASRThinkerForConditi
         prototype_prefix_lengths: Optional[torch.Tensor],
         pooling: str,
     ) -> torch.Tensor:
+        # Prefix lengths count valid tokens, as in the SFT label mask. Offset
+        # them by the first non-padding position to support left padding.
+        if attention_mask is None:
+            nonz_idx = torch.zeros(hidden_states.size(0), device=hidden_states.device, dtype=torch.long)
+        else:
+            nonz_idx = attention_mask.to(hidden_states.device).long().argmax(dim=1)
+
         if pooling == "last_hidden_state":
             if prototype_prefix_lengths is not None:
                 idx = prototype_prefix_lengths.to(hidden_states.device).long().clamp(min=1) - 1
@@ -112,7 +119,7 @@ class Qwen3ASRPrototypeThinkerForConditionalGeneration(Qwen3ASRThinkerForConditi
                 idx = attention_mask.to(hidden_states.device).long().sum(dim=1).clamp(min=1) - 1
             else:
                 idx = torch.full((hidden_states.size(0),), hidden_states.size(1) - 1, device=hidden_states.device, dtype=torch.long)
-            return hidden_states[torch.arange(hidden_states.size(0), device=hidden_states.device), idx]
+            return hidden_states[torch.arange(hidden_states.size(0), device=hidden_states.device), nonz_idx + idx]
 
         if attention_mask is None:
             mask = torch.ones(hidden_states.shape[:2], dtype=torch.bool, device=hidden_states.device)
@@ -121,7 +128,7 @@ class Qwen3ASRPrototypeThinkerForConditionalGeneration(Qwen3ASRThinkerForConditi
         if prototype_prefix_lengths is not None:
             prefix_lengths = prototype_prefix_lengths.to(hidden_states.device).long().clamp(min=0, max=hidden_states.size(1))
             positions = torch.arange(hidden_states.size(1), device=hidden_states.device).unsqueeze(0)
-            mask = mask & (positions < prefix_lengths.unsqueeze(1))
+            mask = mask & (positions < (nonz_idx + prefix_lengths).unsqueeze(1))
         mask_f = mask.unsqueeze(-1).to(hidden_states.dtype)
         denom = mask_f.sum(dim=1).clamp(min=1.0)
         return (hidden_states * mask_f).sum(dim=1) / denom
